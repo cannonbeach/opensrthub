@@ -566,6 +566,12 @@ static void *udp_server_thread(void *context)
     int output_socket = 0;
     int yes = 1;
     dataqueue_message_struct *msg;
+    char statsfilename[MAX_STRING_SIZE];
+    struct timespec stats_start;
+    struct timespec stats_stop;
+    int64_t diff;
+    int64_t total_bytes_sent = 0;
+    int64_t total_packets_sent = 0;
 
     sprintf(host,"127.0.0.1");
 
@@ -598,6 +604,9 @@ static void *udp_server_thread(void *context)
     //    destination.sin_port = htons(INADDR_ANY);
     //    destination.sin_addr.s_addr = bind_address.s_addr;
 
+    sprintf(statsfilename,"/opt/srthub/status/udp_server_%d.json", srtcore->session_identifier);
+
+    clock_gettime(CLOCK_MONOTONIC, &stats_start);
     while (srtcore->udp_server_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
 
@@ -628,7 +637,52 @@ static void *udp_server_thread(void *context)
             //fprintf(stderr,"udp_server_thread: now:%ld srctime:%ld diff:%ld\n", scheduled_now, srctime, scheduled_now-srctime);
 
             boutput = sendto(output_socket, buffer, buffer_size, 0, (struct sockaddr *)&destination, sizeof(struct sockaddr_in));
-            //fprintf(stderr,"udp_server_thread: sending %d bytes of data     now:%ld srctime:%ld diff:%ld\n", boutput, scheduled_now, srctime, scheduled_now-srctime);
+
+            if (boutput == buffer_size) {
+                total_bytes_sent += boutput;
+                total_packets_sent++;
+                clock_gettime(CLOCK_MONOTONIC, &stats_stop);
+                diff = realtime_clock_difference(&stats_stop, &stats_start) / 1000;
+                if (diff >= 1000) {
+                    FILE *statsfile = fopen(statsfilename,"wb");
+                    if (statsfile) {
+                        fprintf(statsfile,"{\n");
+                        fprintf(statsfile,"    \"udp-output-address\":\"%s\",\n", udpdata->destination_address);
+                        fprintf(statsfile,"    \"udp-output-port\":%d,\n", udpdata->destination_port);
+                        fprintf(statsfile,"    \"udp-output-interface\":\"%s\",\n", udpdata->interface_name);
+                        fprintf(statsfile,"    \"udp-output-ttl\":%d,\n", udpdata->ttl);
+                        fprintf(statsfile,"    \"udp-output-active\":1,\n");
+                        fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
+                        fprintf(statsfile,"    \"total-packets-sent\":%ld,\n", total_packets_sent);
+                        fprintf(statsfile,"    \"last-buffer-size\":%d,\n", buffer_size);
+                        fprintf(statsfile,"    \"udpserver-queue\":%d\n", dataqueue_get_size(srtcore->udpserverqueue));
+                        fprintf(statsfile,"}\n");
+                        fclose(statsfile);
+                    }
+                    clock_gettime(CLOCK_MONOTONIC, &stats_start);
+                }
+            } else {
+                clock_gettime(CLOCK_MONOTONIC, &stats_stop);
+                diff = realtime_clock_difference(&stats_stop, &stats_start) / 1000;
+                if (diff >= 1000) {
+                    FILE *statsfile = fopen(statsfilename,"wb");
+                    if (statsfile) {
+                        fprintf(statsfile,"{\n");
+                        fprintf(statsfile,"    \"udp-output-address\":\"%s\",\n", udpdata->destination_address);
+                        fprintf(statsfile,"    \"udp-output-port\":%d,\n", udpdata->destination_port);
+                        fprintf(statsfile,"    \"udp-output-interface\":\"%s\",\n", udpdata->interface_name);
+                        fprintf(statsfile,"    \"udp-output-ttl\":%d,\n", udpdata->ttl);
+                        fprintf(statsfile,"    \"udp-output-active\":0,\n");
+                        fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
+                        fprintf(statsfile,"    \"total-packets-sent\":%ld,\n", total_packets_sent);
+                        fprintf(statsfile,"    \"last-buffer-size\":%d,\n", buffer_size);
+                        fprintf(statsfile,"    \"udpserver-queue\":%d\n", dataqueue_get_size(srtcore->udpserverqueue));
+                        fprintf(statsfile,"}\n");
+                        fclose(statsfile);
+                    }
+                }
+                clock_gettime(CLOCK_MONOTONIC, &stats_start);
+            }
 
             free(buffer);
             free(msg);
@@ -660,10 +714,13 @@ static void *srthub_thumbnail_thread(void *context)
     int video_decoder_ready = 0;
     uint8_t *output_video_frame;
     int64_t decoded_frame_count = 0;
+    char statsfilename[MAX_STRING_SIZE];
 
     srtcore = (srthub_core_struct*)context;
 
     output_video_frame = (uint8_t*)malloc(MAX_DECODE_WIDTH*MAX_DECODE_HEIGHT*3);
+
+    sprintf(statsfilename,"/opt/srthub/status/thumbnail_%d.json", srtcore->session_identifier);
 
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
@@ -778,6 +835,25 @@ static void *srthub_thumbnail_thread(void *context)
                     fprintf(stderr,"srt_thumbnail_thread: decoded video frame, resolution is %d x %d\n",
                             frame_width, frame_height);
                     */
+                    char codec[MAX_STRING_SIZE];
+                    if (buffer_type == STREAM_TYPE_H264) {
+                        sprintf(codec,"h264");
+                    } else if (buffer_type == STREAM_TYPE_MPEG2) {
+                        sprintf(codec,"mpeg2");
+                    } else if (buffer_type == STREAM_TYPE_HEVC) {
+                        sprintf(codec,"hevc");
+                    } else {
+                        sprintf(codec,"unknown");
+                    }
+                    FILE *statsfile = fopen(statsfilename,"wb");
+                    if (statsfile) {
+                        fprintf(statsfile,"{\n");
+                        fprintf(statsfile,"    \"width\":%d,\n", frame_width);
+                        fprintf(statsfile,"    \"height\":%d,\n", frame_height);
+                        fprintf(statsfile,"    \"video-codec\":\"%s\"\n", codec);
+                        fprintf(statsfile,"}\n");
+                        fclose(statsfile);
+                    }
 
                     sws_scale(decode_converter,
                               (const uint8_t * const*)source_data, source_stride, 0,
