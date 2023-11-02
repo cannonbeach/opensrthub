@@ -1,3 +1,24 @@
+/*****************************************************************************
+  Copyright (C) 2018-2023 John William
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02111, USA.
+
+  This program is also available with customization/support packages.
+  For more information, please contact me at cannonbeachgoonie@gmail.com
+
+******************************************************************************/
 #include <pthread.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -7,15 +28,15 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
-
 #include "srt.h"
+#include "srthub.h"
 #include "tsdecode.h"
 #include "dataqueue.h"
+#include "esignal.h"
 
 #define SRTHUB_MAJOR 0
 #define SRTHUB_MINOR 1
 
-#define MAX_STRING_SIZE 512
 #define MAX_PACKET_BUFFER_SIZE 1536
 #define MAX_CONFIG_SIZE 16384
 
@@ -42,6 +63,7 @@
 #include "../cbffmpeg/libavfilter/buffersrc.h"
 #endif
 
+/*
 typedef struct _input_statistics_struct_ {
     int          connected;
     int          signal;
@@ -57,30 +79,14 @@ typedef struct _statistics_struct_ {
     input_statistics_struct inputinfo;
     output_statistics_struct outputinfo;
 } statistics_struct;
-
-typedef struct _srthub_core_struct_ {
-    int session_identifier;
-    pthread_t srt_server_thread_id;
-    pthread_t udp_server_thread_id;
-    pthread_t srt_receiver_thread_id;
-    pthread_t udp_receiver_thread_id;
-    pthread_t thumbnail_thread_id;
-    pthread_t output_smoothing_thread_id;
-    int srt_server_thread_running;
-    int udp_server_thread_running;
-    int srt_receiver_thread_running;
-    int udp_receiver_thread_running;
-    int thumbnail_thread_running;
-    int output_smoothing_thread_running;
-    void *msgqueue;
-    void *thumbnailqueue;
-    void *udpserverqueue;
-    void *smoothingqueue;
-} srthub_core_struct;
+*/
 
 typedef struct _srt_receive_thread_struct_ {
     char         server_address[MAX_STRING_SIZE];
     int          server_port;
+    char         interface_name[MAX_STRING_SIZE];
+    char         streamid[MAX_STRING_SIZE];
+    char         passphrase[MAX_STRING_SIZE];
     srthub_core_struct *core;
 } srt_receive_thread_struct;
 
@@ -150,7 +156,7 @@ int save_frame_as_jpeg(srthub_core_struct *srtcore, AVFrame *pFrame)
 
 static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint32_t sample_flags,
                          int64_t pts, int64_t dts, int64_t last_pcr, int source,
-                         int sub_source, char *lang_tag, void *context)
+                         int sub_source, char *lang_tag, int64_t corruption_count, int muxstreams, void *context)
 {
     srthub_core_struct *srtcore = (srthub_core_struct*)context;
     dataqueue_message_struct *msg;
@@ -158,7 +164,8 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     if (sample_type == STREAM_TYPE_H264 || sample_type == STREAM_TYPE_HEVC || sample_type == STREAM_TYPE_MPEG2) {
         //if (sample_flags == 1)
         {
-            //fprintf(stderr,"received frame: type=0x%x size=%d\n", sample_type, sample_size);
+            fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
+                    source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);
 
             /*if (dataqueue_get_size(srtcore->thumbnailqueue) > 0) {
                 fprintf(stderr,"received frame: thumbnail queue already has a sample... waiting\n");
@@ -180,6 +187,9 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
                     msg->buffer = (void*)buffer;
                     msg->buffer_size = sample_size;
                     msg->buffer_type = sample_type;
+                    msg->flags = muxstreams;
+                    msg->stream_index = source;
+                    msg->source_discontinuity = corruption_count;
                     dataqueue_put_front(srtcore->thumbnailqueue, msg);
                     msg = NULL;
                 } else {
@@ -210,7 +220,7 @@ static void *srt_receiver_thread(void *context)
     srt_receive_thread_struct *srtdata;
     srthub_core_struct *srtcore;
     int srterr;
-    int epollid;
+    int epollid = 0;
     struct sockaddr_in sa;
     int no = 0;
     int modes;
@@ -224,6 +234,7 @@ static void *srt_receiver_thread(void *context)
     int update_stats;
     char buffer[MAX_PACKET_BUFFER_SIZE];
     char statsfilename[MAX_STRING_SIZE];
+    int srt_connected = 0;
 
     srt_startup();
 
@@ -274,7 +285,25 @@ static void *srt_receiver_thread(void *context)
         goto cleanup_srt_receiver_thread;
     }
 
-    // set the passphrase
+    int passphrase_length = strlen(srtdata->passphrase);
+    if (passphrase_length >= 10 && passphrase_length <= 80) {
+        srterr = srt_setsockflag(serversock, SRTO_PASSPHRASE, srtdata->passphrase, passphrase_length);
+        if (srterr == SRT_ERROR) {
+            // srt_getlasterror_str();
+            fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
+            goto cleanup_srt_receiver_thread;
+        }
+    }
+
+    int streamid_length = strlen(srtdata->streamid);
+    if (streamid_length > 0) {
+        srterr = srt_setsockflag(serversock, SRTO_STREAMID, srtdata->streamid, streamid_length);
+        if (srterr == SRT_ERROR) {
+            // srt_getlasterror_str();
+            fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
+            goto cleanup_srt_receiver_thread;
+        }
+    }
 
     modes = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
     srterr = srt_epoll_add_usock(epollid, serversock, &modes);
@@ -337,6 +366,7 @@ static void *srt_receiver_thread(void *context)
                         fclose(statsfile);
                     }
                 }
+                srt_connected = 0;
                 update_stats++;
 
                 gettimeofday(&connect_stop, NULL);
@@ -348,6 +378,8 @@ static void *srt_receiver_thread(void *context)
                 }
             } else if (lasterr == SRT_ECONNLOST) {
                 fprintf(stderr,"srt_receiver_thread: SRT connection has been lost!\n");
+                srt_connected = 0;
+                send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT connection lost");
                 send_restart_message(srtcore);
                 goto cleanup_srt_receiver_thread;
             } else if (lasterr == SRT_EASYNCRCV) {
@@ -363,8 +395,13 @@ static void *srt_receiver_thread(void *context)
             int tp;
             int current_state;
             int clear_it = 0;
-            //current_state = srt_getsockstate(serversock, &stats, &stats_size);
 
+            if (srt_connected == 0) {
+                char signal_message[MAX_STRING_SIZE];
+                snprintf(signal_message, MAX_STRING_SIZE-1, "SRT connected to %s:%d", srtdata->server_address, srtdata->server_port);
+                send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
+            }
+            srt_connected = 1;
             gettimeofday(&connect_start, NULL);
             if ((update_stats % 100)==0) {
                 srterr = srt_bstats(serversock, &stats, clear_it);
@@ -439,8 +476,10 @@ cleanup_srt_receiver_thread:
     srtdata = NULL;
     //srterr = srt_epoll_add_usock(epollid, serversock, &modes);
     //srt_epoll_remove_usock()
-    srt_epoll_release(epollid);
-    epollid = -1;
+    if (epollid > 0) {
+        srt_epoll_release(epollid);
+        epollid = 0;
+    }
     srt_close(serversock);
     srt_cleanup();
 
@@ -715,6 +754,8 @@ static void *srthub_thumbnail_thread(void *context)
     uint8_t *output_video_frame;
     int64_t decoded_frame_count = 0;
     char statsfilename[MAX_STRING_SIZE];
+    char corruptiontimedate[MAX_STRING_SIZE];
+    uint32_t decode_errors = 0;
 
     srtcore = (srthub_core_struct*)context;
 
@@ -722,6 +763,7 @@ static void *srthub_thumbnail_thread(void *context)
 
     sprintf(statsfilename,"/opt/srthub/status/thumbnail_%d.json", srtcore->session_identifier);
 
+    memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
         while (!msg && srtcore->thumbnail_thread_running) {
@@ -743,7 +785,27 @@ static void *srthub_thumbnail_thread(void *context)
             uint8_t *buffer = (uint8_t*)msg->buffer;
             int buffer_size = msg->buffer_size;
             int buffer_type = msg->buffer_type;
+            int muxstreams = msg->flags;
+            int stream_index = msg->stream_index;
+            int corruption_count = msg->source_discontinuity;
             int ret;
+
+            corruption_count = corruption_count - 1;  // hack for the startup condition that needs to be fixed (since we always report one at startup)
+            if (corruption_count < 0) {
+                corruption_count = 0;
+            }
+
+            if (corruption_count > 0 && corruption_count != srtcore->last_corruption_count) {
+                int l;
+                srtcore->last_corruption_time = time(NULL);
+                struct tm* local_time = localtime(&srtcore->last_corruption_time);
+                sprintf(corruptiontimedate, "%s", asctime(local_time));
+                l = strlen(corruptiontimedate);
+                if (l > 0) {
+                    corruptiontimedate[l-1] = '\0'; // remove the \n
+                }
+                srtcore->last_corruption_count = corruption_count;
+            }
 
             if (!video_decoder_ready) {
                 if (buffer_type == STREAM_TYPE_H264) {
@@ -767,7 +829,22 @@ static void *srthub_thumbnail_thread(void *context)
                 free(buffer);
                 free(msg);
                 msg = NULL;
-                usleep(10000);
+
+                FILE *statsfile = fopen(statsfilename,"wb");
+                if (statsfile) {
+                    fprintf(statsfile,"{\n");
+                    fprintf(statsfile,"    \"width\":0,\n");
+                    fprintf(statsfile,"    \"height\":0,\n");
+                    fprintf(statsfile,"    \"video-codec\":\"unknown\",\n");
+                    fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
+                    fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
+                    fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
+                    fprintf(statsfile,"    \"last-source-error\":\"%s\",\n", corruptiontimedate);
+                    fprintf(statsfile,"    \"decode-errors\":%u\n", decode_errors);
+                    fprintf(statsfile,"}\n");
+                    fclose(statsfile);
+                }
+                usleep(100000);
                 continue;
             }
 
@@ -850,7 +927,12 @@ static void *srthub_thumbnail_thread(void *context)
                         fprintf(statsfile,"{\n");
                         fprintf(statsfile,"    \"width\":%d,\n", frame_width);
                         fprintf(statsfile,"    \"height\":%d,\n", frame_height);
-                        fprintf(statsfile,"    \"video-codec\":\"%s\"\n", codec);
+                        fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
+                        fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
+                        fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
+                        fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
+                        fprintf(statsfile,"    \"last-source-error\":\"%s\",\n", corruptiontimedate);
+                        fprintf(statsfile,"    \"decode-errors\":0\n");
                         fprintf(statsfile,"}\n");
                         fclose(statsfile);
                     }
@@ -953,6 +1035,7 @@ int main(int argc, char **argv)
     srthub_core_struct srtcore;
     int session_identifier;
     char statsfilename[MAX_STRING_SIZE];
+    char system_hostname[MAX_STRING_SIZE];
     int wait_count = 0;
     int64_t uptime = -1;
     struct timespec uptime_start;
@@ -961,10 +1044,25 @@ int main(int argc, char **argv)
 
     fprintf(stderr,"srthub (C) Copyright 2023 John William\n");
     fprintf(stderr,"\n");
+    fprintf(stderr,"srthub version is: %d.%d\n",
+            SRTHUB_MAJOR, SRTHUB_MINOR);
     fprintf(stderr,"srt version is: %d.%d.%d\n",
             (srt_getversion() >> 16) & 0xff,
             (srt_getversion() >> 8) & 0xff,
             (srt_getversion() >> 0) & 0xff);
+
+    sprintf(statsfilename,"/opt/srthub/srthub.json");
+    FILE *srthubstatsfile = fopen(statsfilename,"wb");
+    if (srthubstatsfile) {
+        memset(system_hostname, 0, sizeof(system_hostname));
+        gethostname(system_hostname, MAX_STRING_SIZE-1);
+        fprintf(srthubstatsfile,"{\n");
+        fprintf(srthubstatsfile,"    \"srt-version\":\"%d.%d.%d\",\n", (srt_getversion() >> 16) & 0xff, (srt_getversion() >> 8) & 0xff, (srt_getversion() >> 0) & 0xff);
+        fprintf(srthubstatsfile,"    \"srthub-version\":\"%d.%d\",\n", SRTHUB_MAJOR, SRTHUB_MINOR);
+        fprintf(srthubstatsfile,"    \"hostname\":\"%s\"\n", system_hostname);
+        fprintf(srthubstatsfile,"}\n");
+        fclose(srthubstatsfile);
+    }
 
     if (argc < 7) {
         fprintf(stderr,"\n");
@@ -1006,29 +1104,54 @@ int main(int argc, char **argv)
     srtcore.msgqueue = dataqueue_create();
     srtcore.thumbnailqueue = dataqueue_create();
     srtcore.udpserverqueue = dataqueue_create();
+    srtcore.signalqueue = dataqueue_create();
+
+    start_signal_thread(&srtcore);
+
+    if ((strncmp(sourcemode,"srt",3)==0) && (strncmp(outputmode,"udp",3)==0)) {
+        send_signal(&srtcore, SIGNAL_START_SERVICE, "Started SRT Receiver to UDP Output");
+    }
+    if ((strncmp(sourcemode,"udp",3)==0) && (strncmp(outputmode,"srt",3)==0)) {
+        send_signal(&srtcore, SIGNAL_START_SERVICE, "Started UDP Input to SRT Server");
+    }
 
 restart_srt:
     register_frame_callback(receive_frame, (void*)&srtcore);
 
     srtcore.thumbnail_thread_running = 1;
-    srtcore.srt_receiver_thread_running = 1;
-    srtcore.udp_server_thread_running = 1;
-    srt_receive_thread_struct *srt_receive_data = (srt_receive_thread_struct*)malloc(sizeof(srt_receive_thread_struct));
-    sprintf(srt_receive_data->server_address, "%s", server_address);
-    srt_receive_data->server_port = server_port;
-    srt_receive_data->core = (srthub_core_struct*)&srtcore;
+    pthread_create(&srtcore.thumbnail_thread_id, NULL, srthub_thumbnail_thread, &srtcore);
 
-    udp_server_thread_struct *udp_server_data = (udp_server_thread_struct*)malloc(sizeof(udp_server_thread_struct));
-    sprintf(udp_server_data->interface_name,"eno1");
-    sprintf(udp_server_data->destination_address, "%s", output_address);
-    udp_server_data->destination_port = output_port;
-    udp_server_data->ttl = 8;
-    udp_server_data->core = (srthub_core_struct*)&srtcore;
+    if (strncmp(outputmode,"udp",3)==0) {
+        srtcore.udp_server_thread_running = 1;
+        udp_server_thread_struct *udp_server_data = (udp_server_thread_struct*)malloc(sizeof(udp_server_thread_struct));
+        sprintf(udp_server_data->interface_name,"eno1");
+        sprintf(udp_server_data->destination_address, "%s", output_address);
+        udp_server_data->destination_port = output_port;
+        udp_server_data->ttl = 8;
+        udp_server_data->core = (srthub_core_struct*)&srtcore;
+        pthread_create(&srtcore.udp_server_thread_id, NULL, udp_server_thread, udp_server_data);
+    }
+
+    if (strncmp(outputmode,"srt",3)==0) {
+        srtcore.srt_server_thread_running = 1;
+    }
+
+    if (strncmp(sourcemode,"srt",3)==0) {
+        srtcore.srt_receiver_thread_running = 1;
+        srt_receive_thread_struct *srt_receive_data = (srt_receive_thread_struct*)malloc(sizeof(srt_receive_thread_struct));
+        sprintf(srt_receive_data->server_address, "%s", server_address);
+        srt_receive_data->server_port = server_port;
+        sprintf(srt_receive_data->streamid,"");
+        sprintf(srt_receive_data->passphrase,"");
+        srt_receive_data->core = (srthub_core_struct*)&srtcore;
+        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread, srt_receive_data);
+    }
+
+    if (strncmp(sourcemode,"udp",3)==0) {
+        srtcore.udp_receiver_thread_running = 1;
+    }
 
     fprintf(stderr,"\n\n\n\n\n\nstarting things back up....\n\n\n\n\n\n");
-    pthread_create(&srtcore.thumbnail_thread_id, NULL, srthub_thumbnail_thread, &srtcore);
-    pthread_create(&srtcore.udp_server_thread_id, NULL, udp_server_thread, udp_server_data);
-    pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread, srt_receive_data);
 
     sprintf(statsfilename,"/opt/srthub/status/corestatus_%d.json", srtcore.session_identifier);
 
@@ -1071,12 +1194,15 @@ restart_srt:
         }
     }
 
+    stop_signal_thread(&srtcore);
+
     dataqueue_destroy(srtcore.msgqueue);
     srtcore.msgqueue = NULL;
     dataqueue_destroy(srtcore.thumbnailqueue);
     srtcore.thumbnailqueue = NULL;
     dataqueue_destroy(srtcore.udpserverqueue);
     srtcore.udpserverqueue = NULL;
+    dataqueue_destroy(srtcore.signalqueue);
 
     srt_cleanup();
 

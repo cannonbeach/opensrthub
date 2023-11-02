@@ -259,7 +259,7 @@ typedef struct _transport_data_struct_ {
 extern "C" {
 #endif // cplusplus
 
-    void register_frame_callback(int (*cbfn)(uint8_t *sample, int sample_size, int sample_type, uint32_t sample_flags, int64_t pts, int64_t dts, int64_t last_pcr, int source, int sub_source, char *lang_tag, void *context), void *context);
+    void register_frame_callback(int (*cbfn)(uint8_t *sample, int sample_size, int sample_type, uint32_t sample_flags, int64_t pts, int64_t dts, int64_t last_pcr, int source, int sub_source, char *lang_tag, int64_t corruption_count, int muxstreams, void *context), void *context);
     void register_message_callback(int (*cbfn)(int p1,int64_t p2,int64_t p3,int64_t p4, int64_t p5, int source, void* context), void*context);
     int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_data_struct *tsdata, int stream_select);
     int64_t get_time_difference(struct timeval *stoptime, struct timeval *starttime);
