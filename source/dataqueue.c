@@ -45,7 +45,7 @@ typedef struct _queue_struct
     dataqueue_node_struct          *tail;
     dataqueue_node_struct          *head;
     pthread_mutex_t                *reflock;
-    void                           *pool;
+    //void                           *pool;
 } queue_struct;
 
 int dataqueue_reset(void *queue)
@@ -61,7 +61,7 @@ int dataqueue_reset(void *queue)
         message_queue->count = 0;
         message_queue->head = NULL;
         message_queue->tail = NULL;
-        memory_reset(message_queue->pool);
+        //memory_reset(message_queue->pool);
         pthread_mutex_unlock(message_queue->reflock);
         return 0;
     }
@@ -79,7 +79,7 @@ void *dataqueue_create(void)
 
     memset(message_queue, 0, sizeof(queue_struct));
 
-    message_queue->pool = memory_create(MAX_QUEUE_ENTRIES, sizeof(dataqueue_node_struct));
+    //message_queue->pool = memory_create(MAX_QUEUE_ENTRIES, sizeof(dataqueue_node_struct));
     message_queue->count = 0;
     message_queue->reflock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(message_queue->reflock, NULL);
@@ -97,7 +97,7 @@ int dataqueue_destroy(void *queue)
     pthread_mutex_destroy(message_queue->reflock);
     free(message_queue->reflock);
     message_queue->reflock = NULL;
-    memory_destroy(message_queue->pool);
+    //memory_destroy(message_queue->pool);
     free(message_queue);
 
     return 0;

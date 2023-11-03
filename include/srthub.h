@@ -24,8 +24,10 @@
 
 #include <sys/time.h>
 #include <time.h>
+#include <pthread.h>
 
 #define MAX_STRING_SIZE 512
+#define MAX_WORKER_THREADS 8
 
 typedef struct _srthub_core_struct_ {
     int session_identifier;
@@ -48,6 +50,10 @@ typedef struct _srthub_core_struct_ {
     void *signalqueue;
     int64_t last_corruption_count;
     time_t last_corruption_time;
+    pthread_mutex_t *srtserverlock;
+    int srt_server_worker_thread_running[MAX_WORKER_THREADS];
+    pthread_t srt_server_worker_thread_id[MAX_WORKER_THREADS];
+    void *srtserverqueue[MAX_WORKER_THREADS];
 } srthub_core_struct;
 
 #endif

@@ -3,7 +3,7 @@ CXX=g++
 CFLAGS=-g -c -O2 -m64 -Wall -Wfatal-errors -funroll-loops -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-format-truncation
 SRC=./source
 INC=-I./include
-OBJS=crc.o tsdecode.o mempool.o dataqueue.o cJSON.o cJSON_Utils.o
+OBJS=crc.o tsdecode.o mempool.o dataqueue.o esignal.o udpsource.o cJSON.o cJSON_Utils.o
 LIB=libsrthub.a
 BASELIBS=
 
@@ -14,11 +14,13 @@ BASELIBS += ./cbffmpeg/libavfilter/libavfilter.a \
 	    ./cbffmpeg/libavutil/libavutil.a \
 	    ./cbffmpeg/libswresample/libswresample.a \
 	    ./cbsrt/libsrt.a \
+	    ./cblibcurl/lib/.libs/libcurl.a \
 	    /usr/lib/x86_64-linux-gnu/libcrypto.a
 
 INC += -I./cbffmpeg
 INC += -I./cbsrt/srtcore
 INC += -I./cbsrt
+INC += -I./cblibcurl/include/curl
 
 BASELIBS += -lz -ldl -lssl
 
@@ -45,6 +47,12 @@ tsdecode.o: $(SRC)/tsdecode.c
 
 crc.o: $(SRC)/crc.c
 	$(CC) $(CFLAGS) $(INC) $(SRC)/crc.c
+
+esignal.o: $(SRC)/esignal.c
+	$(CC) $(CFLAGS) $(INC) $(SRC)/esignal.c
+
+udpsource.o: $(SRC)/udpsource.c
+	$(CC) $(CFLAGS) $(INC) $(SRC)/udpsource.c
 
 cJSON.o: $(SRC)/cJSON.c
 	$(CC) $(CFLAGS) $(INC) $(SRC)/cJSON.c
