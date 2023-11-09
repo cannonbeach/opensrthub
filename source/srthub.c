@@ -750,6 +750,7 @@ static void *udp_receiver_thread(void *context)
     char signal_msg[MAX_STRING_SIZE];
     int input_signal = 0;
     char statsfilename[MAX_STRING_SIZE];
+    transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
 
     udpdata = (udp_receiver_thread_struct*)context;
     srtcore = udpdata->core;
@@ -800,6 +801,7 @@ static void *udp_receiver_thread(void *context)
                 uint8_t *outputbuffer;
                 int64_t source_time = srt_time_now();
                 int thread;
+                int tp;
 
                 no_signal_count = 0;
                 if (input_signal == 0) {
@@ -811,6 +813,10 @@ static void *udp_receiver_thread(void *context)
                              udpdata->interface_name);
                     send_signal(srtcore, SIGNAL_INPUT_SIGNAL_LOCKED, signal_msg);
                 }
+
+                // check if rtp or something else?
+                tp = bytes_read / 188;
+                decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
 
                 for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
                     pthread_mutex_lock(srtcore->srtserverlock);
@@ -841,6 +847,7 @@ static void *udp_receiver_thread(void *context)
         socket_udp_close(udp_socket);
     }
     free(udp_buffer);
+    free(decode);
     free(udpdata);
 
     return NULL;
