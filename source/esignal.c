@@ -221,6 +221,34 @@ void *signal_thread(void *context)
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
+            } else if (buffer_type == SIGNAL_SRT_UNABLE_TO_CONNECT) {
+                snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
+                         "{\n"
+                         "    \"accesstime\": \"%s\",\n"
+                         "    \"host\": \"%s\",\n"
+                         "    \"id\": %ld,\n"
+                         "    \"status\": \"warning\",\n"
+                         "    \"message\": \"%s\"\n"
+                         "}\n",
+                         formattedtime,
+                         node_hostname,
+                         id,
+                         msg->smallbuf);
+                signal_management_interface(core, response_buffer, strlen(response_buffer));
+            } else if (buffer_type == SIGNAL_NO_DATA) {
+                snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
+                         "{\n"
+                         "    \"accesstime\": \"%s\",\n"
+                         "    \"host\": \"%s\",\n"
+                         "    \"id\": %ld,\n"
+                         "    \"status\": \"warning\",\n"
+                         "    \"message\": \"%s\"\n"
+                         "}\n",
+                         formattedtime,
+                         node_hostname,
+                         id,
+                         msg->smallbuf);
+                signal_management_interface(core, response_buffer, strlen(response_buffer));
             } else if (buffer_type == SIGNAL_SRT_CONNECTION_LOST) {
                 snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
                          "{\n"

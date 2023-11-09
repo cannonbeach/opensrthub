@@ -40,7 +40,7 @@
 #define SIGNAL_HIGH_CPU              0x0a
 #define SIGNAL_LOW_DISK_SPACE        0x0b
 #define SIGNAL_INPUT_SIGNAL_LOCKED   0x0c
-#define SIGNAL_INPUT_ERRORS          0x0d  //hit specific error threshold
+#define SIGNAL_INPUT_ERRORS          0x0d  // hit specific error threshold
 #define SIGNAL_SEGMENT_WRITTEN       0x0f
 #define SIGNAL_MANIFEST_WRITTEN      0x10
 #define SIGNAL_FRAME_REPEAT          0x11
@@ -52,6 +52,8 @@
 #define SIGNAL_MALFORMED_DATA        0x17
 #define SIGNAL_SRT_CONNECTION_LOST   0x18
 #define SIGNAL_SRT_CONNECTED         0x19
+#define SIGNAL_NO_DATA               0x1a
+#define SIGNAL_SRT_UNABLE_TO_CONNECT 0x1b
 
 #define SIGNAL_DIRECT_ERROR_AVSYNC   0xe0
 #define SIGNAL_DIRECT_ERROR_MSGPOOL  0xe1

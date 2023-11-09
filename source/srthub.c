@@ -391,7 +391,8 @@ static void *srt_receiver_thread(void *context)
 
                 gettimeofday(&connect_stop, NULL);
                 delta_time_no_connection = (int64_t)get_time_difference(&connect_stop, &connect_start) / 1000;
-                if (delta_time_no_connection >= 3000) {
+                if (delta_time_no_connection >= 5000) {
+                    send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT Unable to Connect");
                     fprintf(stderr,"srt_receiver_thread: SRT waiting too long for connection, is the server up?\n");
                     send_restart_message(srtcore);
                     goto cleanup_srt_receiver_thread;
@@ -399,7 +400,7 @@ static void *srt_receiver_thread(void *context)
             } else if (lasterr == SRT_ECONNLOST) {
                 fprintf(stderr,"srt_receiver_thread: SRT connection has been lost!\n");
                 srt_connected = 0;
-                send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT connection lost");
+                send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT Connection Lost");
                 send_restart_message(srtcore);
                 goto cleanup_srt_receiver_thread;
             } else if (lasterr == SRT_EASYNCRCV) {
@@ -953,10 +954,13 @@ static void *udp_server_thread(void *context)
     char statsfilename[MAX_STRING_SIZE];
     struct timespec stats_start;
     struct timespec stats_stop;
+    struct timespec signal_check_start;
+    struct timespec signal_check_stop;
     int64_t diff;
     int64_t total_bytes_sent = 0;
     int64_t total_packets_sent = 0;
     int multicast_output = 0;
+    int signal_outage_flagged = 0;
 
     sprintf(host,"127.0.0.1");
 
@@ -1005,9 +1009,39 @@ static void *udp_server_thread(void *context)
     while (srtcore->udp_server_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
 
+        if (!msg) {
+            clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
+        }
         while (!msg && srtcore->udp_server_thread_running) {
             usleep(1000);
             msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
+            if (!msg) {
+                clock_gettime(CLOCK_MONOTONIC, &signal_check_stop);
+                diff = realtime_clock_difference(&signal_check_stop, &signal_check_start) / 1000;
+                if (diff >= 2000) {  // 2 second timeout
+                    FILE *statsfile = fopen(statsfilename,"wb");
+                    if (statsfile) {
+                        fprintf(statsfile,"{\n");
+                        fprintf(statsfile,"    \"udp-output-address\":\"%s\",\n", udpdata->destination_address);
+                        fprintf(statsfile,"    \"udp-output-port\":%d,\n", udpdata->destination_port);
+                        fprintf(statsfile,"    \"udp-output-interface\":\"%s\",\n", udpdata->interface_name);
+                        fprintf(statsfile,"    \"udp-output-ttl\":%d,\n", udpdata->ttl);
+                        fprintf(statsfile,"    \"udp-output-active\":0,\n");
+                        fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
+                        fprintf(statsfile,"    \"total-packets-sent\":%ld,\n", total_packets_sent);
+                        fprintf(statsfile,"    \"last-buffer-size\":%d,\n", 0);
+                        fprintf(statsfile,"    \"multicast-output\":%d,\n", multicast_output);
+                        fprintf(statsfile,"    \"udpserver-queue\":%d\n", dataqueue_get_size(srtcore->udpserverqueue));
+                        fprintf(statsfile,"}\n");
+                        fclose(statsfile);
+                    }
+                    if (!signal_outage_flagged) {
+                        signal_outage_flagged = 1;
+
+                        send_signal(srtcore, SIGNAL_NO_DATA, "No Data on SRT Connection");
+                    }
+                }
+            }
         }
 
         if (!srtcore->udp_server_thread_running) {
@@ -1029,11 +1063,13 @@ static void *udp_server_thread(void *context)
 
             int boutput;
             int64_t scheduled_now = srt_time_now();
+
             //fprintf(stderr,"udp_server_thread: now:%ld srctime:%ld diff:%ld\n", scheduled_now, srctime, scheduled_now-srctime);
 
             boutput = sendto(output_socket, buffer, buffer_size, 0, (struct sockaddr *)&destination, sizeof(struct sockaddr_in));
 
             if (boutput == buffer_size) {
+                signal_outage_flagged = 0;
                 total_bytes_sent += boutput;
                 total_packets_sent++;
                 clock_gettime(CLOCK_MONOTONIC, &stats_stop);
