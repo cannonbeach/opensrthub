@@ -70,6 +70,8 @@ typedef struct _srt_server_worker_output_thread_struct_ {
     int          thread;
     srthub_core_struct *core;
     SRTSOCKET    client_sock;
+    char         client_address[MAX_STRING_SIZE];
+    int          client_port;
 } srt_server_worker_output_thread_struct;
 
 typedef struct _srt_server_worker_input_thread_struct_ {
@@ -392,15 +394,23 @@ static void *srt_receiver_thread(void *context)
                 gettimeofday(&connect_stop, NULL);
                 delta_time_no_connection = (int64_t)get_time_difference(&connect_stop, &connect_start) / 1000;
                 if (delta_time_no_connection >= 5000) {
-                    send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT Unable to Connect");
+                    char signal_message[MAX_STRING_SIZE];
+                    snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Unable to Connect to %s:%d (Timeout, Trying Again)",
+                             srtdata->server_address,
+                             srtdata->server_port);
+                    send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, signal_message);
                     fprintf(stderr,"srt_receiver_thread: SRT waiting too long for connection, is the server up?\n");
                     send_restart_message(srtcore);
                     goto cleanup_srt_receiver_thread;
                 }
             } else if (lasterr == SRT_ECONNLOST) {
+                char signal_message[MAX_STRING_SIZE];
                 fprintf(stderr,"srt_receiver_thread: SRT connection has been lost!\n");
                 srt_connected = 0;
-                send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT Connection Lost");
+                snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Connection Lost to %s:%d",
+                         srtdata->server_address,
+                         srtdata->server_port);
+                send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, signal_message);
                 send_restart_message(srtcore);
                 goto cleanup_srt_receiver_thread;
             } else if (lasterr == SRT_EASYNCRCV) {
@@ -419,7 +429,7 @@ static void *srt_receiver_thread(void *context)
 
             if (srt_connected == 0) {
                 char signal_message[MAX_STRING_SIZE];
-                snprintf(signal_message, MAX_STRING_SIZE-1, "SRT connected to %s:%d", srtdata->server_address, srtdata->server_port);
+                snprintf(signal_message, MAX_STRING_SIZE-1, "SRT Connected to %s:%d", srtdata->server_address, srtdata->server_port);
                 send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
             }
             srt_connected = 1;
@@ -525,6 +535,12 @@ static void *srt_server_worker_output_thread(void *context)
     int srt_connected = 0;
     int active_workers = 0;
     int m;
+    char statsfilename[MAX_STRING_SIZE];
+    int64_t diff;
+    int64_t total_bytes_sent = 0;
+    int64_t total_packets_sent = 0;
+    struct timespec server_time_stop;
+    struct timespec server_time_start;
 
     srtdata = (srt_server_worker_output_thread_struct*)context;
     srtcore = srtdata->core;
@@ -538,6 +554,8 @@ static void *srt_server_worker_output_thread(void *context)
 
     update_stats = 0;
     srt_connected = 1;
+
+    sprintf(statsfilename,"/opt/srthub/status/srt_server_thread_%d_%d.json", thread, srtcore->session_identifier);
 
     while (srtcore->srt_server_worker_thread_running[thread]) {
         pthread_mutex_lock(srtcore->srtserverlock);
@@ -573,6 +591,23 @@ static void *srt_server_worker_output_thread(void *context)
         srtcontrol.srctime = msg->pts;
         srtcontrol.msgttl = -1;
 
+        clock_gettime(CLOCK_MONOTONIC, &server_time_stop);
+        diff = realtime_clock_difference(&server_time_stop, &server_time_start) / 1000;
+        if (diff >= 1000) {
+            FILE *statsfile = fopen(statsfilename,"wb");
+            if (statsfile) {
+                fprintf(statsfile,"{\n");
+                fprintf(statsfile,"    \"thread\":%d,\n", thread);
+                fprintf(statsfile,"    \"client-address\":\"%s\",\n", srtdata->client_address);
+                fprintf(statsfile,"    \"client-port\":%d,\n", srtdata->client_port);
+                fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
+                fprintf(statsfile,"    \"total-packets-sent\":%ld\n", total_packets_sent);
+                fprintf(statsfile,"}\n");
+                fclose(statsfile);
+                clock_gettime(CLOCK_MONOTONIC, &server_time_start);
+            }
+        }
+
         sent_bytes = srt_sendmsg2(clientsock, (char*)buffer, buffer_size, &srtcontrol);
         if (sent_bytes < 0) {
             int lasterr = srt_getlasterror(NULL);
@@ -591,7 +626,8 @@ static void *srt_server_worker_output_thread(void *context)
         } else if (sent_bytes == 0) {
             usleep(100);
         } else {
-
+            total_packets_sent++;
+            total_bytes_sent += sent_bytes;
         }
     }
 
@@ -609,6 +645,7 @@ cleanup_srt_server_worker_output_thread:
     srtcore->srtserverqueue[thread] = NULL;
     pthread_mutex_unlock(srtcore->srtserverlock);
     srt_close(clientsock);
+    unlink(statsfilename);
     return NULL;
 }
 
@@ -623,6 +660,8 @@ static void *srt_server_thread(void *context)
     int srterr;
     int thread = 0;
     int slots_available = 0;
+    int64_t total_bytes_sent = 0;
+    int64_t total_packets_sent = 0;
 
     srt_startup();
 
@@ -692,7 +731,18 @@ static void *srt_server_thread(void *context)
             // flag the error
             goto cleanup_srt_server_thread;
         }
-        // send message, accepted connection from a.b.c.d:port
+
+        struct sockaddr_in *sa4 = (struct sockaddr_in*)&client_addr;
+        char ipaddr[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(sa4->sin_addr), ipaddr, sizeof(ipaddr));
+        fprintf(stderr,"srt_server_thread: client connected from %s, port %d\n", ipaddr, client_addr.sin_port);
+
+        char signal_message[MAX_STRING_SIZE];
+        snprintf(signal_message, MAX_STRING_SIZE-1, "Accepted SRT Connection Request From %s:%d",
+                 ipaddr, client_addr.sin_port);
+        send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
+
+        // check the whitelist here, otherwise close it up and move on if it doesn't match
 
         slots_available = MAX_WORKER_THREADS;
         for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
@@ -707,6 +757,9 @@ static void *srt_server_thread(void *context)
                 srtoutputdata->core = srtcore;
                 srtoutputdata->thread = thread;
                 srtoutputdata->client_sock = client_sock;
+                snprintf(srtoutputdata->client_address, MAX_STRING_SIZE-1, "%s", ipaddr);
+                srtoutputdata->client_port = client_addr.sin_port;
+
                 srtcore->srt_server_worker_thread_running[thread] = 1;
                 pthread_create(&srtcore->srt_server_worker_thread_id[thread], NULL, srt_server_worker_output_thread, srtoutputdata);
                 pthread_detach(srtcore->srt_server_worker_thread_id[thread]);
@@ -751,6 +804,12 @@ static void *udp_receiver_thread(void *context)
     int input_signal = 0;
     char statsfilename[MAX_STRING_SIZE];
     transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
+    int64_t total_bytes_received = 0;
+    int64_t total_packets_received = 0;
+    struct timespec receive_time_stop;
+    struct timespec receive_time_start;
+    struct timespec signal_check_stop;
+    struct timespec signal_check_start;
 
     udpdata = (udp_receiver_thread_struct*)context;
     srtcore = udpdata->core;
@@ -766,6 +825,7 @@ static void *udp_receiver_thread(void *context)
     // check socket
     sprintf(statsfilename,"/opt/srthub/status/udp_receiver_%d.json", srtcore->session_identifier);
 
+    clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
     while (srtcore->udp_receiver_thread_running) {
         if (no_signal_count >= 5) {
             if (udp_socket > 0) {
@@ -792,6 +852,20 @@ static void *udp_receiver_thread(void *context)
             source_interruptions++;
             input_signal = 0;
 
+            FILE *statsfile = fopen(statsfilename,"wb");
+            if (statsfile) {
+                fprintf(statsfile,"{\n");
+                fprintf(statsfile,"    \"udp-source-address\":\"%s\",\n", udpdata->source_address);
+                fprintf(statsfile,"    \"udp-source-port\":%d,\n", udpdata->source_port);
+                fprintf(statsfile,"    \"udp-source-interface\":\"%s\",\n", udpdata->interface_name);
+                fprintf(statsfile,"    \"udp-source-active\":0,\n");
+                fprintf(statsfile,"    \"udp-source-kbps\":0,\n");
+                fprintf(statsfile,"    \"total-bytes-received\":%ld,\n", total_bytes_received);
+                fprintf(statsfile,"    \"total-packets-received\":%ld,\n", total_packets_received);
+                fprintf(statsfile,"    \"multicast-input\":%d\n", multicast_input);
+                fprintf(statsfile,"}\n");
+                fclose(statsfile);
+            }
             continue;
         }
 
@@ -802,21 +876,58 @@ static void *udp_receiver_thread(void *context)
                 int64_t source_time = srt_time_now();
                 int thread;
                 int tp;
+                int64_t diff;
+                double kbps;
 
                 no_signal_count = 0;
                 if (input_signal == 0) {
                     input_signal = 1;
 
-                    snprintf(signal_msg, MAX_STRING_SIZE-1, "IP %s, PORT %d, INTERFACE %s",
+                    clock_gettime(CLOCK_MONOTONIC, &receive_time_start);
+                    total_bytes_received = 0;
+                    total_packets_received = 0;
+
+                    snprintf(signal_msg, MAX_STRING_SIZE-1, "Input Signal Locked To %s:%d on Interface %s",
                              udpdata->source_address,
                              udpdata->source_port,
                              udpdata->interface_name);
                     send_signal(srtcore, SIGNAL_INPUT_SIGNAL_LOCKED, signal_msg);
                 }
 
+                total_packets_received++;
+                total_bytes_received += bytes_read;
+
                 // check if rtp or something else?
                 tp = bytes_read / 188;
                 decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+
+                clock_gettime(CLOCK_MONOTONIC, &receive_time_stop);
+                diff = realtime_clock_difference(&receive_time_stop, &receive_time_start) / 1000000;
+                if (diff > 0) {
+                    kbps = (((double)total_bytes_received*(double)8) / (double)1000) / (double)diff;
+                } else {
+                    kbps = 0;
+                }
+
+                clock_gettime(CLOCK_MONOTONIC, &signal_check_stop);
+                diff = realtime_clock_difference(&signal_check_stop, &signal_check_start) / 1000;
+                if (diff >= 2000) {  // 2 second timeout
+                    FILE *statsfile = fopen(statsfilename,"wb");
+                    if (statsfile) {
+                        fprintf(statsfile,"{\n");
+                        fprintf(statsfile,"    \"udp-source-address\":\"%s\",\n", udpdata->source_address);
+                        fprintf(statsfile,"    \"udp-source-port\":%d,\n", udpdata->source_port);
+                        fprintf(statsfile,"    \"udp-source-interface\":\"%s\",\n", udpdata->interface_name);
+                        fprintf(statsfile,"    \"udp-source-active\":1,\n");
+                        fprintf(statsfile,"    \"udp-source-kbps\":%.2f,\n", kbps);
+                        fprintf(statsfile,"    \"total-bytes-received\":%ld,\n", total_bytes_received);
+                        fprintf(statsfile,"    \"total-packets-received\":%ld,\n", total_packets_received);
+                        fprintf(statsfile,"    \"multicast-input\":%d\n", multicast_input);
+                        fprintf(statsfile,"}\n");
+                        fclose(statsfile);
+                    }
+                    clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
+                }
 
                 for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
                     pthread_mutex_lock(srtcore->srtserverlock);

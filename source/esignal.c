@@ -398,8 +398,7 @@ void *signal_thread(void *context)
                          "    \"host\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
-                         "    \"message\": \"input signal locked\",\n"
-                         "    \"source\": \"%s\"\n"
+                         "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
