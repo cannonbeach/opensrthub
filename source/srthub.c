@@ -83,17 +83,29 @@ typedef struct _srt_server_thread_struct_ {
     char         server_interface_name[MAX_STRING_SIZE];
     char         streamid[MAX_STRING_SIZE];
     char         passphrase[MAX_STRING_SIZE];
+    int          keysize;
     srthub_core_struct *core;
 } srt_server_thread_struct;
 
-typedef struct _srt_receive_thread_struct_ {
+typedef struct _srt_receive_thread_caller_struct_ {
     char         server_address[MAX_STRING_SIZE];
     int          server_port;
     char         server_interface_name[MAX_STRING_SIZE];
     char         streamid[MAX_STRING_SIZE];
     char         passphrase[MAX_STRING_SIZE];
+    int          keysize;
     srthub_core_struct *core;
-} srt_receive_thread_struct;
+} srt_receive_thread_caller_struct;
+
+typedef struct _srt_receive_thread_listener_struct_ {
+    char         server_address[MAX_STRING_SIZE];
+    int          server_port;
+    char         server_interface_name[MAX_STRING_SIZE];
+    char         streamid[MAX_STRING_SIZE];
+    char         passphrase[MAX_STRING_SIZE];
+    int          keysize;
+    srthub_core_struct *core;
+} srt_receive_thread_listener_struct;
 
 typedef struct _udp_server_thread_struct_ {
     char         destination_address[MAX_STRING_SIZE];
@@ -183,6 +195,9 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     srthub_core_struct *srtcore = (srthub_core_struct*)context;
     dataqueue_message_struct *msg;
 
+    fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
+            source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);
+
     if (sample_type == STREAM_TYPE_H264 || sample_type == STREAM_TYPE_HEVC || sample_type == STREAM_TYPE_MPEG2) {
         //if (sample_flags == 1)
         {
@@ -237,16 +252,133 @@ static int send_restart_message(srthub_core_struct *srtcore)
     return 0;
 }
 
-static void *srt_receiver_thread(void *context)
+static void *srt_receiver_thread_listener(void *context)
 {
-    srt_receive_thread_struct *srtdata;
+    srt_receive_thread_listener_struct *srtdata;
+    srthub_core_struct *srtcore;
+    transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
+    SRTSOCKET listener = SRT_INVALID_SOCK;
+    SRTSOCKET clientsock = SRT_INVALID_SOCK;
+    struct sockaddr_in server_addr;
+    struct in_addr local_address;
+    char statsfilename[MAX_STRING_SIZE];
+    int srt_connected = 0;
+    int srterr;
+    int no = 0;
+
+    decode->pat_version_number = -1;
+
+    srt_startup();
+
+    srtdata = (srt_receive_thread_listener_struct*)context;
+    srtcore = srtdata->core;
+
+    sprintf(statsfilename,"/opt/srthub/status/srt_receiver_%d.json", srtcore->session_identifier);
+
+    listener = srt_create_socket();
+    if (listener == SRT_ERROR) {
+        // flag the error
+        srt_cleanup();
+        return NULL;
+    }
+
+    inet_aton(srtdata->server_address, &local_address);
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(srtdata->server_port);
+    server_addr.sin_addr.s_addr = local_address.s_addr;
+
+    srterr = srt_setsockflag(listener, SRTO_SNDSYN, &no, sizeof(no));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_listener;
+    }
+
+    int passphrase_length = strlen(srtdata->passphrase);
+    if (passphrase_length >= 10 && passphrase_length <= 79) {
+        srterr = srt_setsockflag(listener, SRTO_PASSPHRASE, srtdata->passphrase, passphrase_length);
+        if (srterr == SRT_ERROR) {
+            fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
+            goto cleanup_srt_receiver_thread_listener;
+        }
+    }
+
+    int streamid_length = strlen(srtdata->streamid);
+    if (streamid_length > 0) {
+        srterr = srt_setsockflag(listener, SRTO_STREAMID, srtdata->streamid, streamid_length);
+        if (srterr == SRT_ERROR) {
+            fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
+            goto cleanup_srt_receiver_thread_listener;
+        }
+    }
+
+    srterr = srt_bind(listener, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (srterr == SRT_ERROR) {
+        srt_close(listener);
+        srt_cleanup();
+        free(srtdata);
+        free(decode);
+        return NULL;
+    }
+
+    while (srtcore->srt_receiver_thread_running) {
+        srterr = srt_listen(listener, 1);  // only one
+        if (srterr == SRT_ERROR) {
+            // flag the error
+            goto cleanup_srt_receiver_thread_listener;
+        }
+
+        struct sockaddr_in client_addr;
+        int addrlen = sizeof(client_addr);
+        SRTSOCKET client_sock = srt_accept(listener,
+                                           (struct sockaddr*)&client_addr,
+                                           &addrlen);
+
+        if (client_sock == SRT_INVALID_SOCK) {
+            // flag the error
+            goto cleanup_srt_receiver_thread_listener;
+        }
+
+        struct sockaddr_in *sa4 = (struct sockaddr_in*)&client_addr;
+        char ipaddr[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(sa4->sin_addr), ipaddr, sizeof(ipaddr));
+        fprintf(stderr,"srt_receiver_thread_listener: client connected from %s, port %d\n", ipaddr, client_addr.sin_port);
+
+        char signal_message[MAX_STRING_SIZE];
+        snprintf(signal_message, MAX_STRING_SIZE-1, "Accepted SRT Connection Request From %s:%d",
+                 ipaddr, client_addr.sin_port);
+        send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
+
+        // check the whitelist here, otherwise close it up and move on if it doesn't match
+        srt_connected = 1;
+        while (srtcore->srt_receiver_thread_running && srt_connected) {
+
+            // fill it in here!
+
+        }
+    }
+
+cleanup_srt_receiver_thread_listener:
+    if (listener != SRT_INVALID_SOCK) {
+        srt_close(listener);
+    }
+    free(decode);
+    free(srtdata);
+    srt_cleanup();
+
+    return NULL;
+}
+
+static void *srt_receiver_thread_caller(void *context)
+{
+    srt_receive_thread_caller_struct *srtdata;
     srthub_core_struct *srtcore;
     int srterr;
     int epollid = 0;
     struct sockaddr_in sa;
     int no = 0;
     int modes;
-    SRTSOCKET serversock = 0;
+    SRTSOCKET serversock = SRT_INVALID_SOCK;
     int recvbytes;
     SRT_TRACEBSTATS stats;
     transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
@@ -258,9 +390,11 @@ static void *srt_receiver_thread(void *context)
     char statsfilename[MAX_STRING_SIZE];
     int srt_connected = 0;
 
+    decode->pat_version_number = -1;
+
     srt_startup();
 
-    srtdata = (srt_receive_thread_struct*)context;
+    srtdata = (srt_receive_thread_caller_struct*)context;
     srtcore = srtdata->core;
 
     serversock = srt_create_socket();
@@ -278,33 +412,33 @@ static void *srt_receiver_thread(void *context)
     sa.sin_family = AF_INET;
     sa.sin_port = htons(srtdata->server_port);
 
-    fprintf(stderr,"srt_receiver_thread: attempting to connect to %s:%d\n",
+    fprintf(stderr,"srt_receiver_thread_caller: attempting to connect to %s:%d\n",
             srtdata->server_address,
             srtdata->server_port);
 
     srterr = inet_pton(AF_INET, srtdata->server_address, &sa.sin_addr);
     if (srterr != 1) {
-        goto cleanup_srt_receiver_thread;
+        goto cleanup_srt_receiver_thread_caller;
     }
 
     epollid = srt_epoll_create();
     if (epollid == -1) {
-        goto cleanup_srt_receiver_thread;
+        goto cleanup_srt_receiver_thread_caller;
     }
 
-    fprintf(stderr,"srt_receiver_thread: created epollid=%d\n", epollid);
+    fprintf(stderr,"srt_receiver_thread_caller: created epollid=%d\n", epollid);
 
     srterr = srt_setsockflag(serversock, SRTO_RCVSYN, &no, sizeof(no));
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
-        goto cleanup_srt_receiver_thread;
+        goto cleanup_srt_receiver_thread_caller;
     }
 
     srterr = srt_setsockflag(serversock, SRTO_SNDSYN, &no, sizeof(no));
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
-        fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
-        goto cleanup_srt_receiver_thread;
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_caller;
     }
 
     int passphrase_length = strlen(srtdata->passphrase);
@@ -312,8 +446,8 @@ static void *srt_receiver_thread(void *context)
         srterr = srt_setsockflag(serversock, SRTO_PASSPHRASE, srtdata->passphrase, passphrase_length);
         if (srterr == SRT_ERROR) {
             // srt_getlasterror_str();
-            fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
-            goto cleanup_srt_receiver_thread;
+            fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+            goto cleanup_srt_receiver_thread_caller;
         }
     }
 
@@ -322,8 +456,8 @@ static void *srt_receiver_thread(void *context)
         srterr = srt_setsockflag(serversock, SRTO_STREAMID, srtdata->streamid, streamid_length);
         if (srterr == SRT_ERROR) {
             // srt_getlasterror_str();
-            fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
-            goto cleanup_srt_receiver_thread;
+            fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+            goto cleanup_srt_receiver_thread_caller;
         }
     }
 
@@ -331,20 +465,20 @@ static void *srt_receiver_thread(void *context)
     srterr = srt_epoll_add_usock(epollid, serversock, &modes);
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
-        fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_epoll_add_usock()\n");
-        goto cleanup_srt_receiver_thread;
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_epoll_add_usock()\n");
+        goto cleanup_srt_receiver_thread_caller;
     }
 
-    fprintf(stderr,"srt_receiver_thread: attempting to proceed with srt_connect()\n");
+    fprintf(stderr,"srt_receiver_thread_caller: attempting to proceed with srt_connect()\n");
 
     srterr = srt_connect(serversock, (struct sockaddr*)&sa, sizeof(sa));
     if (srterr == SRT_ERROR) {
-        fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_connect\n");
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_connect\n");
         // srt_getlasterror_str();
-        goto cleanup_srt_receiver_thread;
+        goto cleanup_srt_receiver_thread_caller;
     }
 
-    fprintf(stderr,"srt_receiver_thread: finished with srt_connect(), serversock=%d\n", serversock);
+    fprintf(stderr,"srt_receiver_thread_caller: finished with srt_connect(), serversock=%d\n", serversock);
     gettimeofday(&connect_start, NULL);
 
     /*
@@ -377,7 +511,7 @@ static void *srt_receiver_thread(void *context)
             if (lasterr == SRT_ENOCONN) {
                 int64_t delta_time_no_connection;
                 if ((update_stats % 100)==0) {
-                    fprintf(stderr,"srt_receiver_thread: SRT not connected, waiting...\n");
+                    fprintf(stderr,"srt_receiver_thread_caller: SRT not connected, waiting...\n");
                     FILE *statsfile = fopen(statsfilename,"wb");
                     if (statsfile) {
                         fprintf(statsfile,"{\n");
@@ -399,24 +533,24 @@ static void *srt_receiver_thread(void *context)
                              srtdata->server_address,
                              srtdata->server_port);
                     send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, signal_message);
-                    fprintf(stderr,"srt_receiver_thread: SRT waiting too long for connection, is the server up?\n");
+                    fprintf(stderr,"srt_receiver_thread_caller: SRT waiting too long for connection, is the server up?\n");
                     send_restart_message(srtcore);
-                    goto cleanup_srt_receiver_thread;
+                    goto cleanup_srt_receiver_thread_caller;
                 }
             } else if (lasterr == SRT_ECONNLOST) {
                 char signal_message[MAX_STRING_SIZE];
-                fprintf(stderr,"srt_receiver_thread: SRT connection has been lost!\n");
+                fprintf(stderr,"srt_receiver_thread_caller: SRT connection has been lost!\n");
                 srt_connected = 0;
                 snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Connection Lost to %s:%d",
                          srtdata->server_address,
                          srtdata->server_port);
                 send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, signal_message);
                 send_restart_message(srtcore);
-                goto cleanup_srt_receiver_thread;
+                goto cleanup_srt_receiver_thread_caller;
             } else if (lasterr == SRT_EASYNCRCV) {
 
             } else {
-                fprintf(stderr,"srt_receiver_thread: SRT unknown error: %s\n", srt_getlasterror_str());
+                fprintf(stderr,"srt_receiver_thread_caller: SRT unknown error: %s\n", srt_getlasterror_str());
             }
             usleep(100);
         } else if (recvbytes == 0) {
@@ -438,7 +572,7 @@ static void *srt_receiver_thread(void *context)
                 srterr = srt_bstats(serversock, &stats, clear_it);
                 if (srterr != SRT_ERROR) {
                     int64_t now = srt_time_now();
-                    fprintf(stderr,"srt_receiver_thread: received %d/%ld bytes (serversock=%d) r=%10ld l=%5d retrans=%5d ack=%d nack=%d d=%8d timestamp=%ld (now=%ld) diff=%ld\n",
+                    fprintf(stderr,"srt_receiver_thread_caller: received %d/%ld bytes (serversock=%d) r=%10ld l=%5d retrans=%5d ack=%d nack=%d d=%8d timestamp=%ld (now=%ld) diff=%ld\n",
                             recvbytes,
                             stats.byteRecvUniqueTotal,
                             serversock,
@@ -451,8 +585,8 @@ static void *srt_receiver_thread(void *context)
                             srtcontrol.srctime,
                             now,
                             now-srtcontrol.srctime);
-                    //fprintf(stderr,"srt_receiver_thread: retransmissions detected = %d\n", stats.pktRetransTotal);
-                    fprintf(stderr,"srt_receiver_thread: receive rate %.2f mbps @ %ld, %d\n", stats.mbpsRecvRate, stats.msTimeStamp, recvbytes);
+                    //fprintf(stderr,"srt_receiver_thread_caller: retransmissions detected = %d\n", stats.pktRetransTotal);
+                    fprintf(stderr,"srt_receiver_thread_caller: receive rate %.2f mbps @ %ld, %d\n", stats.mbpsRecvRate, stats.msTimeStamp, recvbytes);
 
                     FILE *statsfile = fopen(statsfilename,"wb");
                     if (statsfile) {
@@ -500,7 +634,7 @@ static void *srt_receiver_thread(void *context)
         }
     }
 
-cleanup_srt_receiver_thread:
+cleanup_srt_receiver_thread_caller:
     free(decode);
     decode = NULL;
     free(srtdata);
@@ -616,6 +750,7 @@ static void *srt_server_worker_output_thread(void *context)
                 srt_connected = 0;
                 send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT connection lost");
                 //send_restart_message(srtcore);
+                unlink(statsfilename);
                 goto cleanup_srt_server_worker_output_thread;
             } else if (lasterr == SRT_EASYNCRCV) {
 
@@ -656,6 +791,7 @@ static void *srt_server_thread(void *context)
     dataqueue_message_struct *msg;
     SRTSOCKET listener = SRT_INVALID_SOCK;
     struct sockaddr_in server_addr;
+    struct in_addr local_address;
     int no = 0;
     int srterr;
     int thread = 0;
@@ -675,23 +811,25 @@ static void *srt_server_thread(void *context)
         return NULL;
     }
 
+    inet_aton(srtdata->server_address, &local_address);
+
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(srtdata->server_port);
-    server_addr.sin_addr.s_addr = INADDR_ANY; // blah, this needs to get set correctly for the interface
+    server_addr.sin_addr.s_addr = local_address.s_addr;
 
     srterr = srt_setsockflag(listener, SRTO_SNDSYN, &no, sizeof(no));
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
-        fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
+        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_server_thread;
     }
 
     int passphrase_length = strlen(srtdata->passphrase);
-    if (passphrase_length >= 10 && passphrase_length <= 80) {
+    if (passphrase_length >= 10 && passphrase_length <= 79) {
         srterr = srt_setsockflag(listener, SRTO_PASSPHRASE, srtdata->passphrase, passphrase_length);
         if (srterr == SRT_ERROR) {
             // srt_getlasterror_str();
-            fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
+            fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
             goto cleanup_srt_server_thread;
         }
     }
@@ -701,7 +839,7 @@ static void *srt_server_thread(void *context)
         srterr = srt_setsockflag(listener, SRTO_STREAMID, srtdata->streamid, streamid_length);
         if (srterr == SRT_ERROR) {
             // srt_getlasterror_str();
-            fprintf(stderr,"srt_receiver_thread: unable to proceed with srt_setsockflag()\n");
+            fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
             goto cleanup_srt_server_thread;
         }
     }
@@ -709,6 +847,7 @@ static void *srt_server_thread(void *context)
     srterr = srt_bind(listener, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (srterr == SRT_ERROR) {
         // flag the error
+        free(srtdata);
         srt_close(listener);
         srt_cleanup();
         return NULL;
@@ -810,6 +949,8 @@ static void *udp_receiver_thread(void *context)
     struct timespec receive_time_start;
     struct timespec signal_check_stop;
     struct timespec signal_check_start;
+
+    decode->pat_version_number = -1;
 
     udpdata = (udp_receiver_thread_struct*)context;
     srtcore = udpdata->core;
@@ -1349,6 +1490,7 @@ static void *srthub_thumbnail_thread(void *context)
                     fprintf(statsfile,"    \"width\":0,\n");
                     fprintf(statsfile,"    \"height\":0,\n");
                     fprintf(statsfile,"    \"video-codec\":\"unknown\",\n");
+                    fprintf(statsfile,"    \"source-format\":\"unknown\",\n");
                     fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
                     fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
                     fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
@@ -1441,6 +1583,7 @@ static void *srthub_thumbnail_thread(void *context)
                         fprintf(statsfile,"    \"width\":%d,\n", frame_width);
                         fprintf(statsfile,"    \"height\":%d,\n", frame_height);
                         fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
+                        fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
                         fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
                         fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
                         fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
@@ -1580,14 +1723,20 @@ int main(int argc, char **argv)
 
     if (argc < 7) {
         fprintf(stderr,"\n");
-        fprintf(stderr,"usage: srthub sourcemode sourceaddress sourceport outputmode outputaddress outputport\n");
+        fprintf(stderr,"usage: srthub sourcemode sourceaddress sourceport outputmode outputaddress outputport passphrase\n");
         fprintf(stderr,"\n");
-        fprintf(stderr,"    sourcemode is [udp, srt]\n");
+        fprintf(stderr,"    sourcemode is [udp, srtpush, srtpull] (where srtpull is Caller mode and srtpush is Listener mode)\n");
         fprintf(stderr,"    sourceaddress is IPv4 unicast IP address in the format of www.xxx.yyy.zzz (or a domain name such as www.srtlivestream.com/sports)\n");
         fprintf(stderr,"    sourceport is IPv4 source port\n");
-        fprintf(stderr,"    outputmode is [udp, srt]\n");
+        fprintf(stderr,"    outputmode is [udp, srtpush, srtpull] (where srtpush is Caller mode and srtpull is Listener mode)\n");
         fprintf(stderr,"    outputaddress is IPv4 unicast IP address in the format of www.xxx.yyy.zzz\n");
         fprintf(stderr,"    outputport is IPv4 output port\n");
+        fprintf(stderr,"    sessionid is a unique number that identifies the instance of the application (unsigned 32-bit)\n");
+        fprintf(stderr,"    passphrase is the passphrase if you need to encrypt or decrypt, 10 to 79 characters long (no spaces)\n");
+        fprintf(stderr,"    keysize is the size of the key if you need to encrypt or decrypt, 0=default, 16=AES-128, 24=AES-192 and 32=AES-256\n");
+        fprintf(stderr,"    streamid is the streamid as defined by srt (no spaces)\n");
+        fprintf(stderr,"    \n");
+        fprintf(stderr,"    srt to srt is an invalid mode\n");
         fprintf(stderr,"\n");
         return 0;
     }
@@ -1598,11 +1747,42 @@ int main(int argc, char **argv)
     char *outputmode = (char*)argv[4];
     char *output_address = (char*)argv[5];
     int output_port = atoi(argv[6]);
+    char *passphrase = NULL;
+    int keysize = 0;
+    char *streamid = NULL;
 
-    if (argc == 8) {
+    if (argc >= 8) {  // session_identifier
         session_identifier = atoi(argv[7]);
+        if (session_identifier <= 0) {
+            fprintf(stderr,"\nsession identifier is invalid : %d\n\n", session_identifier);
+            return -1;
+        }
     } else {
         session_identifier = 1;
+    }
+
+    if (argc >= 9) {  // passphrase
+        passphrase = (char*)argv[8];
+        if ((strlen(passphrase) < 10) || (strlen(passphrase) > 79)) {
+            fprintf(stderr,"\ninvalid passphrase : %s\n\n", passphrase);
+            return -1;
+        }
+    }
+
+    if (argc >= 10) {  // keysize
+        keysize = atoi(argv[9]);
+        if (keysize != 0 && keysize != 16 && keysize != 24 && keysize != 32) {
+            fprintf(stderr,"\n\ninvalid keysize : %d\n\n", keysize);
+            return -1;
+        }
+    }
+
+    if (argc >= 11) {  // streamid
+        streamid = (char*)argv[10];
+        if (strlen(streamid) > MAX_STRING_SIZE) {
+            fprintf(stderr,"\n\ninvalid streamid : %s\n\n", streamid);
+            return -1;
+        }
     }
 
     if ((strncmp(sourcemode,"udp",3)==0) || (strncmp(sourcemode,"srt",3)==0)) {
@@ -1661,25 +1841,67 @@ restart_srt:
         srt_server_data->server_port = output_port;
         // server_interface_name?
         // set these from the config
-        sprintf(srt_server_data->streamid,"");
-        sprintf(srt_server_data->passphrase,"");
+        memset(&srt_server_data->streamid, 0, sizeof(srt_server_data->streamid));
+        memset(&srt_server_data->passphrase, 0, sizeof(srt_server_data->passphrase));
+        if (streamid) {
+            sprintf(srt_server_data->streamid, "%s", streamid);
+        }
+        if (passphrase) {
+            sprintf(srt_server_data->passphrase, "%s", passphrase);
+            srt_server_data->keysize = keysize;
+        } else {
+            srt_server_data->keysize = 0;
+        }
         srt_server_data->core = (srthub_core_struct*)&srtcore;
         fprintf(stderr,"starting srt server thread\n");
         pthread_create(&srtcore.srt_server_thread_id, NULL, srt_server_thread, srt_server_data);
     }
 
-    if (strncmp(sourcemode,"srt",3)==0) {
+    if (strncmp(sourcemode,"srtpull",7)==0) {  // Caller mode
         srtcore.srt_receiver_thread_running = 1;
-        srt_receive_thread_struct *srt_receive_data = (srt_receive_thread_struct*)malloc(sizeof(srt_receive_thread_struct));
+        srt_receive_thread_caller_struct *srt_receive_data = (srt_receive_thread_caller_struct*)malloc(sizeof(srt_receive_thread_caller_struct));
         sprintf(srt_receive_data->server_address, "%s", server_address);
         srt_receive_data->server_port = server_port;
         // interface_name
         // set these from the config
-        sprintf(srt_receive_data->streamid,"");
-        sprintf(srt_receive_data->passphrase,"");
+        memset(&srt_receive_data->streamid, 0, sizeof(srt_receive_data->streamid));
+        memset(&srt_receive_data->passphrase, 0, sizeof(srt_receive_data->passphrase));
+        if (streamid) {
+            sprintf(srt_receive_data->streamid, "%s", streamid);
+        }
+        if (passphrase) {
+            sprintf(srt_receive_data->passphrase, "%s", passphrase);
+            srt_receive_data->keysize = keysize;
+        } else {
+            srt_receive_data->keysize = 0;
+        }
         srt_receive_data->core = (srthub_core_struct*)&srtcore;
-        fprintf(stderr,"starting srt receiver thread\n");
-        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread, srt_receive_data);
+        fprintf(stderr,"starting srt receiver thread (caller)\n");
+        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_caller, srt_receive_data);
+    }
+    if (strncmp(sourcemode,"srtpush",7)==0) {  // Listener mode (Somebody will connect and push it to me)
+        srtcore.srt_receiver_thread_running = 1;
+        srt_receive_thread_listener_struct *srt_receive_data = (srt_receive_thread_listener_struct*)malloc(sizeof(srt_receive_thread_listener_struct));
+        srt_receive_data->core = (srthub_core_struct*)&srtcore;
+        sprintf(srt_receive_data->server_address, "%s", server_address);
+        srt_receive_data->server_port = server_port;
+        // interface_name
+        // set these from the config
+
+        memset(&srt_receive_data->streamid, 0, sizeof(srt_receive_data->streamid));
+        memset(&srt_receive_data->passphrase, 0, sizeof(srt_receive_data->passphrase));
+        if (streamid) {
+            sprintf(srt_receive_data->streamid, "%s", streamid);
+        }
+        if (passphrase) {
+            sprintf(srt_receive_data->passphrase, "%s", passphrase);
+            srt_receive_data->keysize = keysize;
+        } else {
+            srt_receive_data->keysize = 0;
+        }
+
+        fprintf(stderr,"starting srt receiver thread (listener)\n");
+        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_listener, srt_receive_data);
     }
 
     if (strncmp(sourcemode,"udp",3)==0) {

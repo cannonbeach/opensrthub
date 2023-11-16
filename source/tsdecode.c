@@ -149,11 +149,16 @@ static int decode_pmt_table(pat_table_struct *master_pat_table, pmt_table_struct
      pdata += 13;
      pmt_remaining = pmt_data_size - 13;
 
+     fprintf(stderr,"decode_pmt_table: pmt_pid = %d, pmt_program =%d, pmt_data_size = %d\n",
+             current_pid,
+             pmt_program,
+             pmt_data_size);
+
      if (program_info_length > pmt_remaining ||
          program_info_length < 0 ||
          program_info_length > MAX_TABLE_SIZE) {
 
-         syslog(LOG_ERR,"PMT TABLE ERROR: TABLE SIZE INVALID: %d\n", pmt_remaining);
+         //syslog(LOG_ERR,"PMT TABLE ERROR: TABLE SIZE INVALID: %d\n", pmt_remaining);
 
          //backup_caller(2000, 503, 0, 0, 0, 0, backup_context);
 
@@ -232,6 +237,8 @@ static int decode_pmt_table(pat_table_struct *master_pat_table, pmt_table_struct
           waiting_for_descriptor = 0;
 
           current_pmt_table->decoded_stream_type[stream_count] = STREAM_TYPE_UNKNOWN; // default to unknown
+
+          fprintf(stderr,"decode_pmt_table: current_stream_type = 0x%x\n", current_stream_type);
           if (current_stream_type == 0x02) {
               //backup_caller(2000, 800, current_stream_pid, current_pid, 0, 0, backup_context);
               current_pmt_table->decoded_stream_type[stream_count] = STREAM_TYPE_MPEG2;
@@ -785,6 +792,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                }
 
                                if (pmt_version_input != tsdata->pmt_version[pid_count] ||
+                                   tsdata->pmt_decoded[pid_count] == 0 ||
                                    tsdata->pmt_version[pid_count] == -1) {
                                    tsdata->pmt_table_acquired = 184 - acquired_data_so_far;
                                    tsdata->pmt_table_expected = section_size;
@@ -1006,7 +1014,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                                        video_frame[vf+1] == 0x00 &&
                                                        video_frame[vf+2] == 0x01) {
                                                        nal_type = video_frame[vf+3] & 0x1f;
-                                                       //fprintf(stderr,"nal_type:0x%x\n", nal_type);
+                                                       fprintf(stderr,"nal_type:0x%x\n", nal_type);
                                                        if (nal_type == 0x05 || nal_type == 0x07 || nal_type == 0x08) {
                                                            is_intra = 1;
                                                            if (tsdata->master_pmt_table[each_pmt].data_engine[pid_count].video_frame_count == 0) {
@@ -1184,106 +1192,116 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                            }
                        }
 
-                         if (current_pid == 0) {
-                              int unit_size = *(pdata+0);
-                              pdata += unit_size;
-                              unsigned char table_id = *(pdata+1);
-                              unsigned short section_size = ((*(pdata+2) << 8) + *(pdata+3)) & 0x0fff;
-                              int version_number = 0;
-                              int transport_stream_id = (*(pdata+4) << 8) + *(pdata+5);
-                              int section_entries;
-                              int entry_index;
-                              unsigned short pmt_pid;
-                              int is_valid;
-                              int current_section;
-                              int last_section;
-                              int look_for_pmt_table;
-                              int pat_program_number;
+                       if (current_pid == 0) {
+                           int unit_size = *(pdata+0);
+                           pdata += unit_size;
+                           unsigned char table_id = *(pdata+1);
+                           unsigned short section_size = ((*(pdata+2) << 8) + *(pdata+3)) & 0x0fff;
+                           int version_number = 0;
+                           int transport_stream_id = (*(pdata+4) << 8) + *(pdata+5);
+                           int section_entries;
+                           int entry_index;
+                           unsigned short pmt_pid;
+                           int is_valid;
+                           int current_section;
+                           int last_section;
+                           int look_for_pmt_table;
+                           int pat_program_number;
 
-                              section_size -= 9;
-                              section_entries = section_size / 4;
-                              entry_index = 9;
+                           section_size -= 9;
+                           section_entries = section_size / 4;
+                           entry_index = 9;
 
-                              version_number = (*(pdata+6) & 0x1E) >> 1;
-                              is_valid = *(pdata+6) & 0x01;
-                              current_section = *(pdata+7);
-                              last_section = *(pdata+8);
+                           version_number = (*(pdata+6) & 0x1E) >> 1;
+                           is_valid = *(pdata+6) & 0x01;
+                           current_section = *(pdata+7);
+                           last_section = *(pdata+8);
 
-                              if (tsdata->master_pat_table.max_pat_time == 0) {
-                                  tsdata->master_pat_table.min_pat_time = 999999999;
-                                  gettimeofday(&tsdata->master_pat_table.start_pat_time, NULL);
-                                  tsdata->master_pat_table.max_pat_time = 1;
-                                  //backup_caller(2000, 505, 1000, current_pid, 0, backup_context);
-                              } else {
-                                   int64_t delta_pat_time;
-                                   gettimeofday(&tsdata->master_pat_table.end_pat_time, NULL);
-                                   delta_pat_time = (int64_t)get_time_difference(&tsdata->master_pat_table.end_pat_time,
-                                                                                 &tsdata->master_pat_table.start_pat_time);
+                           if (tsdata->master_pat_table.max_pat_time == 0) {
+                               tsdata->master_pat_table.min_pat_time = 999999999;
+                               gettimeofday(&tsdata->master_pat_table.start_pat_time, NULL);
+                               tsdata->master_pat_table.max_pat_time = 1;
+                               //backup_caller(2000, 505, 1000, current_pid, 0, backup_context);
+                           } else {
+                               int64_t delta_pat_time;
+                               gettimeofday(&tsdata->master_pat_table.end_pat_time, NULL);
+                               delta_pat_time = (int64_t)get_time_difference(&tsdata->master_pat_table.end_pat_time,
+                                                                             &tsdata->master_pat_table.start_pat_time);
 
-                                   if (delta_pat_time > tsdata->master_pat_table.max_pat_time) {
-                                       tsdata->master_pat_table.max_pat_time = delta_pat_time;
-                                       // SIGNAL NEW MAX PAT TIME TO GUI
-                                       // backup_caller(2000, 507, delta_pat_time, 0, 0, backup_context);
+                               if (delta_pat_time > tsdata->master_pat_table.max_pat_time) {
+                                   tsdata->master_pat_table.max_pat_time = delta_pat_time;
+                                   // SIGNAL NEW MAX PAT TIME TO GUI
+                                   // backup_caller(2000, 507, delta_pat_time, 0, 0, backup_context);
+                               }
+                               if (delta_pat_time < tsdata->master_pat_table.min_pat_time) {
+                                   tsdata->master_pat_table.min_pat_time = delta_pat_time;
+                                   // SIGNAL NEW MIN PAT TIME TO GUI
+                                   // backup_caller(2000, 508, delta_pat_time, 0, 0, backup_context);
+                               }
+                               //backup_caller(2000, 505, delta_pmt_time / 1000, current_pid, 0, backup_context);
+                               tsdata->master_pat_table.avg_pat_time += delta_pat_time;
+                               tsdata->master_pat_table.avg_pat_time /= 2;
+                               gettimeofday(&tsdata->master_pat_table.start_pat_time, NULL);
+                           }
+
+                           look_for_pmt_table = 0;
+                           fprintf(stderr,"decoding PAT table, pat_version_number = %d, section_entries = %d, incoming_version_number = %d\n",
+                                   tsdata->pat_version_number,
+                                   section_entries,
+                                   version_number);
+                           if (tsdata->pat_version_number == -1) {
+                               tsdata->pat_position = total_input_packets;
+                               tsdata->pat_version_number = version_number;
+                               tsdata->pat_program_count = section_entries;
+                               tsdata->pat_transport_stream_id = transport_stream_id;
+                               look_for_pmt_table = 1;
+                               //backup_caller(2000, 100, tsdata->pat_program_count, 0, 0, 0, backup_context);
+                           }
+
+                           if (version_number != tsdata->pat_version_number) {
+                               tsdata->pat_version_number = version_number;
+                               tsdata->pat_program_count = section_entries;
+                               tsdata->pat_transport_stream_id = transport_stream_id;
+                               look_for_pmt_table = 1;
+                               //backup_caller(2000, 100, tsdata->pat_program_count, 0, 0, 0, backup_context);
+                           }
+
+                           fprintf(stderr,"decoding PAT table, transport_stream_id = %d, look_for_pmt_table = %d\n",
+                                   transport_stream_id,
+                                   look_for_pmt_table);
+
+                           if (look_for_pmt_table == 1) {
+                               int program_index;
+
+                               tsdata->pmt_pid_count = 0;
+                               memset(tsdata->pmt_decoded, 0, sizeof(tsdata->pmt_decoded));
+                               for (program_index = 0; program_index < tsdata->pat_program_count; program_index++) {
+                                   pat_program_number = (unsigned long)(((unsigned long)*(pdata+entry_index) >> 8) +
+                                                                        (unsigned long)*(pdata+entry_index+1));
+
+                                   if (pat_program_number == 0) {
+                                       //backup_caller(2000, 300, 0, 0, 0, 0, backup_context);
+                                   } else {
+                                       pmt_pid = (unsigned short)((((unsigned long)*(pdata+entry_index+2) << 8)) |
+                                                                  (unsigned long)(*(pdata+entry_index+3)));
+                                       pmt_pid = pmt_pid & 0x1fff;
+
+                                       //backup_caller(2000, 200, pmt_pid, 0, 0, 0, backup_context);
+                                       tsdata->pmt_pid_index[tsdata->pmt_pid_count] = pmt_pid;
+                                       tsdata->pmt_pid_count++;
+
+                                       fprintf(stderr,"decoding PAT table, pmt_pid = %d\n", pmt_pid);
                                    }
-                                   if (delta_pat_time < tsdata->master_pat_table.min_pat_time) {
-                                       tsdata->master_pat_table.min_pat_time = delta_pat_time;
-                                       // SIGNAL NEW MIN PAT TIME TO GUI
-                                       // backup_caller(2000, 508, delta_pat_time, 0, 0, backup_context);
-                                   }
-                                   //backup_caller(2000, 505, delta_pmt_time / 1000, current_pid, 0, backup_context);
-                                   tsdata->master_pat_table.avg_pat_time += delta_pat_time;
-                                   tsdata->master_pat_table.avg_pat_time /= 2;
-                                   gettimeofday(&tsdata->master_pat_table.start_pat_time, NULL);
-                              }
+                                   entry_index += 4;
+                               }
 
-                              look_for_pmt_table = 0;
-                              if (tsdata->pat_version_number == -1) {
-                                   tsdata->pat_position = total_input_packets;
-                                   tsdata->pat_version_number = version_number;
-                                   tsdata->pat_program_count = section_entries;
-                                   tsdata->pat_transport_stream_id = transport_stream_id;
-                                   look_for_pmt_table = 1;
-                                   //backup_caller(2000, 100, tsdata->pat_program_count, 0, 0, 0, backup_context);
-                              }
-
-                              if (version_number != tsdata->pat_version_number) {
-                                   tsdata->pat_version_number = version_number;
-                                   tsdata->pat_program_count = section_entries;
-                                   tsdata->pat_transport_stream_id = transport_stream_id;
-                                   look_for_pmt_table = 1;
-                                   //backup_caller(2000, 100, tsdata->pat_program_count, 0, 0, 0, backup_context);
-                              }
-
-                              if (look_for_pmt_table == 1) {
-                                   int program_index;
-
-                                   tsdata->pmt_pid_count = 0;
-                                   memset(tsdata->pmt_decoded, 0, sizeof(tsdata->pmt_decoded));
-                                   for (program_index = 0; program_index < tsdata->pat_program_count; program_index++) {
-                                       pat_program_number = (unsigned long)(((unsigned long)*(pdata+entry_index) >> 8) +
-                                                                            (unsigned long)*(pdata+entry_index+1));
-
-                                       if (pat_program_number == 0) {
-                                           //backup_caller(2000, 300, 0, 0, 0, 0, backup_context);
-                                       } else {
-                                           pmt_pid = (unsigned short)((((unsigned long)*(pdata+entry_index+2) << 8)) |
-                                                                      (unsigned long)(*(pdata+entry_index+3)));
-                                           pmt_pid = pmt_pid & 0x1fff;
-
-                                           //backup_caller(2000, 200, pmt_pid, 0, 0, 0, backup_context);
-                                           tsdata->pmt_pid_index[tsdata->pmt_pid_count] = pmt_pid;
-                                           tsdata->pmt_pid_count++;
-                                       }
-                                       entry_index += 4;
-                                   }
-
-                                   if (!tsdata->pmt_pid_count) {
-                                       //backup_caller(2000, 202, 0, 0, 0, 0, backup_context);
-                                   }
-                              }
-                         }
+                               if (!tsdata->pmt_pid_count) {
+                                   //backup_caller(2000, 202, 0, 0, 0, 0, backup_context);
+                               }
+                           }
+                       }
                    } else { // NOT THE START
-                         int pid_count = 0;
+                       int pid_count = 0;
                          int acquired_data_so_far = 0;
                          int tempval;
 
