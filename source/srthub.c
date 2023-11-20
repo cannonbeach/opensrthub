@@ -885,7 +885,13 @@ static void *srt_server_thread(void *context)
 
         slots_available = MAX_WORKER_THREADS;
         for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
-            if (srtcore->srtserverqueue[thread] == NULL) {
+            void *serverqueue;
+
+            pthread_mutex_lock(srtcore->srtserverlock);
+            serverqueue = srtcore->srtserverqueue[thread];
+            pthread_mutex_unlock(srtcore->srtserverlock);
+
+            if (serverqueue == NULL) {
                 srt_server_worker_output_thread_struct *srtoutputdata;
 
                 pthread_mutex_lock(srtcore->srtserverlock);
