@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>SRT Gateway</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+* {
+    box-sizing: border-box;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+  margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Style the top navigation bar */
+.topnav {
+    overflow: hidden;
+    background-color: #800;
+    text-align: center;
+    padding: 5px 5px;
+    color: #fff;
+    font-size: 1.5em;
+}
+
+/* Style the topnav links */
+.topnav a {
+    float: left;
+    display: block;
+    color: #fff;
+    text-align: center;
+    padding: 14px 16px;
+    text-decoration: none;
+}
+
+/* Change color on hover */
+.topnav a:hover {
+    background-color: #001f3f;
+    color: black;
+}
+
+/* Style the content */
+.content {
+    background-color: #ddd;
+    padding: 10px;
+    height: 800px;
+}
+
+/* Style the footer */
+.footer {
+    background-color: #0074D9;
+    padding: 10px;
+}
+
+section {
+   position: relative;
+   border: 1px solid #000;
+   padding-top: 37px;
+   background: #500;
+}
+
+section.anchortable {
+   position: absolute;
+   top:750px;
+   left:50px;
+   box-shadow: 0 0 15px #333;
+}
+
+section.logheader {
+   position: absolute;
+   top:275px;
+   left:50px;
+   box-shadow: 0 0 15px #333;
+}
+
+section.logtable {
+   position: absolute;
+   top:375px;
+   left:50px;
+   box-shadow: 0 0 15px #333;
+}
+
+section.configtable {
+   position: relative;
+   width: 95%;
+   left:15px;
+   margin-right:30px;
+   box-shadow: 0 0 15px #333;
+   color: black;
+}
+section.controls {
+   position: absolute;
+   top:185px;
+   left:50px;
+   box-shadow: 0 0 15px #333;
+}
+section.cpustatusinfo {
+   position: absolute;
+   top:185px;
+   left:450px;
+   box-shadow: 0 0 15px #333;
+}
+
+section.gpustatusinfo {
+   position: absolute;
+   top:375px;
+   left:50px;
+   box-shadow: 0 0 15px #333;
+}
+.container {
+   overflow-y: auto;
+   height: auto;
+   width: auto;
+}
+
+table {
+   border-spacing: 3px;
+   width:100%;
+}
+
+td + td {
+   border-left:1px solid #eee;
+}
+
+td, th {
+   border-bottom:1px solid #eee;
+   background: #ddd;
+   color: #000;
+   padding: 5px 15px;
+}
+
+th {
+   height: 0;
+   line-height: 0;
+   padding-top: 0;
+   padding-bottom: 0;
+   color: transparent;
+   border: none;
+   white-space: nowrap;
+}
+
+th div{
+   position: absolute;
+   background: transparent;
+   color: #fff;
+   padding: 10px 15px;
+   top: 0;
+   margin-left: -15px;
+   line-height: normal;
+   border-left: 1px solid #800;
+}
+
+th:first-child div{
+   border: none;
+}
+
+.row {
+   display: -ms-flexbox; /* IE10 */
+   display: flex;
+   -ms-flex-wrap: wrap; /* IE10 */
+   flex-wrap: wrap;
+   margin: 0 -16px;
+}
+
+.col-25 {
+   -ms-flex: 25%; /* IE10 */
+   flex: 25%;
+}
+
+.col-50 {
+   -ms-flex: 50%; /* IE10 */
+   flex: 50%;
+}
+
+.col-75 {
+   -ms-flex: 75%; /* IE10 */
+   flex: 75%;
+}
+
+.col-25,
+.col-50,
+.col-75 {
+   padding: 0 16px;
+}
+
+.container {
+   background-color: #f2f2f2;
+   padding: 5px 20px 15px 20px;
+   border: 1px solid lightgrey;
+   border-radius: 3px;
+}
+
+input[type=text] {
+   width: 80%;
+   margin-bottom: 5px;
+   padding: 6px;
+   border: 1px solid #ccc;
+   border-radius: 3px;
+}
+
+label {
+   margin-bottom: 10px;
+   display: block;
+}
+
+.icon-container {
+   margin-bottom: 20px;
+   padding: 7px 0;
+   font-size: 24px;
+}
+
+.btngreen {
+   background-color: #4CAF50;
+   color: white;
+   padding: 12px;
+   margin: 10px 0;
+   border: none;
+   width: 20%;
+   border-radius: 3px;
+   cursor: pointer;
+   font-size: 17px;
+}
+
+.btngreen:hover {
+   background-color: #45a049;
+}
+
+.btnred {
+   background-color: #FF0000;
+   color: white;
+   padding: 12px;
+   margin: 10px 0;
+   border: none;
+   width: 20%;
+   border-radius: 3px;
+   cursor: pointer;
+   font-size: 17px;
+}
+
+.btnred:hover {
+   background-color: #800000;
+}
+
+.btnblue {
+   background-color: #000080;
+   color: white;
+   padding: 12px;
+   margin: 10px 0;
+   border: none;
+   width: 20%;
+   border-radius: 3px;
+   cursor: pointer;
+   font-size: 17px;
+}
+
+.btnblue:hover {
+   background-color: #191970;
+}
+
+img {
+   width:176px;
+   height:144px;
+   background: no-repeat scroll 0 0;
+}
+
+@media (max-width: 800px) {
+   .row {
+       flex-direction: column-reverse;
+   }
+   .col-25 {
+       margin-bottom: 20px;
+   }
+}
+
+</style>
+</head>
+<body>
+
+<div class="topnav">
+  <p>SRT Server and Receiver Gateway</p>
+</div>
+
+<div class="control" id="cpusystempage">
+  <section class="cpustatusinfo">
+    <div class="container">
+      <table>
+        <thead>
+          <tr class="header">
+            <th>Hostname<div>Hostname</div></th>
+            <th>SRT Version<div>SRT Version</div></th>
+            <th>srthub Version<div>srthub Version</div></th>
+            <th>CPU Core Count<div>CPU Core Count</div></th>
+            <th>CPU Load<div>CPU Load</div></th>
+            <th>CPU Memory<div>CPU Memory</div></th>
+            <th>Used CPU Memory<div>Used CPU Memory</div></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div id='hostname'></div>
+            </td>
+            <td>
+              <div id='srtversion'></div>
+            </td>
+            <td>
+              <div id='srthubversion'></div>
+            </td>
+            <td>
+              <div id='cpucount'></div>
+            </td>
+            <td>
+              <div id='cpuload'></div>
+            </td>
+            <td>
+              <div id='totalmem'></div>
+            </td>
+            <td>
+              <div id='usedmem'></div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<div class="control" id="controlpage">
+  <section class="controls">
+    <div class="container">
+      <table>
+        <thead>
+          <tr class="header">
+            <th>Add SRT Receiver<div>Add SRT Receiver</div></th>
+            <th>Add SRT Server<div>Add SRT Server</div></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <div><button id='srt_receiver_button'>New SRT Receiver</button></div>
+            </td>
+            <td>
+              <div><button id='srt_server_button'>New SRT Server</button></div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<div></div>
+
+<div></div>
+
+<div class="content" id="logpageheader">
+<section2 class="logheader">
+  <h1>Configuration Options and Status<br><br><br><br><br>Status Log Information<br><br><br><br><br><br><br><br><br><br>SRT Services Configured</h1>
+</section2>
+</div>
+
+<div class="content" id="logpage">
+<section class="logtable">
+  <div class="container" id="logtable">
+    <script>
+      fetch('/api/v1/get_log_page',{method: 'GET'})
+      .then(response => {
+          if (response.ok) {
+              return response.text();
+          } else {
+              return Promise.reject('something went wrong!');
+          }
+      })
+      .then(data => {
+          document.getElementById("logtable").innerHTML = data;
+      })
+    </script>
+  </div>
+</section>
+</div>
+
+<div class="content" id="statuspage">
+<section class="anchortable">
+  <div class="container" id="controltable">
+    <script>
+      fetch('/api/v1/get_control_page',{method: 'GET'})
+      .then(response => {
+          if (response.ok) {
+              return response.text();
+          } else {
+              return Promise.reject('something went wrong!');
+          }
+      })
+      .then(data => {
+          document.getElementById("controltable").innerHTML = data;
+      })
+    </script>
+  </div>
+</section>
+</div>
+
+<div class="row" id="newsrtreceiverpage">
+  <div class="col-75">
+    <div class="container">
+      <div class="row">
+        <div class="col-50">
+          <h2>Add A New SRT Receiver</h2>
+            <h2>SRT Receiver Configuration Options</h2>
+
+            <section class="configtable">
+              <table>
+              <thead>
+                <tr>
+                  <th><div> </div></th>
+                  <th><div>Source Information</div></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr>
+                  <td>
+                    <label>SRT Source Name</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtreceiver_sourcename" name="srtreceiver_sourcename" placeholder="XYZ Sports Network"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Access Control StreamID (Optional)</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtreceiver_streamid" name="srtreceiver_streamid" placeholder="#!::u=admin,m=request"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Decryption Passphrase (Optional)</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtreceiver_passphrase" name="srtreceiver_passphrase" placeholder=""/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Receiver(Pull) or SRT Receiver(Push)</label>
+                  </td>
+                  <td>
+                    <select id="srtreceiver_clienttype">
+                      <option value="pull">PULL (Caller)</option>
+                      <option value="push">PUSH (Listener)</option>
+                    </select>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Source IP Address</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtreceiver_sourceaddress" name="srtreceiver_sourceaddress" placeholder="192.168.86.40"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Source Port Number</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtreceiver_sourceport" name="srtreceiver_sourceport" placeholder="6000"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Source Network Interface</label>
+                  </td>
+                  <td>
+                    <select id="srtreceiver_sourceinterface">
+                      <script>
+                        fetch('/api/v1/get_interfaces',{method: 'GET'})
+                            .then(response => {
+                            if (response.ok) {
+                                return response.json()
+                            } else {
+                                return Promise.reject('something went wrong!')
+                            }
+                        })
+                        .then(data => {
+                            console.log('data is', data);
+
+                            var parsedJSON = JSON.parse(JSON.stringify(data));
+                            select = document.getElementById('srtreceiver_sourceinterface');
+                            for (var prop in parsedJSON) {
+                                if (parsedJSON.hasOwnProperty(prop)) {
+                                    console.log("prop: " + prop);
+                                    var opt = document.createElement('option');
+                                    opt.value = prop;
+                                    opt.innerHTML = prop;
+                                    select.appendChild(opt);
+                                }
+                            }
+                        })
+                      </script>
+                    </select>
+                  </td>
+<!---
+                  <td>
+                    <select id="inputstream1" style="visibility:hidden">
+                      <script>
+                        fetch('/api/v1/get_scan_data',{method: 'GET'})
+                            .then(response => {
+                            if (response.ok) {
+                                return response.text();
+                            } else {
+                                return Promise.reject('something went wrong!');
+                            }
+                        })
+                        .then(data => {
+                            console.log('data is', data);
+
+                            var parsedJSON = JSON.parse(data);
+                            console.log('parsed: ', parsedJSON.sources.length);
+                            select = document.getElementById('inputstream1');
+
+                            var s;
+                            for (s = 0; s < parsedJSON.sources.length; s++) {
+                                console.log("prop: " + parsedJSON.sources[s]);
+                                var opt = document.createElement('option');
+                                opt.value = parsedJSON.sources[s];
+                                opt.innerHTML = parsedJSON.sources[s];
+                                select.appendChild(opt);
+                            }
+                        })
+                      </script>
+                    </select>
+                  </td>
+!--->
+                </tr>
+
+              </tbody>
+            </table>
+            </section>
+
+<!---            <button id='scan_button_transcode' class="btnblue">Check Source</button>
+    !--->
+
+            <div>
+              <h2>UDP Output Configuration Options</h2>
+            </div>
+
+            <section class="configtable">
+            <table>
+              <thead>
+              <tr>
+                <th><div> </div></th>
+                <th><div>Selection</div></th>
+              </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <label>UDP Destination IP Address</label>
+                  </td>
+                  <td>
+                    <input type="text" style="width:20%" id="srtreceiver_destinationaddress" name="srtreceiver_destinationaddress" placeholder="239.192.1.1"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>UDP Destination Port Number</label>
+                  </td>
+                  <td>
+                    <input type="text" style="width:20%" id="srtreceiver_destinationport" name="srtreceiver_destinationport" placeholder="12000"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>UDP Multicast Time To Live (TTL)</label>
+                  </td>
+                  <td>
+                    <input type="text" style="width:10%" id="srtreceiver_destinationttl" name="srtreceiver_destinationttl" placeholder="16"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>UDP Destination Network Interface</label>
+                  </td>
+                  <td>
+                    <select id="srtreceiver_destinationinterface">
+                      <script>
+                        fetch('/api/v1/get_interfaces',{method: 'GET'})
+                            .then(response => {
+                            if (response.ok) {
+                                return response.json()
+                            } else {
+                                return Promise.reject('something went wrong!')
+                            }
+                        })
+                        .then(data => {
+                            console.log('data is', data);
+
+                            var parsedJSON = JSON.parse(JSON.stringify(data));
+                            select = document.getElementById('srtreceiver_destinationinterface');
+                            for (var prop in parsedJSON) {
+                                if (parsedJSON.hasOwnProperty(prop)) {
+                                    console.log("prop: " + prop);
+                                    var opt = document.createElement('option');
+                                    opt.value = prop;
+                                    opt.innerHTML = prop;
+                                    select.appendChild(opt);
+                                }
+                            }
+                        })
+                      </script>
+                    </select>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            </section>
+
+            <div>
+              <h2>Status Monitoring</h2>
+              <section class="configtable">
+                <table>
+                  <thead>
+                    <tr>
+                      <th><div></div></th>
+                      <th><div>Server</div></th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    <tr>
+                      <td>
+                        <label>Remote Management Server IP (Optional)</label>
+                      </td>
+                      <td>
+                        <input type="text" id="srtreceiver_managementserverip" name="srtreceiver_managementserverip" placeholder="http://192.168.100.1/status"/>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+            </div>
+          </div>
+        </div>
+        </div>
+        <button id='submit_button_srtreceiver' class="btngreen">Submit New Source</button>
+        <button id='abort_button_srtreceiver' class="btnred">Abort</button>
+    </div>
+</div>
+
+<div class="row" id="newsrtserverpage">
+  <div class="col-75">
+    <div class="container">
+      <div class="row">
+        <div class="col-50">
+          <h2>Add A New SRT Server</h2>
+          <h2>UDP Source Configuration Options</h2>
+
+            <section class="configtable">
+              <table>
+              <thead>
+                <tr>
+                  <th><div> </div></th>
+                  <th><div>Source Information</div></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr>
+                  <td>
+                    <label>UDP Source Name</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtserver_sourcename" name="srtserver_sourcename" placeholder="XYZ Sports Network"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>UDP Source IP Address</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtserver_sourceaddress" name="srtserver_sourceaddress" placeholder="239.192.100.100"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>UDP Source Port Number</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtserver_sourceport" name="srtserver_sourceport" placeholder="6000"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>UDP Source Network Interface</label>
+                  </td>
+                  <td>
+                    <select id="srtserver_sourceinterface">
+                      <script>
+                        fetch('/api/v1/get_interfaces',{method: 'GET'})
+                            .then(response => {
+                            if (response.ok) {
+                                return response.json()
+                            } else {
+                                return Promise.reject('something went wrong!')
+                            }
+                        })
+                        .then(data => {
+                            console.log('data is', data);
+
+                            var parsedJSON = JSON.parse(JSON.stringify(data));
+                            select = document.getElementById('srtserver_sourceinterface');
+                            for (var prop in parsedJSON) {
+                                if (parsedJSON.hasOwnProperty(prop)) {
+                                    console.log("prop: " + prop);
+                                    var opt = document.createElement('option');
+                                    opt.value = prop;
+                                    opt.innerHTML = prop;
+                                    select.appendChild(opt);
+                                }
+                            }
+                        })
+                      </script>
+                    </select>
+                  </td>
+<!---
+                  <td>
+                    <select id="inputstream1" style="visibility:hidden">
+                      <script>
+                        fetch('/api/v1/get_scan_data',{method: 'GET'})
+                            .then(response => {
+                            if (response.ok) {
+                                return response.text();
+                            } else {
+                                return Promise.reject('something went wrong!');
+                            }
+                        })
+                        .then(data => {
+                            console.log('data is', data);
+
+                            var parsedJSON = JSON.parse(data);
+                            console.log('parsed: ', parsedJSON.sources.length);
+                            select = document.getElementById('inputstream1');
+
+                            var s;
+                            for (s = 0; s < parsedJSON.sources.length; s++) {
+                                console.log("prop: " + parsedJSON.sources[s]);
+                                var opt = document.createElement('option');
+                                opt.value = parsedJSON.sources[s];
+                                opt.innerHTML = parsedJSON.sources[s];
+                                select.appendChild(opt);
+                            }
+                        })
+                      </script>
+                    </select>
+                  </td>
+!--->
+                </tr>
+
+              </tbody>
+            </table>
+            </section>
+
+<!---            <button id='scan_button_transcode' class="btnblue">Check Source</button>
+    !--->
+
+            <div>
+              <h2>SRT Output Server Configuration Options</h2>
+            </div>
+
+            <section class="configtable">
+            <table>
+              <thead>
+              <tr>
+                <th><div> </div></th>
+                <th><div>Selection</div></th>
+              </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <label>SRT Server Address</label>
+                  </td>
+                  <td>
+                    <input type="text" style="width:20%" id="srtserver_address" name="srtserver_address" placeholder="192.168.1.1"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Server Port Number</label>
+                  </td>
+                  <td>
+                    <input type="text" style="width:20%" id="srtserver_port" name="srtserver_port" placeholder="12000"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Server Network Interface</label>
+                  </td>
+                  <td>
+                    <select id="srtserver_interface">
+                      <script>
+                        fetch('/api/v1/get_interfaces',{method: 'GET'})
+                            .then(response => {
+                            if (response.ok) {
+                                return response.json()
+                            } else {
+                                return Promise.reject('something went wrong!')
+                            }
+                        })
+                        .then(data => {
+                            console.log('data is', data);
+
+                            var parsedJSON = JSON.parse(JSON.stringify(data));
+                            select = document.getElementById('srtserver_interface');
+                            for (var prop in parsedJSON) {
+                                if (parsedJSON.hasOwnProperty(prop)) {
+                                    console.log("prop: " + prop);
+                                    var opt = document.createElement('option');
+                                    opt.value = prop;
+                                    opt.innerHTML = prop;
+                                    select.appendChild(opt);
+                                }
+                            }
+                        })
+                      </script>
+                    </select>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Access Control StreamID (Optional)</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtserver_streamid" name="srtserver_streamid" placeholder="#!::u=admin,m=request"/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Encryption Passphrase (Optional)</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtserver_passphrase" name="srtserver_passphrase" placeholder=""/>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Server(Pull) or SRT Server(Push)</label>
+                  </td>
+                  <td>
+                    <select id="srtserver_servertype">
+                      <option value="pull">PULL (Listener)</option>
+                      <option value="push">PUSH (Caller)</option>
+                    </select>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Connection Queue Size (Only Valid In Pull)</label>
+                  </td>
+                  <td>
+                    <select id="srtserver_connectionqueue">
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                      <option value="5">5</option>
+                      <option value="8">8</option>
+                      <option value="13">13</option>
+                      <option value="21">21</option>
+                      <option value="34">34</option>
+                    </select>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <label>SRT Server IP Whitelist (Only Valid In Pull, Comma Separated, No Wildcards)</label>
+                  </td>
+                  <td>
+                    <input type="text" id="srtserver_whitelist" name="srtserver_whitelist" placeholder=""/>
+                  </td>
+                </tr>
+
+              </tbody>
+            </table>
+            </section>
+
+            <div>
+              <h2>Status Monitoring</h2>
+              <section class="configtable">
+                <table>
+                  <thead>
+                    <tr>
+                      <th><div></div></th>
+                      <th><div>Server</div></th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    <tr>
+                      <td>
+                        <label>Remote Management Server IP (Optional)</label>
+                      </td>
+                      <td>
+                        <input type="text" id="srtserver_managementserverip" name="srtserver_managementserverip" placeholder="http://192.168.100.1/status"/>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+            </div>
+          </div>
+        </div>
+        </div>
+        <button id='submit_button_srtserver' class="btngreen">Submit New Source</button>
+        <button id='abort_button_srtserver' class="btnred">Abort</button>
+    </div>
+</div>
+
+</body>
+<script src="client.js"></script>
+</html>
