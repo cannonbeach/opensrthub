@@ -467,6 +467,8 @@ static void *srt_receiver_thread_listener(void *context)
                             fprintf(statsfile,"    \"srt-server-port\":%d,\n", srtdata->server_port);
                             fprintf(statsfile,"    \"srt-connection\":1,\n");
                             fprintf(statsfile,"    \"srt-time\":%ld,\n", now);
+                            fprintf(statsfile,"    \"client-address\":\"%s\",\n", ipaddr);
+                            fprintf(statsfile,"    \"client-port\":%d,\n", client_addr.sin_port);
                             fprintf(statsfile,"    \"total-bytes-received\":%ld,\n", stats.byteRecvUniqueTotal);
                             fprintf(statsfile,"    \"packets-received\":%ld,\n", stats.pktRecvTotal);
                             fprintf(statsfile,"    \"packets-lost\":%d,\n", stats.pktRcvLossTotal);
@@ -508,6 +510,7 @@ static void *srt_receiver_thread_listener(void *context)
     }
 
 cleanup_srt_receiver_thread_listener:
+    fprintf(stderr,"srt_receiver_thread_listener: leaving thread\n");
     if (listener != SRT_INVALID_SOCK) {
         srt_close(listener);
         listener = SRT_INVALID_SOCK;
@@ -752,6 +755,8 @@ static void *srt_receiver_thread_caller(void *context)
                         fprintf(statsfile,"    \"srt-server-port\":%d,\n", srtdata->server_port);
                         fprintf(statsfile,"    \"srt-connection\":1,\n");
                         fprintf(statsfile,"    \"srt-time\":%ld,\n", now);
+                        fprintf(statsfile,"    \"client-address\":\"None\",\n");
+                        fprintf(statsfile,"    \"client-port\":0,\n");
                         fprintf(statsfile,"    \"total-bytes-received\":%ld,\n", stats.byteRecvUniqueTotal);
                         fprintf(statsfile,"    \"packets-received\":%ld,\n", stats.pktRecvTotal);
                         fprintf(statsfile,"    \"packets-lost\":%d,\n", stats.pktRcvLossTotal);
