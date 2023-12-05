@@ -914,7 +914,6 @@ function request_service_status(service)
                         active_string += '<p style="color:red">OUTPUT: NO SRT CONNECTIONS</p>';
                     }
                     for (l = 0; l < s; l++) {
-                        active_string += '<p style="color:blue">OUTPUT: SRT CONNECTED</p>';
                         status_string += '<p>';
                         if (serverdescription == 'Caller') {
                             status_string += 'SRT Client Connected To '+service_words.srtserver[l].clientaddress+':'+service_words.srtserver[l].clientport+'<br>';
