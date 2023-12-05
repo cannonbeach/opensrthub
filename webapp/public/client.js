@@ -867,6 +867,12 @@ function request_service_status(service)
                         status_string += 'SRT Loss Percentage '+service_words.srtreceiver_losspercentage+'%<br>';
                         status_string += 'SRT RTT '+service_words.srtreceiver_rtt+'ms<br>';
                         status_string += '</p>';
+
+                        if (service_words.srtreceiver_srtmode == 'Listener') {
+                            status_string += '<p>';
+                            status_string += 'SRT Client Connected From '+service_words.srtreceiver_clientaddress+':'+service_words.srtreceiver_clientport+'<br>';
+                            status_string += '</p>';
+                        }
                     } else {
                         active_string += '<p style="color:red">INPUT: NO SRT CONNECTION</p>';
                         current_uptime = 0;
@@ -903,8 +909,8 @@ function request_service_status(service)
                     var l;
                     s = service_words.srtserver.length;
                     for (l = 0; l < s; l++) {
+                        active_string += '<p style="color:blue">OUTPUT: SRT CONNECTED</p>';
                         status_string += '<p>';
-
                         if (serverdescription == 'Caller') {
                             status_string += 'SRT Client Connected To '+service_words.srtserver[l].clientaddress+':'+service_words.srtserver[l].clientport+'<br>';
                         } else {

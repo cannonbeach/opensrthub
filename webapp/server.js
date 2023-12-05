@@ -1132,6 +1132,8 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                             obj.srtreceiver_bitratekbps = 0;
                             obj.srtreceiver_rtt = 0;
                             obj.srtreceiver_srtmode = "unknown";
+                            obj.srtreceiver_clientaddress = "unknown";
+                            obj.srtreceiver_clientport = 0;
 
                             obj.udpserver_active = 0;
                             obj.udpserver_bytessent = 0;
@@ -1192,6 +1194,8 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                                         obj.srtreceiver_losspercentage = srd["loss-percentage"];
                                         obj.srtreceiver_bitratekbps = srd["bitrate-kbps"];
                                         obj.srtreceiver_rtt = srd.rtt;
+                                        obj.srtreceiver_clientaddress = srd["client-address"];
+                                        obj.srtreceiver_clientport = srd["client-port"];
                                     }
                                 }
                             } else if (sourcemode == "udp") {
