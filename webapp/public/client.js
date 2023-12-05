@@ -908,6 +908,11 @@ function request_service_status(service)
                     var s;
                     var l;
                     s = service_words.srtserver.length;
+                    if (s > 0) {
+                        active_string += '<p style="color:blue">OUTPUT: SRT CONNECTED</p>';
+                    } else {
+                        active_string += '<p style="color:red">OUTPUT: NO SRT CONNECTIONS</p>';
+                    }
                     for (l = 0; l < s; l++) {
                         active_string += '<p style="color:blue">OUTPUT: SRT CONNECTED</p>';
                         status_string += '<p>';
