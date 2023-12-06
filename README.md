@@ -6,6 +6,8 @@ over SRT and UDP around public/private networks (while also providing the abilit
 can view thumbnails, bitrate information, codec information as well as information about signal loss.  There is also an API available if you choose to build your own
 front-end or want to automate some things.
 
+![image](https://github.com/cannonbeach/opensrthub/assets/5487649/4ed86e61-dbe4-4e29-91dd-1040e80cf3f1)
+
 Quickstart Setup Instructions (Ubuntu 20.04/22.04 Server Instructions):
 1. Clone the repository
 2. Execute the setup script (sudo ./setupopensrthub.sh)
@@ -25,3 +27,4 @@ And finally!  Your sponsorship donations are greatly appreciated since I am tryi
 If something doesn't work or you need some assistance, please feel free to email me or post an issue in this project.  This is the initial version of the application (as of December 2023) and will definitely have some quirks.
 
 Thank you!
+
