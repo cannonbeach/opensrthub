@@ -24,9 +24,11 @@ There are four modes of SRT supported in the current version, which essentialy c
 
 And finally!  Your sponsorship donations are greatly appreciated since I am trying to pay off student loans.  If you find this project useful, then please donate.  I work on this project in my spare time and I am available for consulting projects or customizations (new features, new projects, etc.).  I have a lot of really interesting ideas I'd like to pursue on this project, so drop me an email if you think you might be interested in more than what I am offering right now.
 
-If something doesn't work or you need some assistance, please feel free to email me or post an issue in this project.  This is the initial version of the application (as of December 2023) and will definitely have some quirks.
+If something doesn't work or you need some assistance, please feel free to email me or post an issue in this project.  This is the initial version of the application (as of December 2023) and will definitely have some quirks.  I am trying to get to a solid v1.0 release by early next year.
 
 Thank you!
+
+Troubleshooting - if the web application doesn't come up, check "sudo pm2 status", "sudo pm2 stop server", "sudo pm2 start server".  You can also run the application command line (./srthub) as well as manually through the Docker image (more on this later).
 
 API (more documentation to be provided)
 /api/v1/system_information
