@@ -94,8 +94,14 @@ echo "srthub: installing cmake"
 sudo apt-get install cmake -y
 echo "srthub: installing libtool"
 sudo apt-get install libtool -y
+echo "srthub: installing net-tools"
+sudo apt-get install net-tools
 echo "srthub: installing nasm"
 sudo apt-get install nasm -y
+echo "srthub: installing libz"
+sudo apt-get install libz-dev -y
+echo "srthub: installing pkg-config"
+sudo apt-get install pkg-config -y
 echo "srthub: installing ca-certificates"
 sudo apt-get install ca-certificates -y
 echo "srthub: -installing gnupg"
