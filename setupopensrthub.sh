@@ -90,8 +90,10 @@ echo "srthub: intallling libssl-dev packages"
 sudo apt-get install libssl-dev -y
 echo "srthub: installing curl packages"
 sudo apt-get install curl -y
-echi "srthub: installing cmake"
+echo "srthub: installing cmake"
 sudo apt-get install cmake -y
+echi "srthub: installing libtool"
+sudo apt-get install libtool -y
 echo "srthub: installing ca-certificates"
 sudo apt-get install -y ca-certificates
 echo "srthub: -installing gnupg"
