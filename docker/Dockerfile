@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:20.04
 LABEL maintainer="cannonbeachgoonie@gmail.com"
 RUN apt-get update
 RUN apt-get -y upgrade
