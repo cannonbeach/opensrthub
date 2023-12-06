@@ -92,12 +92,14 @@ echo "srthub: installing curl packages"
 sudo apt-get install curl -y
 echo "srthub: installing cmake"
 sudo apt-get install cmake -y
-echi "srthub: installing libtool"
+echo "srthub: installing libtool"
 sudo apt-get install libtool -y
+echo "srthub: installing nasm"
+sudo apt-get install nasm -y
 echo "srthub: installing ca-certificates"
-sudo apt-get install -y ca-certificates
+sudo apt-get install ca-certificates -y
 echo "srthub: -installing gnupg"
-sudo apt-get install -y gnupg
+sudo apt-get install gnupg -y
 echo "srthub: making keyrings directory /etc/apt/keyrings for Nodesource GPG key"
 sudo mkdir -p /etc/apt/keyrings
 echo "srthub: importing Nodesource GPG key"
