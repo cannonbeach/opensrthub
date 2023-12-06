@@ -28,3 +28,22 @@ If something doesn't work or you need some assistance, please feel free to email
 
 Thank you!
 
+API (more documentation to be provided)
+/api/v1/system_information
+/api/v1/backup_services (returns a .zip file of all configurations)
+/api/v1/get_service_count
+/api/v1/thumbnail/[service]
+/api/v1/get_interfaces
+/api/v1/remove_service/[service]
+/api/v1/new_srt_receiver
+/api/v1/new_srt_server
+/api/v1/status_update/[service]
+/api/v1/stop_service/[service]
+/api/v1/start_service/[service]
+/api/v1/list_services
+/api/v1/get_log_data
+/api/v1/get_extended_log_data
+/api/v1/get_service_status/[service]
+
+
+
