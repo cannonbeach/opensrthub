@@ -2243,7 +2243,7 @@ restart_srt:
     if (strncmp(outputmode,"udp",3)==0) {
         srtcore.udp_server_thread_running = 1;
         udp_server_thread_struct *udp_server_data = (udp_server_thread_struct*)malloc(sizeof(udp_server_thread_struct));
-        sprintf(udp_server_data->interface_name,"eno1");
+        sprintf(udp_server_data->interface_name, "%s", outputinterface);
         sprintf(udp_server_data->destination_address, "%s", output_address);
         udp_server_data->destination_port = output_port;
         udp_server_data->ttl = 8;
@@ -2256,9 +2256,8 @@ restart_srt:
         srtcore.srt_server_thread_running = 1;
         srt_server_thread_struct *srt_server_data = (srt_server_thread_struct*)malloc(sizeof(srt_server_thread_struct));
         sprintf(srt_server_data->server_address, "%s", output_address);
+        sprintf(srt_server_data->server_interface_name, "%s", outputinterface);
         srt_server_data->server_port = output_port;
-        // server_interface_name?
-        // set these from the config
         memset(&srt_server_data->streamid, 0, sizeof(srt_server_data->streamid));
         memset(&srt_server_data->passphrase, 0, sizeof(srt_server_data->passphrase));
         if (streamid) {
@@ -2280,9 +2279,8 @@ restart_srt:
 
         srt_server_thread_struct *srt_server_data = (srt_server_thread_struct*)malloc(sizeof(srt_server_thread_struct));
         sprintf(srt_server_data->server_address, "%s", output_address);
+        sprintf(srt_server_data->server_interface_name, "%s", outputinterface);
         srt_server_data->server_port = output_port;
-        // server_interface_name?
-        // set these from the config
         memset(&srt_server_data->streamid, 0, sizeof(srt_server_data->streamid));
         memset(&srt_server_data->passphrase, 0, sizeof(srt_server_data->passphrase));
         if (streamid) {
@@ -2303,9 +2301,8 @@ restart_srt:
         srtcore.srt_receiver_thread_running = 1;
         srt_receive_thread_caller_struct *srt_receive_data = (srt_receive_thread_caller_struct*)malloc(sizeof(srt_receive_thread_caller_struct));
         sprintf(srt_receive_data->server_address, "%s", server_address);
+        sprintf(srt_receive_data->server_interface_name, "%s", sourceinterface);
         srt_receive_data->server_port = server_port;
-        // interface_name
-        // set these from the config
         memset(&srt_receive_data->streamid, 0, sizeof(srt_receive_data->streamid));
         memset(&srt_receive_data->passphrase, 0, sizeof(srt_receive_data->passphrase));
         if (streamid) {
@@ -2327,10 +2324,8 @@ restart_srt:
         srt_receive_thread_listener_struct *srt_receive_data = (srt_receive_thread_listener_struct*)malloc(sizeof(srt_receive_thread_listener_struct));
         srt_receive_data->core = (srthub_core_struct*)&srtcore;
         sprintf(srt_receive_data->server_address, "%s", server_address);
+        sprintf(srt_receive_data->server_interface_name, "%s", sourceinterface);
         srt_receive_data->server_port = server_port;
-        // interface_name
-        // set these from the config
-
         memset(&srt_receive_data->streamid, 0, sizeof(srt_receive_data->streamid));
         memset(&srt_receive_data->passphrase, 0, sizeof(srt_receive_data->passphrase));
         if (streamid) {
@@ -2351,9 +2346,9 @@ restart_srt:
         srtcore.udp_receiver_thread_running = 1;
         udp_receiver_thread_struct *udp_receive_data = (udp_receiver_thread_struct*)malloc(sizeof(udp_receiver_thread_struct));
         sprintf(udp_receive_data->source_address, "%s", server_address);
+        sprintf(udp_receive_data->interface_name, "%s", sourceinterface);
         udp_receive_data->source_port = server_port;
         udp_receive_data->core = (srthub_core_struct*)&srtcore;
-        // interface name?
         fprintf(stderr,"starting udp receiver thread\n");
         pthread_create(&srtcore.udp_receiver_thread_id, NULL, udp_receiver_thread, udp_receive_data);
     }
