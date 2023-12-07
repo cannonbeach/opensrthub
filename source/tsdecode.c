@@ -1195,13 +1195,13 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                        if (current_pid == 0) {
                            int unit_size = *(pdata+0);
                            pdata += unit_size;
-                           unsigned char table_id = *(pdata+1);
-                           unsigned short section_size = ((*(pdata+2) << 8) + *(pdata+3)) & 0x0fff;
+                           uint8_t table_id = *(pdata+1);
+                           uint16_t section_size = ((*(pdata+2) << 8) + *(pdata+3)) & 0x0fff;
                            int version_number = 0;
                            int transport_stream_id = (*(pdata+4) << 8) + *(pdata+5);
                            int section_entries;
                            int entry_index;
-                           unsigned short pmt_pid;
+                           uint16_t pmt_pid;
                            int is_valid;
                            int current_section;
                            int last_section;
@@ -1249,6 +1249,11 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                    tsdata->pat_version_number,
                                    section_entries,
                                    version_number);
+
+                           if (tsdata->pat_transport_stream_id != transport_stream_id) {
+                               tsdata->pat_version_number = -1;
+                           }
+
                            if (tsdata->pat_version_number == -1) {
                                tsdata->pat_position = total_input_packets;
                                tsdata->pat_version_number = version_number;
