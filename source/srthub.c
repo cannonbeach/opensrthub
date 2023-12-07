@@ -801,8 +801,6 @@ cleanup_srt_receiver_thread_caller:
     decode = NULL;
     free(srtdata);
     srtdata = NULL;
-    //srterr = srt_epoll_add_usock(epollid, serversock, &modes);
-    //srt_epoll_remove_usock()
     if (epollid > 0) {
         srt_epoll_release(epollid);
         epollid = 0;
@@ -916,6 +914,8 @@ static void *srt_server_worker_output_thread(void *context)
                 unlink(statsfilename);
                 free(buffer);
                 free(msg);
+                buffer = NULL;
+                msg = NULL;
                 goto cleanup_srt_server_worker_output_thread;
             } else if (lasterr == SRT_EASYNCRCV) {
 
@@ -931,6 +931,8 @@ static void *srt_server_worker_output_thread(void *context)
         }
         free(buffer);
         free(msg);
+        buffer = NULL;
+        msg = NULL;
     }
 
 cleanup_srt_server_worker_output_thread:
@@ -1715,6 +1717,7 @@ static void *udp_server_thread(void *context)
                 uint8_t *buffer = (uint8_t*)msg->buffer;
                 free(buffer);
                 free(msg);
+                buffer = NULL;
                 msg = NULL;
             }
             goto cleanup_udp_server_thread;
@@ -1785,11 +1788,21 @@ static void *udp_server_thread(void *context)
 
             free(buffer);
             free(msg);
+            buffer = NULL;
             msg = NULL;
         }
     }
 cleanup_udp_server_thread:
     close(output_socket);
+
+    msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
+    while (!msg) {
+        uint8_t *buffer = (uint8_t*)msg->buffer;
+        free(buffer);
+        free(msg);
+        buffer = NULL;
+        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
+    }
 
     return NULL;
 }
@@ -1797,7 +1810,7 @@ cleanup_udp_server_thread:
 static void *srthub_thumbnail_thread(void *context)
 {
 #if defined(ENABLE_THUMBNAIL)
-    srthub_core_struct *srtcore;
+    srthub_core_struct *srtcore = NULL;
     AVCodecContext *decode_avctx = NULL;
     AVCodec *decode_codec = NULL;
     AVPacket *decode_pkt = NULL;
@@ -1809,17 +1822,14 @@ static void *srthub_thumbnail_thread(void *context)
     uint8_t *output_data[4];
     int source_stride[4];
     int output_stride[4];
-    dataqueue_message_struct *msg;
+    dataqueue_message_struct *msg = NULL;
     int video_decoder_ready = 0;
-    uint8_t *output_video_frame;
     int64_t decoded_frame_count = 0;
     char statsfilename[MAX_STRING_SIZE];
     char corruptiontimedate[MAX_STRING_SIZE];
     uint32_t decode_errors = 0;
 
     srtcore = (srthub_core_struct*)context;
-
-    output_video_frame = (uint8_t*)malloc(MAX_DECODE_WIDTH*MAX_DECODE_HEIGHT*3);
 
     sprintf(statsfilename,"/opt/srthub/status/thumbnail_%d.json", srtcore->session_identifier);
 
@@ -1837,6 +1847,7 @@ static void *srthub_thumbnail_thread(void *context)
                 free(buffer);
                 free(msg);
                 msg = NULL;
+                buffer = NULL;
             }
             goto cleanup_thumbnail_thread;
         }
@@ -1920,21 +1931,11 @@ static void *srthub_thumbnail_thread(void *context)
             while (ret >= 0) {
                 int is_frame_interlaced;
                 int is_frame_tff;
-                uint8_t *output_video_frame;
-                int video_frame_size;
                 int frame_height;
                 int frame_height2;
                 int frame_width;
                 int frame_width2;
                 int row;
-                uint8_t *y_output_video_frame;
-                uint8_t *u_output_video_frame;
-                uint8_t *v_output_video_frame;
-                uint8_t *y_source_video_frame;
-                uint8_t *u_source_video_frame;
-                uint8_t *v_source_video_frame;
-                int y_source_stride;
-                int uv_source_stride;
                 AVFrame *jpeg_frame;
 
                 ret = avcodec_receive_frame(decode_avctx, decode_av_frame);
@@ -2044,12 +2045,12 @@ static void *srthub_thumbnail_thread(void *context)
             free(buffer);
             free(msg);
             msg = NULL;
+            buffer = NULL;
         }
     }
 
 cleanup_thumbnail_thread:
 
-    free(output_video_frame);
     av_frame_free(&decode_av_frame);
     av_packet_free(&decode_pkt);
     avcodec_close(decode_avctx);
@@ -2058,6 +2059,19 @@ cleanup_thumbnail_thread:
         sws_freeContext(decode_converter);
         av_freep(&output_data[0]);
     }
+
+    msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
+    while (!msg) {
+        if (msg) {
+            uint8_t *buffer = (uint8_t*)msg->buffer;
+            free(buffer);
+            free(msg);
+            buffer = NULL;
+            msg = NULL;
+        }
+        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
+    }
+
 #endif
     return NULL;
 }
