@@ -12,8 +12,11 @@ Quickstart Setup Instructions (Ubuntu 22.04 Server Instructions):
 1. Clone the repository
 2. Execute the setup script (sudo ./setupopensrthub.sh)
 3. Navigate your browser to port 8080
-4. Select to "Add New SRT Receiver" or "New SRT Server"
-5. Save your configuration
+   - If the web application does not come up, you may need to navigate to the /var/app directory and run the following commands:
+   - sudo pm2 start --name 'opensrthub' server.js --wait-ready
+   - sudo pm2 save
+5. Select to "Add New SRT Receiver" or "New SRT Server"
+6. Save your configuration
 
 If you want to install on a different version of Ubuntu, you will need to update the Dockerfile in the Docker directory to be the same as the version of Ubuntu you are targeting.
 
@@ -30,7 +33,7 @@ If something doesn't work or you need some assistance, please feel free to email
 
 Thank you!
 
-Troubleshooting - if the web application doesn't come up, check "sudo pm2 status", "sudo pm2 stop server", "sudo pm2 start server".  You can also run the application command line (./srthub) as well as manually through the Docker image (more on this later).
+Troubleshooting - You can also run the application command line (./srthub) as well as manually through the Docker image (more on this later).
 
 API (more documentation to be provided)
 /api/v1/system_information
