@@ -8,12 +8,14 @@ front-end or want to automate some things.
 
 ![image](https://github.com/cannonbeach/opensrthub/assets/5487649/4ed86e61-dbe4-4e29-91dd-1040e80cf3f1)
 
-Quickstart Setup Instructions (Ubuntu 20.04/22.04 Server Instructions):
+Quickstart Setup Instructions (Ubuntu 22.04 Server Instructions):
 1. Clone the repository
 2. Execute the setup script (sudo ./setupopensrthub.sh)
 3. Navigate your browser to port 8080
 4. Select to "Add New SRT Receiver" or "New SRT Server"
 5. Save your configuration
+
+If you want to install on a different version of Ubuntu, you will need to update the Dockerfile in the Docker directory to be the same as the version of Ubuntu you are targeting.
 
 There are four modes of SRT supported in the current version, which essentialy consists of a combination of Listener and Caller bundled with UDP input/output.  The Rendezvous mode has not yet been added.
 
@@ -22,7 +24,7 @@ There are four modes of SRT supported in the current version, which essentialy c
 3. SRT Caller Input (opensrthub pulls from source) to UDP Output
 4. SRT Listener Input (Source pushes to opensrthub) to UDP Output
 
-And finally!  Your sponsorship donations are greatly appreciated since I am trying to pay off student loans.  If you find this project useful, then please donate.  I work on this project in my spare time and I am available for consulting projects or customizations (new features, new projects, etc.).  I have a lot of really interesting ideas I'd like to pursue on this project, so drop me an email if you think you might be interested in more than what I am offering right now.
+And finally!  Your sponsorship donations are greatly appreciated since I am trying to pay off student loans.  If you find this project useful, then please donate and star it.  I work on this project in my spare time and I am available for consulting projects or customizations (new features, new projects, etc.).  I have a lot of really interesting ideas I'd like to pursue on this project, so drop me an email if you think you might be interested in more than what I am offering right now.
 
 If something doesn't work or you need some assistance, please feel free to email me or post an issue in this project.  This is the initial version of the application (as of December 2023) and will definitely have some quirks.  I am trying to get to a solid v1.0 release by early next year.
 
