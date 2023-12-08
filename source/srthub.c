@@ -29,7 +29,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <sys/types.h>
 #include "srt.h"
+#include "mempool.h"
 #include "srthub.h"
 #include "udpsource.h"
 #include "tsdecode.h"
@@ -39,13 +41,18 @@
 #define SRTHUB_MAJOR 0
 #define SRTHUB_MINOR 1
 
-#define MAX_PACKET_BUFFER_SIZE 1536
 #define MAX_CONFIG_SIZE 16384
 #define MAX_UDP_BUFFER_READ 2048
 
 #define MESSAGE_TYPE_START 0x01
 #define MESSAGE_TYPE_STOP 0x02
 #define MESSAGE_TYPE_RESTART 0x99
+
+#define MAX_MSG_BUFFERS            16384*8
+#define MAX_PACKET_BUFFERS         16384*8
+#define MAX_PACKET_BUFFER_SIZE     1536
+#define MAX_THUMBNAIL_BUFFERS      384
+#define MAX_THUMBNAIL_BUFFER_SIZE  1024*1024*4
 
 #define ENABLE_THUMBNAIL
 
@@ -194,6 +201,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
 {
     srthub_core_struct *srtcore = (srthub_core_struct*)context;
     dataqueue_message_struct *msg;
+    int threadid = gettid();
 
     /*fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
       source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);*/
@@ -216,9 +224,9 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
                 }
             }
 
-            msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
+            msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
             if (msg) {
-                uint8_t *buffer = (uint8_t*)malloc(sample_size);
+                uint8_t *buffer = (uint8_t*)memory_take(srtcore->videopool, threadid);
                 if (buffer) {
                     memcpy(buffer, sample, sample_size);
                     msg->buffer = (void*)buffer;
@@ -230,8 +238,12 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
                     dataqueue_put_front(srtcore->thumbnailqueue, msg);
                     msg = NULL;
                 } else {
-                    free(msg);
+                    fprintf(stderr,"received frame: thumbnail buffers exhausted\n");
+                    memory_return(srtcore->msgpool, msg);
+                    msg = NULL;
                 }
+            } else {
+                fprintf(stderr,"received frame: msg buffers exhausted, thumbnailqueue=%d\n", dataqueue_get_size(srtcore->msgpool));
             }
         }
     }
@@ -242,12 +254,16 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
 static int send_restart_message(srthub_core_struct *srtcore)
 {
     dataqueue_message_struct *msg;
+    int threadid = gettid();
 
-    msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
+    msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
     if (msg) {
+        memset(msg, 0, sizeof(dataqueue_message_struct));
         msg->flags = MESSAGE_TYPE_RESTART;
         dataqueue_put_front(srtcore->msgqueue, msg);
         msg = NULL;
+    } else {
+        fprintf(stderr,"send_restart_message: msg buffers exhausted\n");
     }
     return 0;
 }
@@ -271,10 +287,13 @@ static void *srt_receiver_thread_listener(void *context)
     struct timeval connect_start;
     struct timeval connect_stop;
     SRT_TRACEBSTATS stats;
+    int threadid = gettid();
 
     decode->pat_version_number = -1;
 
+    fprintf(stderr,"srt_receiver_thread_listener: srt_startup() running, thread_id=%d\n", threadid);
     srt_startup();
+    fprintf(stderr,"srt_receiver_thread_listener: srt_startup() done, thread_id=%d\n", threadid);
 
     srtdata = (srt_receive_thread_listener_struct*)context;
     srtcore = srtdata->core;
@@ -283,7 +302,8 @@ static void *srt_receiver_thread_listener(void *context)
 
     listener = srt_create_socket();
     if (listener == SRT_ERROR) {
-        // flag the error
+        fprintf(stderr,"srt_receiver_thread_listener: srt_create_socket() failed\n");
+        free(srtdata);
         srt_cleanup();
         return NULL;
     }
@@ -331,6 +351,8 @@ static void *srt_receiver_thread_listener(void *context)
 
     buffer = (char*)malloc(MAX_UDP_BUFFER_READ);
 
+    fprintf(stderr,"srt_receiver_thread_listener: starting main thread loop\n");
+
     gettimeofday(&connect_start, NULL);
     while (srtcore->srt_receiver_thread_running) {
         srterr = srt_listen(listener, 1);  // only one
@@ -357,7 +379,7 @@ static void *srt_receiver_thread_listener(void *context)
                                  &addrlen);
 
         if (client_sock == SRT_INVALID_SOCK) {
-            // flag the error
+            fprintf(stderr,"srt_receiver_thread_listener: invalid socket on accept\n");
             goto cleanup_srt_receiver_thread_listener;
         }
 
@@ -487,21 +509,29 @@ static void *srt_receiver_thread_listener(void *context)
                 decode_packets((uint8_t*)buffer, tp, decode, 0);
 
                 {
-                    dataqueue_message_struct *msg;
-                    uint8_t *obuffer;
+                    dataqueue_message_struct *msg = NULL;
+                    uint8_t *obuffer = NULL;
 
-                    msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
+                    msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
                     if (msg) {
-                        obuffer = (uint8_t*)malloc(recvbytes);
+                        memset(msg, 0, sizeof(dataqueue_message_struct));
+                        obuffer = (uint8_t*)memory_take(srtcore->packetpool, threadid);
                         if (obuffer) {
+                            if (recvbytes > MAX_PACKET_BUFFER_SIZE) {
+                                recvbytes = MAX_PACKET_BUFFER_SIZE;
+                            }
                             memcpy(obuffer, buffer, recvbytes);
                             msg->buffer = obuffer;
                             msg->buffer_size = recvbytes;
                             msg->pts = srtcontrol.srctime;
                             dataqueue_put_front(srtcore->udpserverqueue, msg);
                         } else {
-                            free(msg);
+                            fprintf(stderr,"srt_receiver_thread_listener: packet buffers exhausted\n");
+                            memory_return(srtcore->msgpool, msg);
+                            msg = NULL;
                         }
+                    } else {
+                        fprintf(stderr,"srt_receiver_thread_listener: msg buffers exhausted\n");
                     }
                     msg = NULL;
                 }
@@ -547,6 +577,7 @@ static void *srt_receiver_thread_caller(void *context)
     char buffer[MAX_PACKET_BUFFER_SIZE];
     char statsfilename[MAX_STRING_SIZE];
     int srt_connected = 0;
+    int threadid = gettid();
 
     decode->pat_version_number = -1;
 
@@ -555,8 +586,11 @@ static void *srt_receiver_thread_caller(void *context)
     srtdata = (srt_receive_thread_caller_struct*)context;
     srtcore = srtdata->core;
 
+    fprintf(stderr,"srt_receiver_thread_caller: starting srt receiver thread, %d\n", srtcore->session_identifier);
+
     serversock = srt_create_socket();
     if (serversock == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_caller: unable to srt_create_socket() successfully\n");
         free(decode);
         decode = NULL;
         free(srtdata);
@@ -576,6 +610,7 @@ static void *srt_receiver_thread_caller(void *context)
 
     srterr = inet_pton(AF_INET, srtdata->server_address, &sa.sin_addr);
     if (srterr != 1) {
+        fprintf(stderr,"srt_receiver_thread_caller: uanble to process server_address, %s\n", srtdata->server_address);
         goto cleanup_srt_receiver_thread_caller;
     }
 
@@ -778,18 +813,26 @@ static void *srt_receiver_thread_caller(void *context)
                 dataqueue_message_struct *msg;
                 uint8_t *obuffer;
 
-                msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
+                msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
                 if (msg) {
-                    obuffer = (uint8_t*)malloc(recvbytes);
+                    memset(msg, 0, sizeof(dataqueue_message_struct));
+                    obuffer = (uint8_t*)memory_take(srtcore->packetpool, threadid);
                     if (obuffer) {
+                        if (recvbytes > MAX_PACKET_BUFFER_SIZE) {
+                            recvbytes = MAX_PACKET_BUFFER_SIZE;
+                        }
                         memcpy(obuffer, buffer, recvbytes);
                         msg->buffer = obuffer;
                         msg->buffer_size = recvbytes;
                         msg->pts = srtcontrol.srctime;
                         dataqueue_put_front(srtcore->udpserverqueue, msg);
                     } else {
-                        free(msg);
+                        fprintf(stderr,"srt_receiver_thread_caller: packet buffers exhausted\n");
+                        memory_return(srtcore->msgpool, msg);
+                        msg = NULL;
                     }
+                } else {
+                    fprintf(stderr,"srt_receiver_thread_caller: msg buffers exhausted\n");
                 }
                 msg = NULL;
             }
@@ -867,8 +910,9 @@ static void *srt_server_worker_output_thread(void *context)
         if (!srtcore->srt_server_worker_thread_running[thread]) {
             if (msg) {
                 uint8_t *buffer = (uint8_t*)msg->buffer;
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->packetpool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                buffer = NULL;
                 msg = NULL;
             }
             goto cleanup_srt_server_worker_output_thread;
@@ -912,8 +956,8 @@ static void *srt_server_worker_output_thread(void *context)
                 send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT connection lost");
                 //send_restart_message(srtcore);
                 unlink(statsfilename);
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->packetpool, buffer);
+                memory_return(srtcore->msgpool, msg);
                 buffer = NULL;
                 msg = NULL;
                 goto cleanup_srt_server_worker_output_thread;
@@ -929,8 +973,8 @@ static void *srt_server_worker_output_thread(void *context)
             total_packets_sent++;
             total_bytes_sent += sent_bytes;
         }
-        free(buffer);
-        free(msg);
+        memory_return(srtcore->packetpool, buffer);
+        memory_return(srtcore->msgpool, msg);
         buffer = NULL;
         msg = NULL;
     }
@@ -941,8 +985,8 @@ cleanup_srt_server_worker_output_thread:
     msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
     while (msg) {
         uint8_t *buffer = (uint8_t*)msg->buffer;
-        free(buffer);
-        free(msg);
+        memory_return(srtcore->packetpool, buffer);
+        memory_return(srtcore->msgpool, msg);
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
     }
     dataqueue_destroy(srtcore->srtserverqueue[thread]);
@@ -1198,7 +1242,7 @@ retry_srt_server_push_connection:
     }
     */
 
-    fprintf(stderr,"srt_receiver_thread_push: attempting to connect to %s:%d\n",
+    fprintf(stderr,"srt_server_thread_push: attempting to connect to %s:%d\n",
             srtdata->server_address,
             srtdata->server_port);
 
@@ -1236,8 +1280,9 @@ retry_srt_server_push_connection:
         if (!srtcore->srt_server_worker_thread_running[thread]) {
             if (msg) {
                 uint8_t *buffer = (uint8_t*)msg->buffer;
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->packetpool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                buffer = NULL;
                 msg = NULL;
             }
             goto cleanup_srt_server_thread_push;
@@ -1281,26 +1326,48 @@ retry_srt_server_push_connection:
                 send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, "SRT connection lost");
                 send_restart_message(srtcore);
                 unlink(statsfilename);
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->packetpool, buffer);
+                memory_return(srtcore->msgpool, msg);
                 buffer = NULL;
                 msg = NULL;
                 goto cleanup_srt_server_thread_push;
             } else if (lasterr == SRT_EASYNCRCV) {
 
             } else if (lasterr == SRT_ENOCONN) {
-                usleep(100000);
+                usleep(1000000);
                 fprintf(stderr,"srt_server_thread_push: SRT connection having issues, attempting to connect again to %s:%d\n",
                         srtdata->server_address,
                         srtdata->server_port);
 
                 srterr = srt_connect(sendersock, (struct sockaddr*)&server_addr, sizeof(server_addr));
                 if (srterr == SRT_ERROR) {
+                    void *localqueue;
+                    uint8_t *localbuffer;
+
+                    memory_return(srtcore->packetpool, buffer);
+                    memory_return(srtcore->msgpool, msg);
+                    buffer = NULL;
+                    msg = NULL;
+
                     fprintf(stderr,"srt_server_thread_push: unable to proceed with srt_connect, error=%s\n", srt_getlasterror_str());
                     if (sendersock != SRT_INVALID_SOCK) {
                         srt_close(sendersock);
                         sendersock = SRT_INVALID_SOCK;
                     }
+                    pthread_mutex_lock(srtcore->srtserverlock);
+                    localqueue = srtcore->srtserverqueue[thread];
+                    srtcore->srtserverqueue[thread] = NULL;
+                    pthread_mutex_unlock(srtcore->srtserverlock);
+
+                    while (msg) {
+                        localbuffer = (uint8_t*)msg->buffer;
+                        memory_return(srtcore->packetpool, localbuffer);
+                        memory_return(srtcore->msgpool, msg);
+                        msg = (dataqueue_message_struct*)dataqueue_take_back(localqueue);
+                    }
+                    dataqueue_destroy(localqueue);
+
+                    usleep(1000000);
                     goto retry_srt_server_push_connection;
                 }
                 clock_gettime(CLOCK_MONOTONIC, &server_time_start);
@@ -1314,16 +1381,22 @@ retry_srt_server_push_connection:
             total_packets_sent++;
             total_bytes_sent += sent_bytes;
         }
-        free(buffer);
-        free(msg);
+        memory_return(srtcore->packetpool, buffer);
+        memory_return(srtcore->msgpool, msg);
         buffer = NULL;
         msg = NULL;
     }
 
 cleanup_srt_server_thread_push:
-    // drain queue and free buffers and msgs
 
     pthread_mutex_lock(srtcore->srtserverlock);
+    msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
+    while (msg) {
+        uint8_t *buffer = (uint8_t*)msg->buffer;
+        memory_return(srtcore->packetpool, buffer);
+        memory_return(srtcore->msgpool, msg);
+        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
+    }
     dataqueue_destroy(srtcore->srtserverqueue[thread]);
     srtcore->srtserverqueue[thread] = NULL;
     pthread_mutex_unlock(srtcore->srtserverlock);
@@ -1358,6 +1431,7 @@ static void *udp_receiver_thread(void *context)
     struct timespec receive_time_start;
     struct timespec signal_check_stop;
     struct timespec signal_check_start;
+    int threadid = gettid();
 
     decode->pat_version_number = -1;
 
@@ -1482,19 +1556,24 @@ static void *udp_receiver_thread(void *context)
                 for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
                     pthread_mutex_lock(srtcore->srtserverlock);
                     if (srtcore->srtserverqueue[thread] != NULL) {
-                        outputbuffer = (uint8_t*)malloc(bytes_read);
+                        outputbuffer = (uint8_t*)memory_take(srtcore->packetpool, threadid);
                         if (outputbuffer) {
+                            if (bytes_read > MAX_PACKET_BUFFER_SIZE) {
+                                bytes_read = MAX_PACKET_BUFFER_SIZE;
+                            }
                             memcpy(outputbuffer, udp_buffer, bytes_read);
-                            msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
+                            msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
                             if (msg) {
+                                memset(msg, 0, sizeof(dataqueue_message_struct));
                                 msg->buffer = outputbuffer;
                                 msg->buffer_size = bytes_read;
                                 msg->pts = source_time;
                                 dataqueue_put_front(srtcore->srtserverqueue[thread], msg);
                                 msg = NULL;
                             } else {
-                                // send signal
-                                free(outputbuffer);
+                                fprintf(stderr,"udp_receiver_thread: msg buffers exhausted, srtserverqueue=%d\n", dataqueue_get_size(srtcore->srtserverqueue[thread]));
+                                memory_return(srtcore->packetpool, outputbuffer);
+                                outputbuffer = NULL;
                             }
                         }
                     }
@@ -1592,8 +1671,9 @@ static void *output_smoothing_thread(void *context)
                     }
                 }
 
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->packetpool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                buffer = NULL;
                 msg = NULL;
             }
             goto cleanup_output_smoothing_thread;
@@ -1715,8 +1795,8 @@ static void *udp_server_thread(void *context)
         if (!srtcore->udp_server_thread_running) {
             if (msg) {
                 uint8_t *buffer = (uint8_t*)msg->buffer;
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->packetpool, buffer);
+                memory_return(srtcore->msgpool, msg);
                 buffer = NULL;
                 msg = NULL;
             }
@@ -1786,8 +1866,8 @@ static void *udp_server_thread(void *context)
                 clock_gettime(CLOCK_MONOTONIC, &stats_start);
             }
 
-            free(buffer);
-            free(msg);
+            memory_return(srtcore->packetpool, buffer);
+            memory_return(srtcore->msgpool, msg);
             buffer = NULL;
             msg = NULL;
         }
@@ -1798,8 +1878,8 @@ cleanup_udp_server_thread:
     msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
     while (!msg) {
         uint8_t *buffer = (uint8_t*)msg->buffer;
-        free(buffer);
-        free(msg);
+        memory_return(srtcore->packetpool, buffer);
+        memory_return(srtcore->msgpool, msg);
         buffer = NULL;
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
     }
@@ -1844,8 +1924,8 @@ static void *srthub_thumbnail_thread(void *context)
         if (!srtcore->thumbnail_thread_running) {
             if (msg) {
                 uint8_t *buffer = (uint8_t*)msg->buffer;
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->videopool, buffer);
+                memory_return(srtcore->msgpool, msg);
                 msg = NULL;
                 buffer = NULL;
             }
@@ -1898,8 +1978,9 @@ static void *srthub_thumbnail_thread(void *context)
                 }
             }
             if (!video_decoder_ready) {
-                free(buffer);
-                free(msg);
+                memory_return(srtcore->videopool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                buffer = NULL;
                 msg = NULL;
 
                 FILE *statsfile = fopen(statsfilename,"wb");
@@ -2042,8 +2123,8 @@ static void *srthub_thumbnail_thread(void *context)
                     av_frame_free(&jpeg_frame);
                 }
             }
-            free(buffer);
-            free(msg);
+            memory_return(srtcore->videopool, buffer);
+            memory_return(srtcore->msgpool, msg);
             msg = NULL;
             buffer = NULL;
         }
@@ -2061,11 +2142,11 @@ cleanup_thumbnail_thread:
     }
 
     msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
-    while (!msg) {
+    while (msg) {
         if (msg) {
             uint8_t *buffer = (uint8_t*)msg->buffer;
-            free(buffer);
-            free(msg);
+            memory_return(srtcore->videopool, buffer);
+            memory_return(srtcore->msgpool, msg);
             buffer = NULL;
             msg = NULL;
         }
@@ -2228,6 +2309,10 @@ int main(int argc, char **argv)
 
     socket_udp_global_init();
 
+    srtcore.msgpool = memory_create(MAX_MSG_BUFFERS, sizeof(dataqueue_message_struct));
+    srtcore.packetpool = memory_create(MAX_PACKET_BUFFERS, MAX_PACKET_BUFFER_SIZE);
+    srtcore.videopool = memory_create(MAX_THUMBNAIL_BUFFERS, MAX_THUMBNAIL_BUFFER_SIZE);
+
     srtcore.session_identifier = session_identifier;
     srtcore.msgqueue = dataqueue_create();
     srtcore.thumbnailqueue = dataqueue_create();
@@ -2329,7 +2414,7 @@ restart_srt:
             srt_receive_data->keysize = 0;
         }
         srt_receive_data->core = (srthub_core_struct*)&srtcore;
-        fprintf(stderr,"starting srt receiver thread (caller)\n");
+        fprintf(stderr,"starting srt receiver thread (caller), address=%s, interface=%s, port=%d\n", server_address, sourceinterface, server_port);
         pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_caller, srt_receive_data);
     }
 
@@ -2352,7 +2437,7 @@ restart_srt:
             srt_receive_data->keysize = 0;
         }
 
-        fprintf(stderr,"starting srt receiver thread (listener)\n");
+        fprintf(stderr,"starting srt receiver thread (listener), address=%s, interface=%s, port=%d\n", server_address, sourceinterface, server_port);
         pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_listener, srt_receive_data);
     }
 
@@ -2394,29 +2479,40 @@ restart_srt:
         dataqueue_message_struct *msg = dataqueue_take_back(srtcore.msgqueue);
         if (msg) {
             if (msg->flags == MESSAGE_TYPE_RESTART) {
-                fprintf(stderr,"restart message received\n");
+                fprintf(stderr,"main: restart message received\n");
                 if (strncmp(sourcemode,"srt",3)==0) {
                     srtcore.srt_receiver_thread_running = 0;
+                    fprintf(stderr,"main: stopping srt_receiver_thread\n");
                     pthread_join(srtcore.srt_receiver_thread_id, NULL);
+                    fprintf(stderr,"main: done stopping srt_receiver_thread\n");
                 }
                 if (strncmp(outputmode,"udp",3)==0) {
                     srtcore.udp_server_thread_running = 0;
+                    fprintf(stderr,"main: stopping udp_server_thread\n");
                     pthread_join(srtcore.udp_server_thread_id, NULL);
+                    fprintf(stderr,"main: done stopping udp_server_thread\n");
                 }
                 if (strncmp(sourcemode,"udp",3)==0) {
                     srtcore.udp_receiver_thread_running = 0;
+                    fprintf(stderr,"main: stopping udp_receiver_thread\n");
                     pthread_join(srtcore.udp_receiver_thread_id, NULL);
+                    fprintf(stderr,"main: done stopping udp_receiver_thread\n");
                 }
                 if (strncmp(outputmode,"srt",3)==0) {
                     srtcore.srt_server_thread_running = 0;
+                    fprintf(stderr,"main: stopping srt_server_thread\n");
                     pthread_join(srtcore.srt_server_thread_id, NULL);
+                    fprintf(stderr,"main: done stopping srt_server_thread\n");
                 }
                 srtcore.thumbnail_thread_running = 0;
+                fprintf(stderr,"main: stopping thumbnail_thread\n");
                 pthread_join(srtcore.thumbnail_thread_id, NULL);
+                fprintf(stderr,"main: done stopping thumbnail thread\n");
             }
-            free(msg);
+            memory_return(srtcore.msgpool, msg);
             msg = NULL;
             wait_count = 0;
+            fprintf(stderr,"main: restarting\n");
             goto restart_srt;
         } else {
             usleep(1000);
@@ -2438,6 +2534,13 @@ restart_srt:
         srtcore.srtserverqueue[thread] = NULL;
     }
     pthread_mutex_destroy(srtcore.srtserverlock);
+
+    memory_destroy(srtcore.msgpool);
+    srtcore.msgpool = NULL;
+    memory_destroy(srtcore.packetpool);
+    srtcore.packetpool = NULL;
+    memory_destroy(srtcore.videopool);
+    srtcore.videopool = NULL;
 
     srt_cleanup();
 

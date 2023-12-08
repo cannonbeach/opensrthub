@@ -50,6 +50,9 @@ typedef struct _srthub_core_struct_ {
     void *signalqueue;
     int64_t last_corruption_count;
     time_t last_corruption_time;
+    void *msgpool;
+    void *packetpool;
+    void *videopool;
     pthread_mutex_t *srtserverlock;
     int srt_server_worker_thread_running[MAX_WORKER_THREADS];
     pthread_t srt_server_worker_thread_id[MAX_WORKER_THREADS];
