@@ -1877,7 +1877,7 @@ cleanup_udp_server_thread:
     close(output_socket);
 
     msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
-    while (!msg) {
+    while (msg) {
         uint8_t *buffer = (uint8_t*)msg->buffer;
         memory_return(srtcore->packetpool, buffer);
         memory_return(srtcore->msgpool, msg);
