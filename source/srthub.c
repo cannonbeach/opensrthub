@@ -1359,6 +1359,7 @@ retry_srt_server_push_connection:
                     srtcore->srtserverqueue[thread] = NULL;
                     pthread_mutex_unlock(srtcore->srtserverlock);
 
+                    msg = (dataqueue_message_struct*)dataqueue_take_back(localqueue);
                     while (msg) {
                         localbuffer = (uint8_t*)msg->buffer;
                         memory_return(srtcore->packetpool, localbuffer);
