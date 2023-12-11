@@ -29,6 +29,28 @@
 #define MAX_STRING_SIZE 512
 #define MAX_WORKER_THREADS 8
 
+typedef struct _srthub_configuration_struct_ {
+    char sourcename[MAX_STRING_SIZE];
+    char streamid[MAX_STRING_SIZE];
+    char sourcemode[MAX_STRING_SIZE];
+    char sourceaddress[MAX_STRING_SIZE];
+    char sourceinterface[MAX_STRING_SIZE];
+    int sourceport;
+    char outputmode[MAX_STRING_SIZE];
+    char outputaddress[MAX_STRING_SIZE];
+    char outputinterface[MAX_STRING_SIZE];
+    int outputport;
+    int outputttl;
+    int keysize;
+    char passphrase[MAX_STRING_SIZE];
+    char servermode[MAX_STRING_SIZE];
+    char clientmode[MAX_STRING_SIZE];
+    char managementip[MAX_STRING_SIZE];
+    int latencyms;
+    char whitelist[MAX_STRING_SIZE];
+    int overheadbw;
+} srthub_configuration_struct;
+
 typedef struct _srthub_core_struct_ {
     int session_identifier;
     pthread_t srt_server_thread_id;
@@ -57,6 +79,7 @@ typedef struct _srthub_core_struct_ {
     int srt_server_worker_thread_running[MAX_WORKER_THREADS];
     pthread_t srt_server_worker_thread_id[MAX_WORKER_THREADS];
     void *srtserverqueue[MAX_WORKER_THREADS];
+    srthub_configuration_struct *config;
 } srthub_core_struct;
 
 #endif

@@ -37,6 +37,7 @@
 #include "tsdecode.h"
 #include "dataqueue.h"
 #include "esignal.h"
+#include "cJSON.h"
 
 #define SRTHUB_MAJOR 0
 #define SRTHUB_MINOR 1
@@ -1269,6 +1270,7 @@ retry_srt_server_push_connection:
 
     sprintf(statsfilename,"/opt/srthub/status/srt_server_thread_%d_%d.json", thread, srtcore->session_identifier);
 
+    fprintf(stderr,"srt_server_thread_push: creating srtserverqeueu\n");
     pthread_mutex_lock(srtcore->srtserverlock);
     srtcore->srtserverqueue[thread] = dataqueue_create();
     pthread_mutex_unlock(srtcore->srtserverlock);
@@ -1277,20 +1279,22 @@ retry_srt_server_push_connection:
     update_stats = 0;
     thread = 0; // we're only pushing to one place for now
 
+    fprintf(stderr,"srt_server_thread_push: starting main thread loop\n");
+
     clock_gettime(CLOCK_MONOTONIC, &server_time_start);
     while (srtcore->srt_server_thread_running) {
         pthread_mutex_lock(srtcore->srtserverlock);
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
         pthread_mutex_unlock(srtcore->srtserverlock);
 
-        while (!msg && srtcore->srt_server_worker_thread_running[thread]) {
+        while (!msg && srtcore->srt_server_thread_running) {
             usleep(1000);
             pthread_mutex_lock(srtcore->srtserverlock);
             msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
             pthread_mutex_unlock(srtcore->srtserverlock);
         }
 
-        if (!srtcore->srt_server_worker_thread_running[thread]) {
+        if (!srtcore->srt_server_thread_running) {
             if (msg) {
                 uint8_t *buffer = (uint8_t*)msg->buffer;
                 memory_return(srtcore->packetpool, buffer);
@@ -1387,6 +1391,7 @@ retry_srt_server_push_connection:
                 clock_gettime(CLOCK_MONOTONIC, &server_time_start);
             } else {
                 fprintf(stderr,"srt_server_thread_push: SRT unknown error: %s\n", srt_getlasterror_str());
+                // need to handle this error
             }
             usleep(100);
         } else if (sent_bytes == 0) {
@@ -1980,6 +1985,8 @@ static void *srthub_thumbnail_thread(void *context)
                     decode_codec = avcodec_find_decoder(AV_CODEC_ID_MPEG2VIDEO);
                 } else if (buffer_type == STREAM_TYPE_HEVC) {
                     decode_codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+                //} else if (buffer_type == STREAM_TYPE_AV1) {
+                //decode_codec = avcodec_find_decoder(AV_CODEC_ID_AV1);
                 } else {
                     // unknown codec
                 }
@@ -2168,12 +2175,13 @@ cleanup_thumbnail_thread:
     return NULL;
 }
 
-/*
-int srt_read_config(char *filename)
+int srthub_read_config(char *filename, srthub_configuration_struct *config)
 {
     FILE *configfile;
     int br;
     char configbuffer[MAX_CONFIG_SIZE];
+
+    memset(config, 0, sizeof(srthub_configuration_struct));
 
     configfile = fopen(filename,"r");
     if (configfile) {
@@ -2181,15 +2189,163 @@ int srt_read_config(char *filename)
         if (br > 0) {
             cJSON *top = cJSON_Parse(configbuffer);
             if (top) {
+                cJSON *sourcename_field;
                 cJSON *streamid_field;
                 cJSON *sourcemode_field;
                 cJSON *sourceaddress_field;
                 cJSON *sourceport_field;
+                cJSON *sourceinterface_field;
                 cJSON *outputmode_field;
                 cJSON *outputaddress_field;
                 cJSON *outputport_field;
-                streamid_field = cJSON_GetObjectItem(top,"streamid");
+                cJSON *outputinterface_field;
+                cJSON *outputttl_field;
+                cJSON *keysize_field;
+                cJSON *passphrase_field;
+                cJSON *servermode_field;
+                cJSON *clientmode_field;
+                cJSON *managementserverip_field;
+                cJSON *latencyms_field;
+                cJSON *whitelist_field;
+                cJSON *overheadbw_field;
 
+                sourcename_field = cJSON_GetObjectItem(top,"sourcename");
+                sourcemode_field = cJSON_GetObjectItem(top,"sourcemode");
+                sourceaddress_field = cJSON_GetObjectItem(top,"sourceaddress");
+                sourceport_field = cJSON_GetObjectItem(top,"sourceport");
+                sourceinterface_field = cJSON_GetObjectItem(top,"sourceinterface");
+
+                outputmode_field = cJSON_GetObjectItem(top,"outputmode");
+                outputaddress_field = cJSON_GetObjectItem(top,"outputaddress");
+                outputport_field = cJSON_GetObjectItem(top,"outputport");
+                outputinterface_field = cJSON_GetObjectItem(top,"outputinterface");
+                outputttl_field = cJSON_GetObjectItem(top,"outputttl");
+
+                keysize_field = cJSON_GetObjectItem(top,"keysize");
+                passphrase_field = cJSON_GetObjectItem(top,"passphrase");
+                streamid_field = cJSON_GetObjectItem(top,"streamid");
+                servermode_field = cJSON_GetObjectItem(top,"servertype");
+                clientmode_field = cJSON_GetObjectItem(top,"clienttype");
+                whitelist_field = cJSON_GetObjectItem(top,"whitelist");
+
+                managementserverip_field = cJSON_GetObjectItem(top,"managementserverip");
+                overheadbw_field = cJSON_GetObjectItem(top,"overheadbw");
+                latencyms_field = cJSON_GetObjectItem(top,"latencyms");
+
+                fprintf(stderr,"-------------------- configuration options -----------------------\n");
+                if (sourcename_field) {
+                    snprintf(config->sourcename,MAX_STRING_SIZE-1,"%s",sourcename_field->valuestring);
+                    fprintf(stderr,"sourcename:%s\n", config->sourcename);
+                }
+                if (streamid_field) {
+                    snprintf(config->streamid,MAX_STRING_SIZE-1,"%s",streamid_field->valuestring);
+                    if (strlen(config->streamid) > 0) {
+                        fprintf(stderr,"streamid:%s\n", config->streamid);
+                    }
+                }
+                if (sourcemode_field) {
+                    snprintf(config->sourcemode,MAX_STRING_SIZE-1,"%s",sourcemode_field->valuestring);
+                    fprintf(stderr,"sourcemode:%s\n", config->sourcemode);
+                }
+                if (sourceaddress_field) {
+                    snprintf(config->sourceaddress,MAX_STRING_SIZE-1,"%s",sourceaddress_field->valuestring);
+                    fprintf(stderr,"sourceaddress:%s\n", config->sourceaddress);
+                }
+                if (sourceinterface_field) {
+                    snprintf(config->sourceinterface,MAX_STRING_SIZE-1,"%s",sourceinterface_field->valuestring);
+                    fprintf(stderr,"sourceinterface:%s\n", config->sourceinterface);
+                }
+                if (sourceport_field) {
+                    config->sourceport = atoi(sourceport_field->valuestring);
+                    fprintf(stderr,"sourceport:%d\n", config->sourceport);
+                }
+                if (outputmode_field) {
+                    snprintf(config->outputmode,MAX_STRING_SIZE-1,"%s",outputmode_field->valuestring);
+                    fprintf(stderr,"outputmode:%s\n", config->outputmode);
+                }
+                if (outputaddress_field) {
+                    snprintf(config->outputaddress,MAX_STRING_SIZE-1,"%s",outputaddress_field->valuestring);
+                    fprintf(stderr,"outputaddress:%s\n", config->outputaddress);
+                }
+                if (outputinterface_field) {
+                    snprintf(config->outputinterface,MAX_STRING_SIZE-1,"%s",outputinterface_field->valuestring);
+                    fprintf(stderr,"outputinterface:%s\n", config->outputinterface);
+                }
+                if (outputport_field) {
+                    config->outputport = atoi(outputport_field->valuestring);
+                    fprintf(stderr,"outputport:%d\n", config->outputport);
+                }
+                if (outputttl_field) {
+                    config->outputttl = atoi(outputttl_field->valuestring);
+                    fprintf(stderr,"outputttl:%d\n", config->outputttl);
+                } else {
+                    config->outputttl = 16;
+                }
+                if (keysize_field) {
+                    config->keysize = atoi(keysize_field->valuestring);
+                    fprintf(stderr,"keysize:%d\n", config->keysize);
+                } else {
+                    config->keysize = 0;
+                }
+                if (passphrase_field) {
+                    snprintf(config->passphrase,MAX_STRING_SIZE-1,"%s",passphrase_field->valuestring);
+                    if (strlen(config->passphrase) > 0) {
+                        fprintf(stderr,"passphrase:%s\n", config->passphrase);
+                    }
+                }
+                if (servermode_field) {
+                    snprintf(config->servermode,MAX_STRING_SIZE-1,"%s",servermode_field->valuestring);
+                    fprintf(stderr,"servermode:%s\n", config->servermode);
+                }
+                if (clientmode_field) {
+                    snprintf(config->clientmode,MAX_STRING_SIZE-1,"%s",clientmode_field->valuestring);
+                    fprintf(stderr,"clientmode:%s\n", config->clientmode);
+                }
+                if (managementserverip_field) {
+                    snprintf(config->managementip,MAX_STRING_SIZE-1,"%s",managementserverip_field->valuestring);
+                    if (strlen(config->managementip) > 0) {
+                        fprintf(stderr,"managementip:%s\n", config->managementip);
+                    }
+                }
+                if (latencyms_field) {
+                    config->latencyms = atoi(latencyms_field->valuestring);
+                    fprintf(stderr,"latencyms:%d\n", config->latencyms);
+                } else {
+                    config->latencyms = 100;
+                }
+                if (overheadbw_field) {
+                    config->overheadbw = atoi(overheadbw_field->valuestring);
+                    fprintf(stderr,"overheadbw:%d%%\n", config->overheadbw);
+                } else {
+                    config->overheadbw = 25;
+                }
+                if (whitelist_field) {
+                    snprintf(config->whitelist,MAX_STRING_SIZE-1,"%s",whitelist_field->valuestring);
+                    if (strlen(config->whitelist) > 0) {
+                        fprintf(stderr,"whitelist:%s\n", config->whitelist);
+                    }
+                }
+
+                if (strncmp(config->sourcemode,"srt",3)==0) {
+                    if (strncmp(config->clientmode,"push",4)==0) {
+                        strncat(config->sourcemode, config->clientmode, MAX_STRING_SIZE-1);
+                    }
+                    if (strncmp(config->clientmode,"pull",4)==0) {
+                        strncat(config->sourcemode, config->clientmode, MAX_STRING_SIZE-1);
+                    }
+                    fprintf(stderr,"updated sourcemode:%s\n", config->sourcemode);
+                }
+                if (strncmp(config->outputmode,"srt",3)==0) {
+                    if (strncmp(config->servermode,"push",4)==0) {
+                        strncat(config->outputmode, config->servermode, MAX_STRING_SIZE-1);
+                    }
+                    if (strncmp(config->servermode,"pull",4)==0) {
+                        strncat(config->outputmode, config->servermode, MAX_STRING_SIZE-1);
+                    }
+                    fprintf(stderr,"updated outputmode:%s\n", config->outputmode);
+                }
+                fprintf(stderr,"------------------------------------------------------------------\n");
+                cJSON_Delete(top);
             }
         }
         fclose(configfile);
@@ -2197,12 +2353,11 @@ int srt_read_config(char *filename)
 
     return 0;
 }
-*/
 
 int main(int argc, char **argv)
 {
     srthub_core_struct srtcore;
-    int session_identifier;
+    int session_identifier = 1;
     char statsfilename[MAX_STRING_SIZE];
     char system_hostname[MAX_STRING_SIZE];
     int wait_count = 0;
@@ -2234,7 +2389,7 @@ int main(int argc, char **argv)
         fclose(srthubstatsfile);
     }
 
-    if (argc < 7) {
+    if (argc < 2) {
         fprintf(stderr,"\n");
         fprintf(stderr,"usage: srthub sourcemode sourceaddress sourceport outputmode outputaddress outputport passphrase\n");
         fprintf(stderr,"\n");
@@ -2256,58 +2411,26 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    char *sourcemode = (char*)argv[1];
-    char *server_address = (char*)argv[2];
-    int server_port = atoi(argv[3]);
-    char *sourceinterface = (char*)argv[4];
-    char *outputmode = (char*)argv[5];
-    char *output_address = (char*)argv[6];
-    int output_port = atoi(argv[7]);
-    char *outputinterface = (char*)argv[8];
-    char *passphrase = NULL;
-    int keysize = 0;
-    char *streamid = NULL;
+    char configfilename[MAX_STRING_SIZE];
+    srthub_configuration_struct config;
+    session_identifier = atoi(argv[1]);
+    snprintf(configfilename,MAX_STRING_SIZE-1,"/opt/srthub/configs/%d.json",session_identifier);
+    fprintf(stderr,"reading configuration file %s\n", configfilename);
+    srthub_read_config(configfilename,&config);
 
-    if (argc >= 10) {  // session_identifier
-        session_identifier = atoi(argv[9]);
-        if (session_identifier <= 0) {
-            fprintf(stderr,"\nsession identifier is invalid : %d\n\n", session_identifier);
-            return -1;
-        }
-    } else {
-        session_identifier = 1;
-        fprintf(stderr,"\ndefaulting to session identifier : %d\n\n", session_identifier);
-    }
+    srtcore.config = (srthub_configuration_struct*)&config;
 
-    if (argc >= 11) {  // passphrase
-        passphrase = (char*)argv[10];
-        if ((strlen(passphrase) < 10) || (strlen(passphrase) > 79)) {
-            fprintf(stderr,"\ninvalid passphrase : %s\n\n", passphrase);
-            return -1;
-        }
-    } else {
-        fprintf(stderr,"\nno passphrase specified\n");
-    }
-
-    if (argc >= 12) {  // keysize
-        keysize = atoi(argv[11]);
-        if (keysize != 0 && keysize != 16 && keysize != 24 && keysize != 32) {
-            fprintf(stderr,"\n\ninvalid keysize : %d\n\n", keysize);
-            return -1;
-        }
-    } else {
-        fprintf(stderr,"\nno keysize specified\n");
-    }
-
-    if (argc >= 13) {  // streamid
-        streamid = (char*)argv[12];
-        if (strlen(streamid) > MAX_STRING_SIZE) {
-            fprintf(stderr,"\n\ninvalid streamid : %s\n\n", streamid);
-            return -1;
-        }
-    } else {
-        fprintf(stderr,"\nno streamid specified\n");
-    }
+    char *sourcemode = (char*)&config.sourcemode;
+    char *server_address = (char*)&config.sourceaddress;
+    int server_port = config.sourceport;
+    char *sourceinterface = (char*)&config.sourceinterface;
+    char *outputmode = (char*)&config.outputmode;
+    char *output_address = (char*)&config.outputaddress;
+    int output_port = config.outputport;
+    char *outputinterface = (char*)&config.outputinterface;
+    char *passphrase = (char*)&config.passphrase;
+    int keysize = config.keysize;
+    char *streamid = (char*)&config.streamid;
 
     if ((strncmp(sourcemode,"udp",3)==0) || (strncmp(sourcemode,"srt",3)==0)) {
         fprintf(stderr,"source mode is: %s\n", sourcemode);

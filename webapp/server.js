@@ -741,11 +741,12 @@ app.post('/api/v1/start_service/:uid', (req, res) => {
                 }
                 console.log('debug: updated: sourcemode='+sourcemode+', outputmode='+outputmode);
 
-                var start_cmd = 'sudo docker run -itd --net=host --name srthub'+fileprefix+' --restart=unless-stopped --log-opt max-size=25m -v /opt/srthub:/opt/srthub -v '+configFolder+':'+configFolder+' -v '+statusFolder+':'+statusFolder+' -v '+apacheFolder+':'+apacheFolder+' dockersrthub /usr/bin/srthub '+sourcemode+' '+words.sourceaddress+' '+words.sourceport+' '+words.sourceinterface+' '+outputmode+' '+words.outputaddress+' '+words.outputport+' '+words.outputinterface+' '+sessionid;
+                var start_cmd = 'sudo docker run -itd --net=host --name srthub'+fileprefix+' --restart=unless-stopped --log-opt max-size=25m -v /opt/srthub:/opt/srthub -v '+configFolder+':'+configFolder+' -v '+statusFolder+':'+statusFolder+' -v '+apacheFolder+':'+apacheFolder+' dockersrthub /usr/bin/srthub '+sessionid;
+                //sourcemode+' '+words.sourceaddress+' '+words.sourceport+' '+words.sourceinterface+' '+outputmode+' '+words.outputaddress+' '+words.outputport+' '+words.outputinterface+' '+sessionid;
 
                 console.log('start command: ', start_cmd);
 
-                var passphrase = words.passphrase;
+                /*var passphrase = words.passphrase;
                 var keysize = words.keysize;
                 var streamid = words.streamid;
                 if (passphrase.length > 0) {
@@ -753,7 +754,7 @@ app.post('/api/v1/start_service/:uid', (req, res) => {
                 }
                 if (streamid.length > 0) {
                     start_cmd = start_cmd + ' ' + streamid;
-                }
+                }*/
 
                 responding = 1;
                 exec(start_cmd, (err, stdout, stderr) => {

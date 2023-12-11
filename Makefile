@@ -1,6 +1,6 @@
 CC=gcc
 CXX=g++
-CFLAGS=-g -c -O2 -m64 -Wall -Wfatal-errors -funroll-loops -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-format-truncation
+CFLAGS=-g -c -O2 -m64 -Wall -Wfatal-errors -funroll-loops -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-format-truncation -Wno-attributes -Wno-stringop-truncation
 SRC=./source
 INC=-I./include
 OBJS=crc.o tsdecode.o mempool.o dataqueue.o esignal.o udpsource.o cJSON.o cJSON_Utils.o
