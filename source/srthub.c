@@ -2391,21 +2391,10 @@ int main(int argc, char **argv)
 
     if (argc < 2) {
         fprintf(stderr,"\n");
-        fprintf(stderr,"usage: srthub sourcemode sourceaddress sourceport outputmode outputaddress outputport passphrase\n");
+        fprintf(stderr,"usage: srthub sessionid\n");
         fprintf(stderr,"\n");
-        fprintf(stderr,"    sourcemode is [udp, srtpush, srtpull] (where srtpull is Caller mode and srtpush is Listener mode)\n");
-        fprintf(stderr,"    sourceaddress is IPv4 unicast IP address in the format of www.xxx.yyy.zzz (domain name not yet supported)\n");
-        fprintf(stderr,"    sourceport is IPv4 source port\n");
-        fprintf(stderr,"    sourceinterface is the Ethernet Interface\n");
-        fprintf(stderr,"    outputmode is [udp, srtpush, srtpull] (where srtpush is Caller mode and srtpull is Listener mode)\n");
-        fprintf(stderr,"    outputaddress is IPv4 unicast IP address in the format of www.xxx.yyy.zzz (domain name not yet supported)\n");
-        fprintf(stderr,"    outputport is IPv4 output port\n");
-        fprintf(stderr,"    outputinterface is the Ethernet Interface\n");
-        fprintf(stderr,"    sessionid is a unique number that identifies the instance of the application (unsigned 32-bit)\n");
-        fprintf(stderr,"    passphrase is the passphrase if you need to encrypt or decrypt, 10 to 79 characters long (no spaces)\n");
-        fprintf(stderr,"    keysize is the size of the key if you need to encrypt or decrypt, 0=default, 16=AES-128, 24=AES-192 and 32=AES-256\n");
-        fprintf(stderr,"    streamid is the streamid as defined by srt (no spaces)\n");
-        fprintf(stderr,"    \n");
+        fprintf(stderr,"    sessionid is a unique number that identifies the instance of the application (unsigned 32-bit) and it should correspond to a json config file in /opt/srthub/configs\n");
+        fprintf(stderr,"\n");
         fprintf(stderr,"    srt to srt is an invalid mode\n");
         fprintf(stderr,"\n");
         return 0;
