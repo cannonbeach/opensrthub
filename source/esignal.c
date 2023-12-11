@@ -114,7 +114,7 @@ void signal_management_interface(srthub_core_struct *core, char *signal_buffer, 
         }
 
         curl_easy_setopt(curl, CURLOPT_URL, signal_url);
-        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "POST");
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, (char*)signal_buffer);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)signal_buffer_length);
