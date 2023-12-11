@@ -380,6 +380,8 @@ static void *srt_receiver_thread_listener(void *context)
 
         if (client_sock == SRT_INVALID_SOCK) {
             fprintf(stderr,"srt_receiver_thread_listener: invalid socket on accept\n");
+            usleep(100000);
+            send_restart_message(srtcore);
             goto cleanup_srt_receiver_thread_listener;
         }
 
@@ -397,13 +399,15 @@ static void *srt_receiver_thread_listener(void *context)
         while (srtcore->srt_receiver_thread_running && srt_connected) {
             SRT_MSGCTRL srtcontrol;
 
+            //fprintf(stderr,"calling srt_recvmsg2\n");
             recvbytes = srt_recvmsg2(client_sock, buffer, MAX_PACKET_BUFFER_SIZE, &srtcontrol);
+            //fprintf(stderr,"done calling srt_recvmsg2, %d\n", recvbytes);
             if (recvbytes < 0) {
                 int lasterr = srt_getlasterror(NULL);
                 if (lasterr == SRT_ENOCONN) {
                     int64_t delta_time_no_connection;
+                    fprintf(stderr,"srt_receiver_thread_listener: SRT not connected, waiting...\n");
                     if ((update_stats % 100)==0) {
-                        fprintf(stderr,"srt_receiver_thread_listener: SRT not connected, waiting...\n");
                         FILE *statsfile = fopen(statsfilename,"wb");
                         if (statsfile) {
                             fprintf(statsfile,"{\n");
@@ -431,19 +435,23 @@ static void *srt_receiver_thread_listener(void *context)
                         goto cleanup_srt_receiver_thread_listener;
                     }
                 } else if (lasterr == SRT_ECONNLOST) {
+                    srt_connected = 0;
                     char signal_message[MAX_STRING_SIZE];
                     fprintf(stderr,"srt_receiver_thread_listener: SRT connection has been lost!\n");
-                    srt_connected = 0;
                     snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Connection Lost to %s:%d",
                              srtdata->server_address,
                              srtdata->server_port);
                     send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, signal_message);
                     send_restart_message(srtcore);
                     goto cleanup_srt_receiver_thread_listener;
-                } else if (lasterr == SRT_EASYNCRCV) {
-
                 } else {
+                    srt_connected = 0;
                     fprintf(stderr,"srt_receiver_thread_listener: SRT unknown error: %s\n", srt_getlasterror_str());
+                    char signal_message[MAX_STRING_SIZE];
+                    snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Error: %s, No Connection", srt_getlasterror_str());
+                    send_signal(srtcore, SIGNAL_SRT_CONNECTION_LOST, signal_message);
+                    send_restart_message(srtcore);
+                    goto cleanup_srt_receiver_thread_listener;
                 }
                 usleep(100);
             } else if (recvbytes == 0) {
@@ -506,7 +514,9 @@ static void *srt_receiver_thread_listener(void *context)
                 }
                 update_stats++;
                 tp = recvbytes / 188;
+                //fprintf(stderr,"decode packets: tp=%d\n", tp);
                 decode_packets((uint8_t*)buffer, tp, decode, 0);
+                //fprintf(stderr,"done decode packets\n");
 
                 {
                     dataqueue_message_struct *msg = NULL;
@@ -923,7 +933,7 @@ static void *srt_server_worker_output_thread(void *context)
         SRT_MSGCTRL srtcontrol;
 
         memset(&srtcontrol, 0, sizeof(srtcontrol));
-        if (msgno <= 0) {
+        if (msgno <= 0 || msgno > 67108863) {
             msgno = 1;
         }
         srtcontrol.msgno = msgno++;
@@ -1249,7 +1259,10 @@ retry_srt_server_push_connection:
     srterr = srt_connect(sendersock, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (srterr == SRT_ERROR) {
         fprintf(stderr,"srt_server_thread_push: unable to proceed with srt_connect, error=%s\n", srt_getlasterror_str());
-        goto cleanup_srt_server_thread_push;
+        srt_close(sendersock);
+        sendersock = SRT_INVALID_SOCK;
+        usleep(1000000);
+        goto retry_srt_server_push_connection;
     }
 
     fprintf(stderr,"srt_server_thread_push: finished with srt_connect(), serversock=%d\n", sendersock);
@@ -1293,7 +1306,7 @@ retry_srt_server_push_connection:
         SRT_MSGCTRL srtcontrol;
 
         memset(&srtcontrol, 0, sizeof(srtcontrol));
-        if (msgno <= 0) {
+        if (msgno <= 0 || msgno > 67108863) {
             msgno = 1;
         }
         srtcontrol.msgno = msgno++;
@@ -2144,13 +2157,10 @@ cleanup_thumbnail_thread:
 
     msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
     while (msg) {
-        if (msg) {
-            uint8_t *buffer = (uint8_t*)msg->buffer;
-            memory_return(srtcore->videopool, buffer);
-            memory_return(srtcore->msgpool, msg);
-            buffer = NULL;
-            msg = NULL;
-        }
+        uint8_t *buffer = (uint8_t*)msg->buffer;
+        memory_return(srtcore->videopool, buffer);
+        memory_return(srtcore->msgpool, msg);
+        buffer = NULL;
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
     }
 
