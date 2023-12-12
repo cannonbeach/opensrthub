@@ -42,7 +42,46 @@ Thank you!
 
 ### Troubleshooting 
 
-You can also run the application command line (./srthub) as well as manually through the Docker image (more on this later).
+You can also run the application command line (./srthub) as well as manually through the Docker image (more on this later).  If for some reason you are not able to start it through the web application, this would be the best place to start.
+
+If you want to run through the command line, you can run it as follows, but first you need to identify the configuration which is stored in /opt/srthub/configs.
+
+```
+tapeworm@tapeworm-parasite1-cloud6:~/srthub$ ls -l /opt/srthub/configs
+total 12
+-rw-r--r-- 1 root root 285 Nov 30 13:53 1701381185.json
+-rw-r--r-- 1 root root 312 Dec  7 07:28 1701387240.json
+-rw-r--r-- 1 root root 299 Dec  4 07:58 1701705434.json
+```
+
+```
+tapeworm@tapeworm-parasite1-cloud6:~/srthub$ sudo ./srthub 1701381185
+and it will read the configuration file in /opt/srthub/configs/1701381185.json
+```
+
+The configuration file format is as follows (and is stored in /opt/srthub/configs):
+```
+{
+   "sourcename":"Live Sports",
+   "sourcemode":"srt",
+   "sourceaddress":"192.168.86.40",
+   "sourceport":"10000",
+   "sourceinterface":"eno1",
+   "outputmode":"udp",
+   "outputaddress":"192.168.86.34",
+   "outputport":"18000",
+   "outputinterface":"eno1",
+   "outputttl":"16",
+   "passphrase":"",
+   "keysize":"0",
+   "streamid":"",
+   "managementserverip":"",
+   "whitelist":"",   
+   "clienttype":"pull",
+   "overheadbw":"25",
+   "latencyms":"100"
+}
+```
 
 ### API (more documentation to be provided)
 
