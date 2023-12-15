@@ -70,9 +70,15 @@ else
     exit
 fi
 pushd docker
-cp ../srthub .
+sudo cp ../srthub .
 echo "Building docker package for srthub"
 sudo docker build -t dockersrthub .
 popd
+
+sudo cp ./webapp/server.js /var/app
+sudo cp ./webapp/public/index.html /var/app/public
+sudo cp ./webapp/public/client.js /var/app/public
 echo "Docker Package Built and Installed"
+echo "Please restart NodeJS, sudo pm2 restart opensrthub"
+echo "Any existing containers will need to be restarted to use new version of code"
 echo "Done!"
