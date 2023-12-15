@@ -708,6 +708,7 @@ function request_log_data(service)
                     var elementname_logtime = 'logtime'+p;
                     var elementname_logid = 'logid'+p;
                     var elementname_logmessage = 'logmessage'+p;
+                    var elementname_logsourcename = 'logsourcename'+p;
 
                     document.getElementById(elementname_logentry).innerHTML = ' '+p+' ';
                     document.getElementById(elementname_logstatus).innerHTML = '';
@@ -724,11 +725,13 @@ function request_log_data(service)
                 var elementname_logtime = 'logtime'+p;
                 var elementname_logid = 'logid'+p;
                 var elementname_logmessage = 'logmessage'+p;
+                var elementname_logsourcename = 'logsourcename'+p;
 
                 //console.log(service_words.length);
                 if (service_words[i]) {
                     var logstatus_string = service_words[i].status;
                     var logstatus_time = service_words[i].accesstime;
+                    var logstatus_sourcename = service_words[i].sourcename;
                     var logstatus_id = service_words[i].id;
                     var logstatus_message = service_words[i].message;
 
@@ -737,6 +740,7 @@ function request_log_data(service)
                     document.getElementById(elementname_logmessage).innerHTML = logstatus_message;
                     document.getElementById(elementname_logid).innerHTML = logstatus_id;
                     document.getElementById(elementname_logtime).innerHTML = logstatus_time;
+                    document.getElementById(elementname_logsourcename).innerHTML = logstatus_sourcename;
                 } else {
                     document.getElementById(elementname_logentry).innerHTML = ' '+p+' ';
                     document.getElementById(elementname_logstatus).innerHTML = '';

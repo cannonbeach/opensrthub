@@ -144,6 +144,7 @@ int send_direct_error(srthub_core_struct *core, int signal_type, const char *mes
     struct tm currentUTC;
     char formattedtime[MAX_FORMATTED_TIME];
     int64_t id = (int64_t)core->session_identifier;
+    char *sourcename = (char*)&core->config->sourcename;
     char node_hostname[MAX_HOSTNAME_SIZE];
     int nodeerr;
 
@@ -181,6 +182,7 @@ void *signal_thread(void *context)
     int ret;
     char node_hostname[MAX_HOSTNAME_SIZE];
     int nodeerr;
+    char *sourcename = (char*)&core->config->sourcename;
 
     memset(node_hostname,0,sizeof(node_hostname));
 
@@ -212,12 +214,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
                          "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -226,12 +230,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"warning\",\n"
                          "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -240,12 +246,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"warning\",\n"
                          "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -254,12 +262,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"warning\",\n"
                          "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -268,13 +278,16 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
-                         "    \"message\": \"Service Started\"\n"
+                         "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
-                         id);
+                         sourcename,
+                         id,
+                         msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
             if (buffer_type == SIGNAL_STOP_SERVICE) {
@@ -282,12 +295,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
                          "    \"message\": \"Service Stopped\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -296,6 +311,7 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"warning\",\n"
                          "    \"message\": \"No Input Signal Detected\",\n"
@@ -303,6 +319,7 @@ void *signal_thread(void *context)
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -312,12 +329,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
                          "    \"message\": \"scte35 out of network start\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -326,12 +345,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
                          "    \"message\": \"scte35 out of network done\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -340,12 +361,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
                          "    \"message\": \"segment successfully published\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -354,12 +377,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"error\",\n"
                          "    \"message\": \"segment publish failed\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -368,12 +393,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"warning\",\n"
                          "    \"message\": \"high cpu usage detected\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -382,12 +409,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"warning\",\n"
                          "    \"message\": \"disk space is low\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
@@ -396,12 +425,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"success\",\n"
                          "    \"message\": \"%s\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -411,12 +442,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"error\",\n"
                          "    \"message\": \"decode error (%s)\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -426,12 +459,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"error\",\n"
                          "    \"message\": \"parse error (%s)\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
@@ -441,12 +476,14 @@ void *signal_thread(void *context)
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"
                          "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
                          "    \"id\": %ld,\n"
                          "    \"status\": \"error\",\n"
                          "    \"message\": \"malformed data (%s)\"\n"
                          "}\n",
                          formattedtime,
                          node_hostname,
+                         sourcename,
                          id,
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));

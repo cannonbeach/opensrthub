@@ -272,6 +272,7 @@ app.get('/api/v1/get_log_page', (req, res) => {
     html += '<th>#<div>#</div></th>';
     html += '<th>Severity<div>Severity</div></th>';
     html += '<th>Time<div>Time</div></th>';
+    html += '<th>Name<div>Name</div></th>';
     html += '<th>Resource<div>Resource</div></th>';
     html += '<th>Status<div>Status</div></th>';
     html += '</tr>';
@@ -284,6 +285,7 @@ app.get('/api/v1/get_log_page', (req, res) => {
         html += '<td><div id=\'logentry'+p+'\'></div></td>';
         html += '<td><div id=\'logstatus'+p+'\'></div></td>';
         html += '<td><div id=\'logtime'+p+'\'></div></td>';
+        html += '<td><div id=\'logsourcename'+p+'\'></div></td>';
         html += '<td><div id=\'logid'+p+'\'></div></td>';
         html += '<td><div id=\'logmessage'+p+'\'></div></td>';
         html += '</tr>';
