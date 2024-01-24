@@ -87,7 +87,6 @@ And since the opensrthub runs under Docker, you can check the status of the cont
 
 ```
 tapeworm@tapeworm-parasite1-cloud6:~$ sudo docker ps
-[sudo] password for coffee: 
 CONTAINER ID   IMAGE          COMMAND                  CREATED      STATUS      PORTS     NAMES
 2cfe96d588de   dockersrthub   "/usr/bin/srthub 170…"   8 days ago   Up 8 days             srthub1701705434
 tapeworm@tapeworm-parasite1-cloud6:~$
