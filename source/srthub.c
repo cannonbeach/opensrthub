@@ -289,6 +289,7 @@ static void *srt_receiver_thread_listener(void *context)
     struct timeval connect_stop;
     SRT_TRACEBSTATS stats;
     int threadid = gettid();
+    int32_t latencyms;
 
     decode->pat_version_number = -1;
 
@@ -298,6 +299,8 @@ static void *srt_receiver_thread_listener(void *context)
 
     srtdata = (srt_receive_thread_listener_struct*)context;
     srtcore = srtdata->core;
+
+    latencyms = srtcore->config->latencyms;
 
     sprintf(statsfilename,"/opt/srthub/status/srt_receiver_%d.json", srtcore->session_identifier);
 
@@ -318,6 +321,12 @@ static void *srt_receiver_thread_listener(void *context)
     srterr = srt_setsockflag(listener, SRTO_SNDSYN, &no, sizeof(no));
     if (srterr == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_listener;
+    }
+
+    srterr = srt_setsockflag(listener, SRTO_LATENCY, &latencyms, sizeof(latencyms));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_receiver_thread_listener;
     }
 
@@ -507,6 +516,7 @@ static void *srt_receiver_thread_listener(void *context)
                             fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
                             fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
                             fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
+                            fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                             fprintf(statsfile,"    \"rtt\":%.2f\n", (double)stats.msRTT);
                             fprintf(statsfile,"}\n");
                             fclose(statsfile);
@@ -589,6 +599,7 @@ static void *srt_receiver_thread_caller(void *context)
     char statsfilename[MAX_STRING_SIZE];
     int srt_connected = 0;
     int threadid = gettid();
+    int32_t latencyms;
 
     decode->pat_version_number = -1;
 
@@ -596,6 +607,8 @@ static void *srt_receiver_thread_caller(void *context)
 
     srtdata = (srt_receive_thread_caller_struct*)context;
     srtcore = srtdata->core;
+
+    latencyms = srtcore->config->latencyms;
 
     fprintf(stderr,"srt_receiver_thread_caller: starting srt receiver thread, %d\n", srtcore->session_identifier);
 
@@ -641,6 +654,12 @@ static void *srt_receiver_thread_caller(void *context)
     srterr = srt_setsockflag(serversock, SRTO_SNDSYN, &no, sizeof(no));
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_caller;
+    }
+
+    srterr = srt_setsockflag(serversock, SRTO_LATENCY, &latencyms, sizeof(latencyms));
+    if (srterr == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_receiver_thread_caller;
     }
@@ -810,6 +829,7 @@ static void *srt_receiver_thread_caller(void *context)
                         fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
                         fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
                         fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
+                        fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                         fprintf(statsfile,"    \"rtt\":%.2f\n", (double)stats.msRTT);
                         fprintf(statsfile,"}\n");
                         fclose(statsfile);
@@ -2230,7 +2250,7 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
 
                 managementserverip_field = cJSON_GetObjectItem(top,"managementserverip");
                 overheadbw_field = cJSON_GetObjectItem(top,"overheadbw");
-                latencyms_field = cJSON_GetObjectItem(top,"latencyms");
+                latencyms_field = cJSON_GetObjectItem(top,"latency");
 
                 fprintf(stderr,"-------------------- configuration options -----------------------\n");
                 if (sourcename_field) {
@@ -2309,9 +2329,9 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
                 }
                 if (latencyms_field) {
                     config->latencyms = atoi(latencyms_field->valuestring);
-                    fprintf(stderr,"latencyms:%d\n", config->latencyms);
+                    fprintf(stderr,"latency:%d\n", config->latencyms);
                 } else {
-                    config->latencyms = 100;
+                    config->latencyms = 120;
                 }
                 if (overheadbw_field) {
                     config->overheadbw = atoi(overheadbw_field->valuestring);

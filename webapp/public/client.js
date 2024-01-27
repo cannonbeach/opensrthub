@@ -358,6 +358,7 @@ submit_button_srtreceiver.addEventListener('click', function(e) {
     var srtreceiver_destinationinterface = document.getElementById("srtreceiver_destinationinterface").value;
     var srtreceiver_managementserverip = document.getElementById("srtreceiver_managementserverip").value;
     var srtreceiver_clienttype = document.getElementById("srtreceiver_clienttype").value;
+    var srtreceiver_latency = document.getElementById("srtreceiver_latency").value;
 
     var safe = 1;
 
@@ -412,6 +413,7 @@ submit_button_srtreceiver.addEventListener('click', function(e) {
         obj.srtreceiver_destinationinterface = srtreceiver_destinationinterface;
         obj.srtreceiver_managementserverip = srtreceiver_managementserverip;
         obj.srtreceiver_clienttype = srtreceiver_clienttype;
+        obj.srtreceiver_latency = srtreceiver_latency;
 
         var postdata = JSON.stringify(obj);
 
@@ -870,6 +872,7 @@ function request_service_status(service)
                         status_string += 'SRT Packets Lost '+service_words.srtreceiver_packetslost+'<br>';
                         status_string += 'SRT Loss Percentage '+service_words.srtreceiver_losspercentage+'%<br>';
                         status_string += 'SRT RTT '+service_words.srtreceiver_rtt+'ms<br>';
+                        status_string += 'SRT Latency '+service_words.srtreceiver_latency+'ms<br>';
                         status_string += '</p>';
 
                         if (service_words.srtreceiver_srtmode == 'Listener') {

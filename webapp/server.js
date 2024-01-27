@@ -476,6 +476,7 @@ app.post('/api/v1/new_srt_receiver', (req, res) => {
     config.streamid = words.srtreceiver_streamid;
     config.managementserverip = words.srtreceiver_managementserverip;
     config.clienttype = words.srtreceiver_clienttype;
+    config.latency = words.srtreceiver_latency;
     //config.keysize = words.srtreceiver_keysize;
 
     // this could cause a collision if multiple services are created at the exact same time
@@ -1137,6 +1138,7 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                             obj.srtreceiver_srtmode = "unknown";
                             obj.srtreceiver_clientaddress = "unknown";
                             obj.srtreceiver_clientport = 0;
+                            obj.srtreceiver_latency = 0;
 
                             obj.udpserver_active = 0;
                             obj.udpserver_bytessent = 0;
@@ -1197,6 +1199,7 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                                         obj.srtreceiver_losspercentage = srd["loss-percentage"];
                                         obj.srtreceiver_bitratekbps = srd["bitrate-kbps"];
                                         obj.srtreceiver_rtt = srd.rtt;
+                                        obj.srtreceiver_latency = srd["latencyms"];
                                         obj.srtreceiver_clientaddress = srd["client-address"];
                                         obj.srtreceiver_clientport = srd["client-port"];
                                     }
