@@ -83,6 +83,15 @@ The configuration file format is as follows (and is stored in /opt/srthub/config
 }
 ```
 
+And since the opensrthub runs under Docker, you can check the status of the containers through the command line as well.  If something is not running correctly, the STATUS field will usually indicate an issue.  You can forcefully stop and remove a container by using sudo docker rm -f, so to remove the below container, you would use the following command: "sudo docker rm -f srthub1701705434"
+
+```
+tapeworm@tapeworm-parasite1-cloud6:~$ sudo docker ps
+CONTAINER ID   IMAGE          COMMAND                  CREATED      STATUS      PORTS     NAMES
+2cfe96d588de   dockersrthub   "/usr/bin/srthub 170…"   8 days ago   Up 8 days             srthub1701705434
+tapeworm@tapeworm-parasite1-cloud6:~$
+```
+
 ### API (more documentation to be provided)
 
 ```
