@@ -899,6 +899,19 @@ function request_service_status(service)
                         status_string += 'Video Codec is '+service_words.video_codec+'<br>';
                         status_string += 'Source Format is '+service_words.source_format+'<br>';1
                         status_string += '</p>';
+
+                        status_string += '<p>';
+                        s = service_words.audioservices.length;
+                        if (s == 0) {
+                            status_string += 'No Audio Streams Present<br>';
+                        } else {
+                            for (l = 0; l < s; l++) {
+                                var streamnum = l+1;
+                                status_string += 'Audio Stream '+streamnum+', Codec is '+service_words.audioservices[l].codec+' @ '+service_words.audioservices[l].samplerate+'Hz, '+service_words.audioservices[l].channels+' Channels<br>';
+                            }
+                        }
+                        status_string += '</p>';
+
                         status_string += '<p>';
                         status_string += 'Source Continuity Errors '+service_words.transport_source_errors+'<br>';
                         if (service_words.transport_source_errors > 0) {
@@ -946,6 +959,19 @@ function request_service_status(service)
                         status_string += 'Video Codec is '+service_words.video_codec+'<br>';
                         status_string += 'Source Format is '+service_words.source_format+'<br>';
                         status_string += '</p>';
+
+                        status_string += '<p>';
+                        s = service_words.audioservices.length;
+                        if (s == 0) {
+                            status_string += 'No Audio Streams Present<br>';
+                        } else {
+                            for (l = 0; l < s; l++) {
+                                var streamnum = l+1;
+                                status_string += 'Audio Stream '+streamnum+', Codec is '+service_words.audioservices[l].codec+' @ '+service_words.audioservices[l].samplerate+'Hz, '+service_words.audioservices[l].channels+' Channels<br>';
+                            }
+                        }
+                        status_string += '</p>';
+
                         status_string += '<p>';
                         status_string += 'Source Continuity Errors '+service_words.transport_source_errors+'<br>';
                         if (service_words.transport_source_errors > 0) {

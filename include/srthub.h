@@ -59,14 +59,17 @@ typedef struct _srthub_core_struct_ {
     pthread_t udp_receiver_thread_id;
     pthread_t thumbnail_thread_id;
     pthread_t output_smoothing_thread_id;
+    pthread_t audio_decode_thread_id[MAX_WORKER_THREADS];
     int srt_server_thread_running;
     int udp_server_thread_running;
     int srt_receiver_thread_running;
     int udp_receiver_thread_running;
     int thumbnail_thread_running;
     int output_smoothing_thread_running;
+    int audio_decode_thread_running[MAX_WORKER_THREADS];
     void *msgqueue;
     void *thumbnailqueue;
+    void *audiodecodequeue[MAX_WORKER_THREADS];
     void *udpserverqueue;
     void *smoothingqueue;
     void *signalqueue;
@@ -75,6 +78,7 @@ typedef struct _srthub_core_struct_ {
     void *msgpool;
     void *packetpool;
     void *videopool;
+    void *audiopool;
     pthread_mutex_t *srtserverlock;
     int srt_server_worker_thread_running[MAX_WORKER_THREADS];
     pthread_t srt_server_worker_thread_id[MAX_WORKER_THREADS];

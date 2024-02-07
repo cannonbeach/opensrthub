@@ -33,7 +33,8 @@
 #define MAX_ERROR_SIZE       1024
 #define MAX_STREAMS          64
 
-#define STREAM_TYPE_UNKNOWN  0x00
+#define STREAM_TYPE_UNKNOWN_AUDIO  0xde
+#define STREAM_TYPE_UNKNOWN_VIDEO  0xad
 #define STREAM_TYPE_MPEG2    0x01
 #define STREAM_TYPE_H264     0x02
 #define STREAM_TYPE_HEVC     0x03

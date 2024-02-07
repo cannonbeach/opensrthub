@@ -54,6 +54,8 @@
 #define MAX_PACKET_BUFFER_SIZE     1536
 #define MAX_THUMBNAIL_BUFFERS      384
 #define MAX_THUMBNAIL_BUFFER_SIZE  1024*1024*4
+#define MAX_AUDIO_BUFFERS          128
+#define MAX_AUDIO_BUFFER_SIZE      32768
 
 #define ENABLE_THUMBNAIL
 
@@ -81,6 +83,11 @@ typedef struct _srt_server_worker_output_thread_struct_ {
     char         client_address[MAX_STRING_SIZE];
     int          client_port;
 } srt_server_worker_output_thread_struct;
+
+typedef struct _srt_audio_thread_struct_ {
+    srthub_core_struct *core;
+    int                audio_stream;
+} srt_audio_thread_struct;
 
 typedef struct _srt_server_worker_input_thread_struct_ {
 } srt_server_worker_input_thread_struct;
@@ -204,8 +211,33 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     dataqueue_message_struct *msg;
     int threadid = gettid();
 
-    /*fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
-      source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);*/
+    fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
+            source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);
+
+    if (sample_type == STREAM_TYPE_MPEG || sample_type == STREAM_TYPE_AC3 || sample_type == STREAM_TYPE_AAC || sample_type == STREAM_TYPE_UNKNOWN_AUDIO) {
+        msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
+        if (msg) {
+            uint8_t *buffer = (uint8_t*)memory_take(srtcore->audiopool, threadid);
+            if (buffer) {
+                memcpy(buffer, sample, sample_size);
+                msg->buffer = (void*)buffer;
+                msg->buffer_size = sample_size;
+                msg->buffer_type = sample_type;
+                msg->flags = muxstreams;
+                msg->stream_index = sub_source;
+                msg->source_discontinuity = corruption_count;
+                dataqueue_put_front(srtcore->audiodecodequeue[sub_source], msg);
+                msg = NULL;
+            } else {
+                fprintf(stderr,"received frame: audio buffers exhausted\n");
+                memory_return(srtcore->msgpool, msg);
+                msg = NULL;
+            }
+        } else {
+
+        }
+        return 0;
+    }
 
     if (sample_type == STREAM_TYPE_H264 || sample_type == STREAM_TYPE_HEVC || sample_type == STREAM_TYPE_MPEG2) {
         //if (sample_flags == 1)
@@ -517,6 +549,7 @@ static void *srt_receiver_thread_listener(void *context)
                             fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
                             fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                             fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
+                            fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);
                             fprintf(statsfile,"    \"rtt\":%.2f\n", (double)stats.msRTT);
                             fprintf(statsfile,"}\n");
                             fclose(statsfile);
@@ -830,6 +863,7 @@ static void *srt_receiver_thread_caller(void *context)
                         fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
                         fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                         fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
+                        fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);
                         fprintf(statsfile,"    \"rtt\":%.2f\n", (double)stats.msRTT);
                         fprintf(statsfile,"}\n");
                         fclose(statsfile);
@@ -1926,6 +1960,207 @@ cleanup_udp_server_thread:
     return NULL;
 }
 
+static void *srthub_audio_thread(void *context)
+{
+    srt_audio_thread_struct *srtaudio = (srt_audio_thread_struct*)context;
+    srthub_core_struct *srtcore = (srthub_core_struct*)srtaudio->core;
+    AVCodec *decode_codec = NULL;
+    AVCodecContext *decode_avctx = NULL;
+    AVPacket *decode_pkt = NULL;
+    AVFrame *decode_av_frame = NULL;
+    AVCodecParserContext *decode_parser = NULL;
+    int audio_decoder_ready = 0;
+    char statsfilename[MAX_STRING_SIZE];
+    dataqueue_message_struct *msg;
+    int audio_stream = srtaudio->audio_stream;
+    char previous_samples_data[MAX_AUDIO_BUFFER_SIZE];
+    int previous_samples = 0;
+    struct timespec audio_start;
+    struct timespec audio_stop;
+    int64_t diff;
+
+    sprintf(statsfilename,"/opt/srthub/status/audio_%d_%d.json", audio_stream, srtcore->session_identifier);
+
+    fprintf(stderr,"srthub_audio_thread: audio_stream=%d\n", audio_stream);
+
+    clock_gettime(CLOCK_MONOTONIC, &audio_start);
+    while (srtcore->audio_decode_thread_running[audio_stream]) {
+        //fprintf(stderr,"srthub_audio_thread: srtcore=%p\n", srtcore);
+        //fprintf(stderr,"srthub_audio_thread: queue=%p audio_stream=%d\n", srtcore->audiodecodequeue[audio_stream], audio_stream);
+        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->audiodecodequeue[audio_stream]);
+        while (!msg && srtcore->audio_decode_thread_running[audio_stream]) {
+            usleep(1000);
+            msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->audiodecodequeue[audio_stream]);
+        }
+
+        if (!srtcore->audio_decode_thread_running[audio_stream]) {
+            if (msg) {
+                uint8_t *buffer = (uint8_t*)msg->buffer;
+                memory_return(srtcore->audiopool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                msg = NULL;
+                buffer = NULL;
+            }
+            goto cleanup_audio_decode_thread;
+        }
+
+        if (msg) {
+            uint8_t *buffer = (uint8_t*)msg->buffer;
+            int buffer_size = msg->buffer_size;
+            int buffer_type = msg->buffer_type;
+            int ret;
+            uint8_t *data = buffer;
+            int data_size = buffer_size;
+
+            if (!audio_decoder_ready) {
+                if (buffer_type == STREAM_TYPE_MPEG) {
+                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_MP3);
+                } else if (buffer_type == STREAM_TYPE_AAC) {
+                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_AAC);
+                } else if (buffer_type == STREAM_TYPE_AC3) {
+                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_AC3);
+                } else {
+                    decode_codec = NULL;
+                }
+
+                if (decode_codec) {
+                    decode_avctx = avcodec_alloc_context3(decode_codec);
+                    decode_parser = av_parser_init(decode_codec->id);
+                    avcodec_open2(decode_avctx, decode_codec, NULL);
+                    decode_av_frame = av_frame_alloc();
+                    decode_pkt = av_packet_alloc();
+                    audio_decoder_ready = 1;
+                }
+            }
+            if (!audio_decoder_ready) {
+                memory_return(srtcore->audiopool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                buffer = NULL;
+                msg = NULL;
+
+                FILE *statsfile = fopen(statsfilename,"wb");
+                if (statsfile) {
+                    fprintf(statsfile,"{\n");
+                    if (buffer_type == STREAM_TYPE_MPEG) {
+                        fprintf(statsfile,"    \"audio-codec\":\"MPEG\",\n");
+                    } else if (buffer_type == STREAM_TYPE_AAC) {
+                        fprintf(statsfile,"    \"audio-codec\":\"AAC\",\n");
+                    } else if (buffer_type == STREAM_TYPE_AC3) {
+                        fprintf(statsfile,"    \"audio-codec\":\"AC3\",\n");
+                    } else {
+                        fprintf(statsfile,"    \"audio-codec\":\"Unknown\",\n");
+                    }
+                    fprintf(statsfile,"    \"audio-channels\":0,\n");
+                    fprintf(statsfile,"    \"audio-samplerate\":0\n");
+                    fprintf(statsfile,"}\n");
+                    fclose(statsfile);
+                }
+                usleep(100000);
+                continue;
+            }
+
+            if (previous_samples > 0) {
+                memcpy(data + data_size, previous_samples_data, previous_samples);
+                data_size += previous_samples;
+                previous_samples = 0;
+            }
+
+            fprintf(stderr,"srthub_audio_thread(%d): processing audio, size=%d\n", audio_stream, data_size);
+            while (data_size > 0) {
+                int dret;
+
+                ret = av_parser_parse2(decode_parser, decode_avctx, &decode_pkt->data, &decode_pkt->size,
+                                       data, data_size, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+                if (ret < 0) {
+                    memory_return(srtcore->audiopool, buffer);
+                    memory_return(srtcore->msgpool, msg);
+                    buffer = NULL;
+                    buffer_size = 0;
+                    msg = NULL;
+                    data_size = 0;
+                    break;
+                }
+
+                fprintf(stderr,"srthub_audio_thread(%d): parsed audio, frame size for decode is %d(%d)\n", audio_stream, decode_pkt->size, ret);
+                data += ret;
+                data_size -= ret;
+
+                if (decode_pkt->size > 0) {
+                    dret = avcodec_send_packet(decode_avctx, decode_pkt);
+                    if (dret < 0) {
+                        fprintf(stderr,"srthub_audio_thread(%d): unable to decode audio packet, data_size=%d\n", audio_stream, data_size);
+                        //memcpy(&previous_samples_data[previous_samples], data, data_size);
+                        //previous_samples += data_size;
+                        previous_samples = 0;
+                        memory_return(srtcore->audiopool, buffer);
+                        memory_return(srtcore->msgpool, msg);
+                        buffer = NULL;
+                        buffer_size = 0;
+                        msg = NULL;
+                        data_size = 0;
+                        break;
+                    }
+
+                    while (dret >= 0) {
+                        dret = avcodec_receive_frame(decode_avctx, decode_av_frame);
+                        if (dret == AVERROR(EAGAIN) || dret == AVERROR_EOF) {
+                            break;
+                        } else if (dret < 0) {
+                            memory_return(srtcore->audiopool, buffer);
+                            memory_return(srtcore->msgpool, msg);
+                            buffer = NULL;
+                            buffer_size = 0;
+                            msg = NULL;
+                            data_size = 0;
+                            break;
+                        }
+                        fprintf(stderr,"srthub_audio_thread(%d) audio sample decoded, sample_rate=%d, channels=%d, pkt_size=%d\n",
+                                audio_stream, decode_av_frame->sample_rate, decode_av_frame->channels, decode_av_frame->pkt_size);
+
+                        clock_gettime(CLOCK_MONOTONIC, &audio_stop);
+                        diff = realtime_clock_difference(&audio_stop, &audio_start) / 1000;
+                        if (diff >= 1000) {
+                            FILE *statsfile = fopen(statsfilename,"wb");
+                            if (statsfile) {
+                                fprintf(statsfile,"{\n");
+                                if (buffer_type == STREAM_TYPE_MPEG) {
+                                    fprintf(statsfile,"    \"audio-codec\":\"MPEG\",\n");
+                                } else if (buffer_type == STREAM_TYPE_AAC) {
+                                    fprintf(statsfile,"    \"audio-codec\":\"AAC\",\n");
+                                } else if (buffer_type == STREAM_TYPE_AC3) {
+                                    fprintf(statsfile,"    \"audio-codec\":\"AC3\",\n");
+                                } else {
+                                    fprintf(statsfile,"    \"audio-codec\":\"Unknown\",\n");
+                                }
+                                fprintf(statsfile,"    \"audio-channels\":%d,\n", decode_av_frame->channels);
+                                fprintf(statsfile,"    \"audio-samplerate\":%d\n", decode_av_frame->sample_rate);
+                                fprintf(statsfile,"}\n");
+                                fclose(statsfile);
+                            }
+                            clock_gettime(CLOCK_MONOTONIC, &audio_start);
+                        }
+                    }
+                } // while (data_size > 0)
+            }
+            if (msg) {
+                memory_return(srtcore->audiopool, buffer);
+                memory_return(srtcore->msgpool, msg);
+                buffer = NULL;
+                buffer_size = 0;
+                msg = NULL;
+                data_size = 0;
+            }
+        }
+    }
+cleanup_audio_decode_thread:
+    avcodec_free_context(&decode_avctx);
+    av_parser_close(decode_parser);
+    av_frame_free(&decode_av_frame);
+    av_packet_free(&decode_pkt);
+    free(srtaudio);
+    return NULL;
+}
+
 static void *srthub_thumbnail_thread(void *context)
 {
 #if defined(ENABLE_THUMBNAIL)
@@ -2455,6 +2690,7 @@ int main(int argc, char **argv)
     srtcore.msgpool = memory_create(MAX_MSG_BUFFERS, sizeof(dataqueue_message_struct));
     srtcore.packetpool = memory_create(MAX_PACKET_BUFFERS, MAX_PACKET_BUFFER_SIZE);
     srtcore.videopool = memory_create(MAX_THUMBNAIL_BUFFERS, MAX_THUMBNAIL_BUFFER_SIZE);
+    srtcore.audiopool = memory_create(MAX_AUDIO_BUFFERS, MAX_AUDIO_BUFFER_SIZE);
 
     srtcore.session_identifier = session_identifier;
     srtcore.msgqueue = dataqueue_create();
@@ -2463,6 +2699,7 @@ int main(int argc, char **argv)
     srtcore.signalqueue = dataqueue_create();
     for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
         srtcore.srtserverqueue[thread] = NULL;
+        srtcore.audiodecodequeue[thread] = dataqueue_create();
     }
     srtcore.srtserverlock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(srtcore.srtserverlock, NULL);
@@ -2482,6 +2719,16 @@ restart_srt:
     srtcore.thumbnail_thread_running = 1;
     pthread_create(&srtcore.thumbnail_thread_id, NULL, srthub_thumbnail_thread, &srtcore);
 
+    for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
+        srt_audio_thread_struct *srtaudio;
+        srtaudio = (srt_audio_thread_struct*)malloc(sizeof(srt_audio_thread_struct));
+        srtaudio->core = (srthub_core_struct*)&srtcore;
+        srtaudio->audio_stream = thread;
+        srtcore.audio_decode_thread_running[thread] = 1;
+        fprintf(stderr,"starting audio decode thread: %d\n", thread);
+        pthread_create(&srtcore.audio_decode_thread_id[thread], NULL, srthub_audio_thread, (void*)srtaudio);
+    }
+
     if (strncmp(outputmode,"udp",3)==0) {
         srtcore.udp_server_thread_running = 1;
         udp_server_thread_struct *udp_server_data = (udp_server_thread_struct*)malloc(sizeof(udp_server_thread_struct));
@@ -2491,7 +2738,7 @@ restart_srt:
         udp_server_data->ttl = 8;
         udp_server_data->core = (srthub_core_struct*)&srtcore;
         fprintf(stderr,"starting udp server thread\n");
-        pthread_create(&srtcore.udp_server_thread_id, NULL, udp_server_thread, udp_server_data);
+        pthread_create(&srtcore.udp_server_thread_id, NULL, udp_server_thread, (void*)udp_server_data);
     }
 
     if (strncmp(outputmode,"srtpull",7)==0) { // Listener mode
@@ -2513,7 +2760,7 @@ restart_srt:
         }
         srt_server_data->core = (srthub_core_struct*)&srtcore;
         fprintf(stderr,"starting srt server thread (we are the server and client will pull from us)\n");
-        pthread_create(&srtcore.srt_server_thread_id, NULL, srt_server_thread_pull, srt_server_data);
+        pthread_create(&srtcore.srt_server_thread_id, NULL, srt_server_thread_pull, (void*)srt_server_data);
     }
 
     if (strncmp(outputmode,"srtpush",7)==0) { // Caller mode
@@ -2536,7 +2783,7 @@ restart_srt:
         }
         srt_server_data->core = (srthub_core_struct*)&srtcore;
         fprintf(stderr,"starting srt server thread push (we are the client and we will push to server)\n");
-        pthread_create(&srtcore.srt_server_thread_id, NULL, srt_server_thread_push, srt_server_data);
+        pthread_create(&srtcore.srt_server_thread_id, NULL, srt_server_thread_push, (void*)srt_server_data);
     }
 
     if (strncmp(sourcemode,"srtpull",7)==0) {  // Caller mode
@@ -2558,7 +2805,7 @@ restart_srt:
         }
         srt_receive_data->core = (srthub_core_struct*)&srtcore;
         fprintf(stderr,"starting srt receiver thread (caller), address=%s, interface=%s, port=%d\n", server_address, sourceinterface, server_port);
-        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_caller, srt_receive_data);
+        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_caller, (void*)srt_receive_data);
     }
 
     if (strncmp(sourcemode,"srtpush",7)==0) {  // Listener mode (Somebody will connect and push it to me)
@@ -2581,7 +2828,7 @@ restart_srt:
         }
 
         fprintf(stderr,"starting srt receiver thread (listener), address=%s, interface=%s, port=%d\n", server_address, sourceinterface, server_port);
-        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_listener, srt_receive_data);
+        pthread_create(&srtcore.srt_receiver_thread_id, NULL, srt_receiver_thread_listener, (void*)srt_receive_data);
     }
 
     if (strncmp(sourcemode,"udp",3)==0) {
@@ -2592,7 +2839,7 @@ restart_srt:
         udp_receive_data->source_port = server_port;
         udp_receive_data->core = (srthub_core_struct*)&srtcore;
         fprintf(stderr,"starting udp receiver thread\n");
-        pthread_create(&srtcore.udp_receiver_thread_id, NULL, udp_receiver_thread, udp_receive_data);
+        pthread_create(&srtcore.udp_receiver_thread_id, NULL, udp_receiver_thread, (void*)udp_receive_data);
     }
 
     fprintf(stderr,"\n\n\n\n\n\nstarting things back up....\n\n\n\n\n\n");
@@ -2651,6 +2898,13 @@ restart_srt:
                 fprintf(stderr,"main: stopping thumbnail_thread\n");
                 pthread_join(srtcore.thumbnail_thread_id, NULL);
                 fprintf(stderr,"main: done stopping thumbnail thread\n");
+
+                for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
+                    srtcore.audio_decode_thread_running[thread] = 0;
+                    fprintf(stderr,"main: stopping audio decode thread (%d)\n", thread);
+                    pthread_join(srtcore.audio_decode_thread_id[thread], NULL);
+                    fprintf(stderr,"maun: done stopping audio decode thread (%d)\n", thread);
+                }
             }
             memory_return(srtcore.msgpool, msg);
             msg = NULL;
@@ -2675,6 +2929,8 @@ restart_srt:
     for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
         dataqueue_destroy(srtcore.srtserverqueue[thread]);
         srtcore.srtserverqueue[thread] = NULL;
+        dataqueue_destroy(srtcore.audiodecodequeue[thread]);
+        srtcore.audiodecodequeue[thread] = NULL;
     }
     pthread_mutex_destroy(srtcore.srtserverlock);
 
@@ -2684,6 +2940,8 @@ restart_srt:
     srtcore.packetpool = NULL;
     memory_destroy(srtcore.videopool);
     srtcore.videopool = NULL;
+    memory_destroy(srtcore.audiopool);
+    srtcore.audiopool = NULL;
 
     srt_cleanup();
 

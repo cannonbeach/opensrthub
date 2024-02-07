@@ -1069,6 +1069,13 @@ function srt_service_data(thread, clientaddress, clientport, totalbytessent, tot
     this.totalpacketssent = totalpacketssent;
 }
 
+function audio_service(codec, channels, samplerate)
+{
+    this.codec = codec;
+    this.channels = channels;
+    this.samplerate = samplerate;
+}
+
 app.get('/api/v1/get_service_status/:uid', (req, res) => {
     console.log('getting signal status: ', req.params.uid);
 
@@ -1161,6 +1168,35 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                             obj.current_stream = 0;
                             obj.transport_source_errors = 0;
                             obj.last_source_error = "unknown";
+
+                            obj.audioservices = [];
+
+                            for (i = 0; i < 4; i++) {
+                                var fullfileAudioStatus = statusFolder+'/audio_'+i+'_'+fileprefix+'.json';
+                                if (fs.existsSync(fullfileAudioStatus)) {
+                                    var audiodata = fs.readFileSync(fullfileAudioStatus, 'utf8');
+                                    if (audiodata) {
+                                        var ad = JSON.parse(audiodata);
+                                        var audiocodec = ad["audio-codec"];
+                                        var audiochannels = ad["audio-channels"];
+                                        var audiosamplerate = ad["audio-samplerate"];
+                                        var audioservice = new audio_service(audiocodec, audiochannels, audiosamplerate);
+                                        obj.audioservices.push(audioservice);
+                                    } else {
+                                        var audiocodec = "Unknown";
+                                        var audiochannels = 0;
+                                        var audiosamplerate = 0;
+                                        var audioservice = new audio_service(audiocodec, audiochannels, audiosamplerate);
+                                        obj.audioservices.push(audioservice);
+                                    }
+                                } else {
+                                    var audiocodec = "Unknown";
+                                    var audiochannels = 0;
+                                    var audiosamplerate = 0;
+                                    var audioservice = new audio_service(audiocodec, audiochannels, audiosamplerate);
+                                    obj.audioservices.push(audioservice);
+                                }
+                            }
 
                             var fullfileThumbnailStatus = statusFolder+'/thumbnail_'+fileprefix+'.json';
                             if (fs.existsSync(fullfileThumbnailStatus)) {

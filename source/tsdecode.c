@@ -236,7 +236,7 @@ static int decode_pmt_table(pat_table_struct *master_pat_table, pmt_table_struct
           current_pmt_table->last_dts[stream_count] = -1;
           waiting_for_descriptor = 0;
 
-          current_pmt_table->decoded_stream_type[stream_count] = STREAM_TYPE_UNKNOWN; // default to unknown
+          current_pmt_table->decoded_stream_type[stream_count] = STREAM_TYPE_UNKNOWN_AUDIO; // default to unknown
 
           fprintf(stderr,"decode_pmt_table: current_stream_type = 0x%x\n", current_stream_type);
           if (current_stream_type == 0x02) {
@@ -378,6 +378,15 @@ _redo_decode:
                    tag_index += local_tag_size;
                } else if (local_tag == STREAM_DESCRIPTOR_REGISTRATION) {
                    //backup_caller(2000, 717, local_tag, 0, 0, 0, backup_context);
+                   if (waiting_for_descriptor) {
+                       waiting_for_descriptor = 0;
+                       current_pmt_table->decoded_stream_type[stream_count - 1] = STREAM_TYPE_UNKNOWN_AUDIO;  // DOLBY?
+                       current_pmt_table->stream_type[stream_count - 1] = 0x06;
+                       current_pmt_table->audio_stream_index[stream_count - 1] = current_pmt_table->audio_stream_count;
+                       current_pmt_table->audio_stream_count++;
+                       goto _redo_decode;
+                   }
+
                    tag_index += local_tag_size;
                } else if (local_tag == STREAM_DESCRIPTOR_AC3) {
                    if (waiting_for_descriptor) {
@@ -957,7 +966,19 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                                                tsdata->master_pmt_table[each_pmt].data_engine[pid_count].corruption_count,
                                                                tsdata->master_pat_table.pmt_table_entries,
                                                                send_frame_context);
-                                           } else if (stream_type == 0x04) {
+                                           } else if (stream_type == 0x06) {
+                                               uint8_t *audio_frame = (unsigned char*)tsdata->master_pmt_table[each_pmt].data_engine[pid_count].buffer;
+                                               send_frame_func(audio_frame, video_frame_size, STREAM_TYPE_UNKNOWN_AUDIO, 1,
+                                                               tsdata->master_pmt_table[each_pmt].data_engine[pid_count].pts,
+                                                               tsdata->master_pmt_table[each_pmt].data_engine[pid_count].dts,
+                                                               0, // PCR
+                                                               tsdata->source,
+                                                               tsdata->master_pmt_table[each_pmt].audio_stream_index[pid_count], //sub-source
+                                                               (char*)&tsdata->master_pmt_table[each_pmt].decoded_language_tag[pid_count].lang_tag[0],
+                                                               tsdata->master_pmt_table[each_pmt].data_engine[pid_count].corruption_count,
+                                                               tsdata->master_pat_table.pmt_table_entries,
+                                                               send_frame_context);
+                                           } else if (stream_type == 0x04 || stream_type == 0x03 || stream_type == 0x01) {
                                                uint8_t *audio_frame = (unsigned char*)tsdata->master_pmt_table[each_pmt].data_engine[pid_count].buffer;
                                                send_frame_func(audio_frame, video_frame_size, STREAM_TYPE_MPEG, 1,
                                                                tsdata->master_pmt_table[each_pmt].data_engine[pid_count].pts,
@@ -970,7 +991,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                                                tsdata->master_pat_table.pmt_table_entries,
                                                                send_frame_context);
                                            } else if (stream_type == 0x86) {
-                                               // do nothing- scte35 handled elsewhere
+                                               // do nothing, scte35 handled elsewhere
                                            } else if (stream_type == 0x24) {
                                                int vf;
                                                int nal_type;
