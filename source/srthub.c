@@ -860,7 +860,7 @@ static void *srt_receiver_thread_caller(void *context)
                         fprintf(statsfile,"    \"packets-lost\":%d,\n", stats.pktRcvLossTotal);
                         fprintf(statsfile,"    \"packets-retransmitted\":%d,\n", stats.pktRetransTotal);
                         fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
-                        fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
+                        fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvDropTotal / (double)stats.pktRecvTotal * (double)100.0);
                         fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                         fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                         fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);

@@ -869,7 +869,7 @@ function request_service_status(service)
                         status_string += '<p>';
                         status_string += 'SRT Receiver Bitrate '+service_words.srtreceiver_bitratekbps+'kbps<br>';
                         status_string += 'SRT Packets Received '+service_words.srtreceiver_packetsreceived+'<br>';
-                        status_string += 'SRT Packets Lost '+service_words.srtreceiver_packetslost+'<br>';
+                        status_string += 'SRT Packets Dropped '+service_words.srtreceiver_packetsdropped+'<br>';
                         status_string += 'SRT Loss Percentage '+service_words.srtreceiver_losspercentage+'%<br>';
                         status_string += 'SRT RTT '+service_words.srtreceiver_rtt+'ms<br>';
                         status_string += 'SRT Latency '+service_words.srtreceiver_latency+'ms<br>';
