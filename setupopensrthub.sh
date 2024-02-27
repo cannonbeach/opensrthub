@@ -192,6 +192,7 @@ popd
 echo "Clone of FFmpeg libraries (used for decoding audio/video preview)"
 git clone https://github.com/cannonbeach/FFmpeg.git ./cbffmpeg
 pushd cbffmpeg
+git checkout -b release4.0 remotes/origin/release/4.0
 ./configure --prefix=/usr --disable-encoders --enable-avresample --disable-iconv --disable-v4l2-m2m --disable-muxers --disable-vaapi --disable-vdpau --disable-videotoolbox --disable-muxers --disable-avdevice --enable-encoder=mjpeg
 make -j8
 if [ -f "./libavcodec/libavcodec.a" ]; then
