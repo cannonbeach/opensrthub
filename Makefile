@@ -22,7 +22,7 @@ INC += -I./cbsrt/srtcore
 INC += -I./cbsrt
 INC += -I./cblibcurl/include/curl
 
-BASELIBS += -lz -ldl -lssl
+BASELIBS += -lz -ldl -lssl -llzma
 
 all: $(LIB) srthub
 

@@ -100,6 +100,8 @@ echo "srthub: installing nasm"
 sudo apt-get install nasm -y
 echo "srthub: installing libz"
 sudo apt-get install libz-dev -y
+echo "srthub: installing liblzma-dev"
+sudo apt-get install liblzma-dev -y
 echo "srthub: installing pkg-config"
 sudo apt-get install pkg-config -y
 echo "srthub: installing ca-certificates"
@@ -179,7 +181,7 @@ else
     exit
 fi
 echo "Configuring curl for compilation"
-./configure --prefix=/usr --enable-static --enable-pthreads --without-ssl --without-librtmp --without-libidn2 --without-nghttp2
+./configure --prefix=/usr --enable-static --enable-pthreads --without-ssl --without-librtmp --without-libidn2 --without-nghttp2 --without-brotli
 make -j8
 if [ -f "./lib/.libs/libcurl.a" ]; then
     echo "srthub: libcurl.a was compiled correctly"
