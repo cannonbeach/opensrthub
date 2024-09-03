@@ -42,9 +42,20 @@ document.addEventListener('click',function(e){
             button_number = digits[digits.length-1];
         }
     }
-    console.log(button_number);
+    console.log('button number: '+button_number);
+    console.log('button string: '+buttonString);
 
-    if (strncmp(buttonString,'start',5) == 0) {
+    //listener_stats_service_3_client_0
+    if (strncmp(buttonString,"listener_stats_service",22) == 0) {
+        var listenerdivstring = 'listenerdiv_stats_service_3_client_0';
+        //status_string += '<div id="listenerdiv_stats_service_'+service+'_client_'+l+'" style="display:none">'; //style="visibility:hidden">';
+        var listenerdiv = document.getElementById(listenerdivstring);
+        if (listenerdiv.style.display == 'none') {
+            listenerdiv.style.display = 'block';
+        } else {
+            listenerdiv.style.display = 'none';
+        }
+    } else if (strncmp(buttonString,'start',5) == 0) {
         console.log('the start button was pressed');
         var currentButton = document.getElementById(buttonString);
         var clickedButton = '/api/v1/start_service/'+button_number;
@@ -79,17 +90,20 @@ document.addEventListener('click',function(e){
         resetButton.disabled = true;
         startButton.disabled = true;
 
-        fetch(clickedButton,{method: 'POST'})
-            .then(function(response) {
-                if (response.ok) {
-                    console.log('stop clicked confirmed');
-                    return;
-                }
-                throw new Error('Stop request failed.');
-            })
-            .catch(function(error) {
-                console.log(error);
-            });
+        var result = confirm("Are you sure you want to stop this service?");
+        if (result) {
+            fetch(clickedButton,{method: 'POST'})
+                .then(function(response) {
+                    if (response.ok) {
+                        console.log('stop clicked confirmed');
+                        return;
+                    }
+                    throw new Error('Stop request failed.');
+                })
+                .catch(function(error) {
+                    console.log(error);
+                });
+        }
     } else if (strncmp(buttonString,'reset',5) == 0) {
         console.log('the reset button was pressed');
         var currentButton = document.getElementById(buttonString);
@@ -930,6 +944,8 @@ function request_service_status(service)
                     s = service_words.srtserver.length;
                     if (s > 0) {
                         active_string += '<p style="color:blue">OUTPUT: SRT CONNECTED</p>';
+                        //active_string += '<div style="height:50px;overflow-y:auto">';
+                        //active_string += '<table>';
                     } else {
                         active_string += '<p style="color:red">OUTPUT: NO SRT CONNECTIONS</p>';
                     }
@@ -937,13 +953,28 @@ function request_service_status(service)
                         status_string += '<p>';
                         if (serverdescription == 'Caller') {
                             status_string += 'SRT Client Connected To '+service_words.srtserver[l].clientaddress+':'+service_words.srtserver[l].clientport+'<br>';
+                            status_string += 'Total Packets Sent '+service_words.srtserver[l].totalpacketssent+'<br>';
                         } else {
-                            status_string += 'SRT Client Connected From '+service_words.srtserver[l].clientaddress+':'+service_words.srtserver[l].clientport+'<br>';
+                            var lidx = l + 1;
+                            status_string += '['+lidx+'] SRT Client Connected From '+service_words.srtserver[l].clientaddress+':'+service_words.srtserver[l].clientport+'<br>';
+                            status_string += 'Total Packets Sent '+service_words.srtserver[l].totalpacketssent+'<br>';
+                            status_string += '<button style="width:95%" id=\'listener_stats_service_'+service+'_client_'+l+'\'>Connection Statistics</button><br>';
+                            status_string += '<div id="listenerdiv_stats_service_'+service+'_client_'+l+'"';// style="display:none">'; //style="visibility:hidden">';
+                            status_string += 'SRT Packets Lost '+service_words.srtserver[l].totalpacketslost+' @ '+service_words.srtserver[l].losspercentage+'% <br>';
+                            status_string += 'SRT Packets Retransmitted '+service_words.srtserver[l].totalpacketsretransmitted+' @ '+service_words.srtserver[l].retranspercentage+'% <br>';
+                            status_string += 'SRT Packets Dropped '+service_words.srtserver[l].totalpacketsdropped+' @ '+service_words.srtserver[l].droppercentage+'% <br>';
+                            status_string += 'SRT Transmit Bitrate '+service_words.srtserver[l].sendrate+'kbps <br>';
+                            status_string += 'SRT ACKs '+service_words.srtserver[l].totalpacketsack+'<br>';
+                            status_string += 'SRT NAKs '+service_words.srtserver[l].totalpacketsnak+'<br>';
+                            status_string += 'SRT RTT '+service_words.srtserver[l].rtt+'ms <br>';
+                            status_string += '</div>';
                         }
 
-                        status_string += 'Total Packets Sent '+service_words.srtserver[l].totalpacketssent+'<br>';
-                        status_string += 'Total Bytes Sent '+service_words.srtserver[l].totalbytessent+'<br>';
                         status_string += '</p>';
+                    }
+                    if (s > 0) {
+                        //active_string += '</table>';
+                        //active_string += '</div>';
                     }
                 } else if (service_words.outputmode == "udp") {
                     if (service_words.udpserver_active == 1) {

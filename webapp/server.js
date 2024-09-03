@@ -1060,13 +1060,34 @@ app.get('/api/v1/get_extended_log_data', (req, res) => {
     }
 });
 
-function srt_service_data(thread, clientaddress, clientport, totalbytessent, totalpacketssent)
+function srt_service_data(thread, clientaddress, clientport, totalbytessent, totalpacketssent,
+                          totalpacketslost, totalpacketsretransmitted, totalpacketsdropped,
+                          losspercentage, retranspercentage, droppercentage,
+                          totalpacketssent_interval, totalpacketslost_interval, totalpacketsretransmitted_interval,
+                          totalpacketsdropped_interval, losspercentage_interval, droppercentage_interval,
+                          totalpacketsack, totalpacketsnak, sendrate, rtt)
 {
     this.thread = thread;
     this.clientaddress = clientaddress;
     this.clientport = clientport;
     this.totalbytessent = totalbytessent;
     this.totalpacketssent = totalpacketssent;
+    this.totalpacketslost = totalpacketslost;
+    this.totalpacketsretransmitted = totalpacketsretransmitted;
+    this.totalpacketsdropped = totalpacketsdropped;
+    this.losspercentage = losspercentage;
+    this.retranspercentage = retranspercentage;
+    this.droppercentage = droppercentage;
+    this.totalpacketssent_interval = totalpacketssent_interval;
+    this.totalpacketslost_interval = totalpacketslost_interval;
+    this.totalpacketsretransmitted_interval = totalpacketsretransmitted_interval;
+    this.totalpacketsdropped_interval = totalpacketsdropped_interval;
+    this.losspercentage_interval = losspercentage_interval;
+    this.droppercentage_interval = droppercentage_interval;
+    this.totalpacketsack = totalpacketsack;
+    this.totalpacketsnak = totalpacketsnak;
+    this.sendrate = sendrate;
+    this.rtt = rtt;
 }
 
 function audio_service(codec, channels, samplerate)
@@ -1140,6 +1161,14 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                             obj.srtreceiver_packetsretransmited = 0;
                             obj.srtreceiver_packetsdropped = 0;
                             obj.srtreceiver_losspercentage = 0;
+                            obj.srtreceiver_retranspercentage = 0;
+                            obj.srtreceiver_packetsreceived_interval = 0;
+                            obj.srtreceiver_packetslost_interval = 0;
+                            obj.srtreceiver_packetsretransmitted_interval = 0;
+                            obj.srtreceiver_packetsdropped_interval = 0;
+                            obj.srtreceiver_losspercentage_interval = 0;
+                            obj.srtreceiver_retranspercentage_interval = 0;
+
                             obj.srtreceiver_bitratekbps = 0;
                             obj.srtreceiver_rtt = 0;
                             obj.srtreceiver_srtmode = "unknown";
@@ -1190,11 +1219,11 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                                         obj.audioservices.push(audioservice);
                                     }
                                 } else {
-                                    var audiocodec = "Unknown";
+                                    /*var audiocodec = "Unknown";
                                     var audiochannels = 0;
                                     var audiosamplerate = 0;
                                     var audioservice = new audio_service(audiocodec, audiochannels, audiosamplerate);
-                                    obj.audioservices.push(audioservice);
+                                    obj.audioservices.push(audioservice);*/
                                 }
                             }
 
@@ -1228,11 +1257,21 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                                         obj.srtreceiver_srtmode = srd["srt-mode"];
                                         //obj.srtreceiver_signalactive = srd["srt-signalactive"];
                                         obj.srtreceiver_bytesreceived = srd["total-bytes-received"];
+
                                         obj.srtreceiver_packetsreceived = srd["packets-received"];
                                         obj.srtreceiver_packetslost = srd["packets-lost"];
                                         obj.srtreceiver_packetsretransmitted = srd["packets-retransmitted"];
                                         obj.srtreceiver_packetsdropped = srd["packets-dropped"];
                                         obj.srtreceiver_losspercentage = srd["loss-percentage"];
+                                        obj.srtreceiver_retranspercentage = srd["retrans-percentage"];
+
+                                        obj.srtreceiver_packetsreceived_interval = srd["packets-received-interval"];
+                                        obj.srtreceiver_packetslost_interval = srd["packets-lost-interval"];
+                                        obj.srtreceiver_packetsretransmitted_interval = srd["packets-retransmitted-interval"];
+                                        obj.srtreceiver_packetsdropped_interval = srd["packets-dropped-interval"];
+                                        obj.srtreceiver_losspercentage_interval = srd["loss-percentage-interval"];
+                                        obj.srtreceiver_retranspercentage_interval = srd["retrans-percentagse-interval"];
+
                                         obj.srtreceiver_bitratekbps = srd["bitrate-kbps"];
                                         obj.srtreceiver_rtt = srd.rtt;
                                         obj.srtreceiver_latency = srd["latencyms"];
@@ -1260,7 +1299,7 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
 
                             // output mode status checking
                             if (outputmode == "srt") {
-                                for (i = 0; i < 8; i++) {
+                                for (i = 0; i < 32; i++) {  // this is the MAX NUMBER OF CLIENT CONNECTIONS WE ARE ALLOWING, YOU CAN UPDATE IF YOU WANT TO!
                                     var fullfileSRTServerStatus = statusFolder+'/srt_server_thread_'+i+'_'+fileprefix+'.json';
                                     if (fs.existsSync(fullfileSRTServerStatus)) {
                                         var srtserverdata = fs.readFileSync(fullfileSRTServerStatus, 'utf8');
@@ -1271,8 +1310,30 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                                             var clientport = ssd["client-port"];
                                             var totalbytessent = ssd["total-bytes-sent"];
                                             var totalpacketssent = ssd["total-packets-sent"];
+                                            var totalpacketslost = ssd["packets-lost"];
+                                            var totalpacketsretransmitted = ssd["packets-retransmitted"];
+                                            var totalpacketsdropped = ssd["packets-dropped"];
+                                            var losspercentage = ssd["loss-percentage"];
+                                            var retranspercentage = ssd["retrans-percentage"];
+                                            var droppercentage = ssd["drop-percentage"];
+                                            var totalpacketssent_interval = ssd["packets-sent-interval"];
+                                            var totalpacketslost_interval = ssd["packets-lost-interval"];
+                                            var totalpacketsretransmitted_interval = ssd["packets-retransmitted-interval"];
+                                            var totalpacketsdropped_interval = ssd["packets-dropped-interval"];
+                                            var losspercentage_interval = ssd["loss-percentage-interval"];
+                                            var retranspercentage_interval = ssd["retrans-percentage-interval"];
+                                            var droppercentage_interval = ssd["drop-percentage-interval"];
+                                            var totalpacketsack = ssd["packets-acktotal"];
+                                            var totalpacketsnak = ssd["packets-naktotal"];
+                                            var sendrate = ssd["bitrate-kbps"];
+                                            var rtt = ssd["rtt"];
 
-                                            var srtservice = new srt_service_data(thread, clientaddress, clientport, totalbytessent, totalpacketssent);
+                                            var srtservice = new srt_service_data(thread, clientaddress, clientport, totalbytessent, totalpacketssent,
+                                                                                  totalpacketslost, totalpacketsretransmitted, totalpacketsdropped,
+                                                                                  losspercentage, retranspercentage, droppercentage,
+                                                                                  totalpacketssent_interval, totalpacketslost_interval, totalpacketsretransmitted_interval,
+                                                                                  totalpacketsdropped_interval, losspercentage_interval, droppercentage_interval,
+                                                                                  totalpacketsack, totalpacketsnak, sendrate, rtt);
                                             obj.srtserver.push(srtservice);
                                         }
                                     }
