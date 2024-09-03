@@ -24,7 +24,7 @@ console.log('Server-side code running');
 
 var exec = require('child_process').exec;
 var os = require('os');
-var networkInterfaces = os.networkInterfaces();
+var networkInterfaces = os.networkInterfaces({ all: true });
 const express = require('express');
 const readLastLines = require('read-last-lines');
 var bodyParser = require('body-parser');
