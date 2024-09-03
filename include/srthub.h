@@ -27,7 +27,7 @@
 #include <pthread.h>
 
 #define MAX_STRING_SIZE 512
-#define MAX_WORKER_THREADS 8
+#define MAX_WORKER_THREADS 32
 
 typedef struct _srthub_configuration_struct_ {
     char sourcename[MAX_STRING_SIZE];
