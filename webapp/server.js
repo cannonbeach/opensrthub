@@ -125,10 +125,12 @@ cpuILoadInit = function() {
             end = cpuIAverage(index);
             dif = {};
             dif.cpu=index;
+            console.log('start.idle = '+start.idle);
             dif.idle = end.idle - start.idle;
             dif.total = end.total - start.total;
             dif.percent = 1 - dif.idle / dif.total;
             dif.percent = Math.round(dif.percent*100*100)/100;
+            start = end;
             return dif;
         };
     };
