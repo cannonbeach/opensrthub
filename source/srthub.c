@@ -40,7 +40,7 @@
 #include "cJSON.h"
 
 #define SRTHUB_MAJOR 0
-#define SRTHUB_MINOR 1
+#define SRTHUB_MINOR 2
 
 #define MAX_CONFIG_SIZE 16384
 #define MAX_UDP_BUFFER_READ 2048
@@ -106,6 +106,9 @@ typedef struct _srt_receive_thread_caller_struct_ {
     char         server_address[MAX_STRING_SIZE];
     int          server_port;
     char         server_interface_name[MAX_STRING_SIZE];
+    char         server_redundant_address[MAX_STRING_SIZE];
+    int          server_redundant_port;
+    char         server_redundant_interface_name[MAX_STRING_SIZE];
     char         streamid[MAX_STRING_SIZE];
     char         passphrase[MAX_STRING_SIZE];
     int          keysize;
@@ -502,6 +505,8 @@ static void *srt_receiver_thread_listener(void *context)
                 int cp;
                 int tp;
                 int current_state;
+                int rtp_check;
+                int is_rtp = 0;
                 int clear_it = 0;
 
                 if (srt_connected == 0) {
@@ -547,6 +552,15 @@ static void *srt_receiver_thread_listener(void *context)
                             fprintf(statsfile,"    \"packets-retransmitted\":%d,\n", stats.pktRetransTotal);
                             fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
                             fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
+                            fprintf(statsfile,"    \"retrans-percentage\":%.2f,\n", (double)stats.pktRetransTotal / (double)stats.pktRecvTotal * (double)100.0);
+                            fprintf(statsfile,"    \"drop-percentage\":%.2f,\n", (double)stats.pktRcvDropTotal / (double)stats.pktRecvTotal * (double)100.0);
+                            fprintf(statsfile,"    \"packets-received-interval\":%ld,\n", stats.pktRecv);
+                            fprintf(statsfile,"    \"packets-lost-interval\":%d,\n", stats.pktRcvLoss);
+                            fprintf(statsfile,"    \"packets-retransmitted-interval\":%d,\n", stats.pktRcvRetrans);
+                            fprintf(statsfile,"    \"packets-dropped-interval\":%d,\n", stats.pktRcvDrop);
+                            fprintf(statsfile,"    \"loss-percentage-interval\":%.2f,\n", (double)stats.pktRcvLoss / (double)stats.pktRecv * (double)100.0);
+                            fprintf(statsfile,"    \"retrans-percentage-interval\":%.2f,\n", (double)stats.pktRetrans / (double)stats.pktRecv * (double)100.0);
+                            fprintf(statsfile,"    \"drop-percentage-interval\":%.2f,\n", (double)stats.pktRcvDrop / (double)stats.pktRecv * (double)100.0);
                             fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                             fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                             fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);
@@ -558,8 +572,13 @@ static void *srt_receiver_thread_listener(void *context)
                 }
                 update_stats++;
                 tp = recvbytes / 188;
-                //fprintf(stderr,"decode packets: tp=%d\n", tp);
-                decode_packets((uint8_t*)buffer, tp, decode, 0);
+                rtp_check = tp * 188;
+                if ((recvbytes - rtp_check)==12) {
+                    is_rtp = 1;
+                    decode_packets((uint8_t*)buffer+12, tp, decode, 0);
+                } else {
+                    decode_packets((uint8_t*)buffer, tp, decode, 0);
+                }
                 //fprintf(stderr,"done decode packets\n");
 
                 {
@@ -574,9 +593,14 @@ static void *srt_receiver_thread_listener(void *context)
                             if (recvbytes > MAX_PACKET_BUFFER_SIZE) {
                                 recvbytes = MAX_PACKET_BUFFER_SIZE;
                             }
-                            memcpy(obuffer, buffer, recvbytes);
+                            if (is_rtp) {
+                                memcpy(obuffer, buffer+12, recvbytes-12);
+                                msg->buffer_size = recvbytes-12;
+                            } else {
+                                memcpy(obuffer, buffer, recvbytes);
+                                msg->buffer_size = recvbytes;
+                            }
                             msg->buffer = obuffer;
-                            msg->buffer_size = recvbytes;
                             msg->pts = srtcontrol.srctime;
                             dataqueue_put_front(srtcore->udpserverqueue, msg);
                         } else {
@@ -816,7 +840,9 @@ static void *srt_receiver_thread_caller(void *context)
             int cp;
             int tp;
             int current_state;
+            int rtp_check;
             int clear_it = 0;
+            int is_rtp = 0;
 
             if (srt_connected == 0) {
                 char signal_message[MAX_STRING_SIZE];
@@ -861,6 +887,15 @@ static void *srt_receiver_thread_caller(void *context)
                         fprintf(statsfile,"    \"packets-retransmitted\":%d,\n", stats.pktRetransTotal);
                         fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
                         fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvDropTotal / (double)stats.pktRecvTotal * (double)100.0);
+                        fprintf(statsfile,"    \"retrans-percentage\":%.2f,\n", (double)stats.pktRetransTotal / (double)stats.pktRecvTotal * (double)100.0);
+                        fprintf(statsfile,"    \"drop-percentage\":%.2f,\n", (double)stats.pktRcvDropTotal / (double)stats.pktRecvTotal * (double)100.0);
+                        fprintf(statsfile,"    \"packets-received-interval\":%ld,\n", stats.pktRecv);
+                        fprintf(statsfile,"    \"packets-lost-interval\":%d,\n", stats.pktRcvLoss);
+                        fprintf(statsfile,"    \"packets-retransmitted-interval\":%d,\n", stats.pktRcvRetrans);
+                        fprintf(statsfile,"    \"packets-dropped-interval\":%d,\n", stats.pktRcvDrop);
+                        fprintf(statsfile,"    \"loss-percentage-interval\":%.2f,\n", (double)stats.pktRcvLoss / (double)stats.pktRecv * (double)100.0);
+                        fprintf(statsfile,"    \"retrans-percentage-interval\":%.2f,\n", (double)stats.pktRetrans / (double)stats.pktRecv * (double)100.0);
+                        fprintf(statsfile,"    \"drop-percentage-interval\":%.2f,\n", (double)stats.pktRcvDrop / (double)stats.pktRecv * (double)100.0);
                         fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                         fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                         fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);
@@ -872,7 +907,14 @@ static void *srt_receiver_thread_caller(void *context)
             }
             update_stats++;
             tp = recvbytes / 188;
-            decode_packets((uint8_t*)buffer, tp, decode, 0);
+            rtp_check = tp * 188;
+            //fprintf(stderr,"decode packets: %d\n", recvbytes - rtp_check);
+            if ((recvbytes - rtp_check)==12) {
+                is_rtp = 1;
+                decode_packets((uint8_t*)buffer+12, tp, decode, 0);
+            } else {
+                decode_packets((uint8_t*)buffer, tp, decode, 0);
+            }
 
             {
                 dataqueue_message_struct *msg;
@@ -886,7 +928,13 @@ static void *srt_receiver_thread_caller(void *context)
                         if (recvbytes > MAX_PACKET_BUFFER_SIZE) {
                             recvbytes = MAX_PACKET_BUFFER_SIZE;
                         }
-                        memcpy(obuffer, buffer, recvbytes);
+                        if (is_rtp) {
+                            memcpy(obuffer, buffer+12, recvbytes-12);
+                            msg->buffer_size = recvbytes-12;
+                        } else {
+                            memcpy(obuffer, buffer, recvbytes);
+                            msg->buffer_size = recvbytes;
+                        }
                         msg->buffer = obuffer;
                         msg->buffer_size = recvbytes;
                         msg->pts = srtcontrol.srctime;
@@ -943,6 +991,7 @@ static void *srt_server_worker_output_thread(void *context)
     int64_t total_packets_sent = 0;
     struct timespec server_time_stop;
     struct timespec server_time_start;
+    FILE *statsfile = NULL;
 
     srtdata = (srt_server_worker_output_thread_struct*)context;
     srtcore = srtdata->core;
@@ -958,6 +1007,19 @@ static void *srt_server_worker_output_thread(void *context)
     srt_connected = 1;
 
     sprintf(statsfilename,"/opt/srthub/status/srt_server_thread_%d_%d.json", thread, srtcore->session_identifier);
+
+    statsfile = fopen(statsfilename,"wb");
+    if (statsfile) {
+        fprintf(statsfile,"{\n");
+        fprintf(statsfile,"    \"thread\":%d,\n", thread);
+        fprintf(statsfile,"    \"client-address\":\"%s\",\n", srtdata->client_address);
+        fprintf(statsfile,"    \"client-port\":%d,\n", srtdata->client_port);
+        fprintf(statsfile,"    \"total-bytes-sent\":0,\n");
+        fprintf(statsfile,"    \"total-packets-sent\":0\n");
+        fprintf(statsfile,"}\n");
+        fclose(statsfile);
+        statsfile = NULL;
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &server_time_start);
     while (srtcore->srt_server_worker_thread_running[thread]) {
@@ -995,6 +1057,7 @@ static void *srt_server_worker_output_thread(void *context)
         srtcontrol.srctime = msg->pts;
         srtcontrol.msgttl = -1;
 
+        /*
         clock_gettime(CLOCK_MONOTONIC, &server_time_stop);
         diff = realtime_clock_difference(&server_time_stop, &server_time_start) / 1000;
         if (diff >= 1000) {
@@ -1011,6 +1074,7 @@ static void *srt_server_worker_output_thread(void *context)
                 clock_gettime(CLOCK_MONOTONIC, &server_time_start);
             }
         }
+        */
 
         sent_bytes = srt_sendmsg2(clientsock, (char*)buffer, buffer_size, &srtcontrol);
         if (sent_bytes < 0) {
@@ -1035,6 +1099,63 @@ static void *srt_server_worker_output_thread(void *context)
         } else if (sent_bytes == 0) {
             usleep(100);
         } else {
+            int srterr;
+            int clear_it = 0;
+            SRT_TRACEBSTATS stats;
+
+            if ((update_stats % 100)==0) {
+                srterr = srt_bstats(clientsock, &stats, clear_it);
+                if (srterr != SRT_ERROR) {
+                    int64_t now = srt_time_now();
+                    fprintf(stderr,"srt_server_worker_output_thread: sent %ld/%ld bytes (serversock=%d) s=%10ld l=%5d retrans=%5d ack=%d nack=%d d=%8d timestamp=%ld (now=%ld) diff=%ld\n",
+                            total_bytes_sent,
+                            stats.byteSentUniqueTotal,
+                            clientsock,
+                            stats.pktSentTotal,
+                            stats.pktSndLossTotal,
+                            stats.pktRetransTotal,
+                            stats.pktSentACKTotal,
+                            stats.pktSentNAKTotal,
+                            stats.pktSndDropTotal,
+                            srtcontrol.srctime,
+                            now,
+                            now-srtcontrol.srctime);
+
+                    fprintf(stderr,"srt_server_worker_output_thread: send rate %.2f mbps @ %ld, %ld\n", stats.mbpsSendRate, stats.msTimeStamp, total_bytes_sent);
+
+                    statsfile = fopen(statsfilename,"wb");
+                    if (statsfile) {
+                        fprintf(statsfile,"{\n");
+                        fprintf(statsfile,"    \"thread\":%d,\n", thread);
+                        fprintf(statsfile,"    \"client-address\":\"%s\",\n", srtdata->client_address);
+                        fprintf(statsfile,"    \"client-port\":%d,\n", srtdata->client_port);
+                        fprintf(statsfile,"    \"packets-sent\":%ld,\n", stats.pktSentTotal);
+                        fprintf(statsfile,"    \"packets-lost\":%d,\n", stats.pktSndLossTotal);
+                        fprintf(statsfile,"    \"packets-retransmitted\":%d,\n", stats.pktRetransTotal);
+                        fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktSndDropTotal);
+                        fprintf(statsfile,"    \"packets-acktotal\":%d,\n", stats.pktRecvACKTotal);
+                        fprintf(statsfile,"    \"packets-naktotal\":%d,\n", stats.pktRecvNAKTotal);
+                        fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktSndLossTotal / (double)stats.pktSentTotal * (double)100.0);
+                        fprintf(statsfile,"    \"retrans-percentage\":%.2f,\n", (double)stats.pktRetransTotal / (double)stats.pktSentTotal * (double)100.0);
+                        fprintf(statsfile,"    \"drop-percentage\":%.2f,\n", (double)stats.pktSndDropTotal / (double)stats.pktSentTotal * (double)100.0);
+                        fprintf(statsfile,"    \"packets-sent-interval\":%ld,\n", stats.pktSent);
+                        fprintf(statsfile,"    \"packets-lost-interval\":%d,\n", stats.pktSndLoss);
+                        fprintf(statsfile,"    \"packets-retransmitted-interval\":%d,\n", stats.pktRetrans);
+                        fprintf(statsfile,"    \"packets-dropped-interval\":%d,\n", stats.pktSndDrop);
+                        fprintf(statsfile,"    \"loss-percentage-interval\":%.2f,\n", (double)stats.pktSndLoss / (double)stats.pktSent * (double)100.0);
+                        fprintf(statsfile,"    \"retrans-percentage-interval\":%.2f,\n", (double)stats.pktRetrans / (double)stats.pktSent * (double)100.0);
+                        fprintf(statsfile,"    \"drop-percentage-interval\":%.2f,\n", (double)stats.pktSndDrop / (double)stats.pktSent * (double)100.0);
+                        fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsSendRate * (double)1000.0);
+                        fprintf(statsfile,"    \"rtt\":%.2f,\n", (double)stats.msRTT);
+                        fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
+                        fprintf(statsfile,"    \"total-packets-sent\":%ld\n", total_packets_sent);
+                        fprintf(statsfile,"}\n");
+                        fclose(statsfile);
+                        statsfile = NULL;
+                    }
+                }
+            }
+            update_stats++;
             total_packets_sent++;
             total_bytes_sent += sent_bytes;
         }
@@ -1575,6 +1696,8 @@ static void *udp_receiver_thread(void *context)
                 int tp;
                 int64_t diff;
                 double kbps;
+                int rtp_check;
+                int is_rtp = 0;
 
                 no_signal_count = 0;
                 if (input_signal == 0) {
@@ -1596,7 +1719,13 @@ static void *udp_receiver_thread(void *context)
 
                 // check if rtp or something else?
                 tp = bytes_read / 188;
-                decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                rtp_check = tp * 188;
+                if ((bytes_read - rtp_check)==12) {
+                    is_rtp = 1;
+                    decode_packets((uint8_t*)udp_buffer+12, tp, decode, 0);
+                } else {
+                    decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                }
 
                 clock_gettime(CLOCK_MONOTONIC, &receive_time_stop);
                 diff = realtime_clock_difference(&receive_time_stop, &receive_time_start) / 1000000;
@@ -2450,6 +2579,9 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
                 cJSON *sourceaddress_field;
                 cJSON *sourceport_field;
                 cJSON *sourceinterface_field;
+                cJSON *redundantsourceaddress_field;
+                cJSON *redundantsourceport_field;
+                cJSON *redundantsourceinterface_field;
                 cJSON *outputmode_field;
                 cJSON *outputaddress_field;
                 cJSON *outputport_field;
@@ -2469,6 +2601,9 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
                 sourceaddress_field = cJSON_GetObjectItem(top,"sourceaddress");
                 sourceport_field = cJSON_GetObjectItem(top,"sourceport");
                 sourceinterface_field = cJSON_GetObjectItem(top,"sourceinterface");
+                redundantsourceaddress_field = cJSON_GetObjectItem(top,"redundantsourceaddress");
+                redundantsourceport_field = cJSON_GetObjectItem(top,"redundantsourceport");
+                redundantsourceinterface_field = cJSON_GetObjectItem(top,"redundantsourceinterface");
 
                 outputmode_field = cJSON_GetObjectItem(top,"outputmode");
                 outputaddress_field = cJSON_GetObjectItem(top,"outputaddress");
@@ -2622,7 +2757,7 @@ int main(int argc, char **argv)
     int64_t diff;
     int thread = 0;
 
-    fprintf(stderr,"srthub (C) Copyright 2023 John William\n");
+    fprintf(stderr,"srthub (C) Copyright 2023-2024 John William (Will)\n");
     fprintf(stderr,"\n");
     fprintf(stderr,"srthub version is: %d.%d\n",
             SRTHUB_MAJOR, SRTHUB_MINOR);
@@ -2791,6 +2926,9 @@ restart_srt:
         srt_receive_thread_caller_struct *srt_receive_data = (srt_receive_thread_caller_struct*)malloc(sizeof(srt_receive_thread_caller_struct));
         sprintf(srt_receive_data->server_address, "%s", server_address);
         sprintf(srt_receive_data->server_interface_name, "%s", sourceinterface);
+        // server_redundant_address
+        // server_redundant_port
+        // server_redundant_interface_name
         srt_receive_data->server_port = server_port;
         memset(&srt_receive_data->streamid, 0, sizeof(srt_receive_data->streamid));
         memset(&srt_receive_data->passphrase, 0, sizeof(srt_receive_data->passphrase));
