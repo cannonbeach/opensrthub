@@ -57,9 +57,9 @@
 #define MAX_AUDIO_BUFFERS          128
 #define MAX_AUDIO_BUFFER_SIZE      32768
 
-#define ENABLE_THUMBNAIL
+#define THUMBNAIL_UPDATE_TIME      10000
+//#define DISABLE_VIDEO_DECODING
 
-#if defined(ENABLE_THUMBNAIL)
 #define THUMBNAIL_WIDTH   320
 #define THUMBNAIL_HEIGHT  240
 #define MAX_DECODE_WIDTH  3840
@@ -74,7 +74,6 @@
 #include "../cbffmpeg/libavformat/avformat.h"
 #include "../cbffmpeg/libavfilter/buffersink.h"
 #include "../cbffmpeg/libavfilter/buffersrc.h"
-#endif
 
 typedef struct _srt_server_worker_output_thread_struct_ {
     int          thread;
@@ -2163,7 +2162,6 @@ cleanup_audio_decode_thread:
 
 static void *srthub_thumbnail_thread(void *context)
 {
-#if defined(ENABLE_THUMBNAIL)
     srthub_core_struct *srtcore = NULL;
     AVCodecContext *decode_avctx = NULL;
     AVCodec *decode_codec = NULL;
@@ -2182,11 +2180,15 @@ static void *srthub_thumbnail_thread(void *context)
     char statsfilename[MAX_STRING_SIZE];
     char corruptiontimedate[MAX_STRING_SIZE];
     uint32_t decode_errors = 0;
+    struct timeval timer_start;
+    struct timeval timer_stop;
+    int64_t timer_delta;
 
     srtcore = (srthub_core_struct*)context;
 
     sprintf(statsfilename,"/opt/srthub/status/thumbnail_%d.json", srtcore->session_identifier);
 
+    gettimeofday(&timer_start, NULL);
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
@@ -2214,6 +2216,7 @@ static void *srthub_thumbnail_thread(void *context)
             int stream_index = msg->stream_index;
             int corruption_count = msg->source_discontinuity;
             int ret;
+            int sync_frame = 0;
 
             corruption_count = corruption_count - 1;  // hack for the startup condition that needs to be fixed (since we always report one at startup)
             if (corruption_count < 0) {
@@ -2278,125 +2281,175 @@ static void *srthub_thumbnail_thread(void *context)
                 continue;
             }
 
-            decode_pkt->size = buffer_size;
-            decode_pkt->data = buffer;
-            decode_pkt->pts = 0;
-            decode_pkt->dts = 0;
-
-            ret = avcodec_send_packet(decode_avctx, decode_pkt);
-
-            while (ret >= 0) {
-                int is_frame_interlaced;
-                int is_frame_tff;
-                int frame_height;
-                int frame_height2;
-                int frame_width;
-                int frame_width2;
-                int row;
-                AVFrame *jpeg_frame;
-
-                ret = avcodec_receive_frame(decode_avctx, decode_av_frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                    break;
-                }
-                if (ret < 0) {
-                    break;
-                }
-
-                decoded_frame_count++;
-
-                is_frame_interlaced = decode_av_frame->interlaced_frame;
-                is_frame_tff = decode_av_frame->top_field_first;
-                source_format = decode_av_frame->format;
-                frame_height = decode_avctx->height;
-                frame_width = decode_avctx->width;
-
-                source_data[0] = decode_av_frame->data[0];
-                source_data[1] = decode_av_frame->data[1];
-                source_data[2] = decode_av_frame->data[2];
-                source_data[3] = decode_av_frame->data[3];
-                source_stride[0] = decode_av_frame->linesize[0];
-                source_stride[1] = decode_av_frame->linesize[1];
-                source_stride[2] = decode_av_frame->linesize[2];
-                source_stride[3] = decode_av_frame->linesize[3];
-
-                if (!decode_converter) {
-                    decode_converter = sws_getContext(frame_width, frame_height, source_format,
-                                                      THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format,
-                                                      SWS_BICUBIC, NULL, NULL, NULL);
-                    av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
-                }
-
-                if ((decoded_frame_count % 120)==0) {
-                    /*
-                    fprintf(stderr,"srt_thumbnail_thread: decoded video frame, resolution is %d x %d\n",
-                            frame_width, frame_height);
-                    */
-                    char codec[MAX_STRING_SIZE];
-                    if (buffer_type == STREAM_TYPE_H264) {
-                        sprintf(codec,"h264");
-                    } else if (buffer_type == STREAM_TYPE_MPEG2) {
-                        sprintf(codec,"mpeg2");
-                    } else if (buffer_type == STREAM_TYPE_HEVC) {
-                        sprintf(codec,"hevc");
-                    } else {
-                        sprintf(codec,"unknown");
+            if (buffer_type == STREAM_TYPE_H264) {
+                int rp = 0;
+                int nt;
+                while (rp < buffer_size) {
+                    if (buffer[rp+0] == 0 && buffer[rp+1] == 0 && buffer[rp+2] == 1) {
+                        nt = buffer[rp+3] & 0x1f;
+                        if (nt == 5 || nt == 7 || nt == 8) {
+                            sync_frame = 1;
+                            break;
+                        }
                     }
-                    FILE *statsfile = fopen(statsfilename,"wb");
-                    if (statsfile) {
-                        fprintf(statsfile,"{\n");
-                        fprintf(statsfile,"    \"width\":%d,\n", frame_width);
-                        fprintf(statsfile,"    \"height\":%d,\n", frame_height);
-                        fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
-                        fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
-                        fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
-                        fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
-                        fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
-                        fprintf(statsfile,"    \"last-source-error\":\"%s\",\n", corruptiontimedate);
-                        fprintf(statsfile,"    \"decode-errors\":0\n");
-                        fprintf(statsfile,"}\n");
-                        fclose(statsfile);
+                    rp++;
+                }
+            }
+            if (buffer_type == STREAM_TYPE_MPEG2) {
+                int rp = 0;
+                while (rp < buffer_size) {
+                    if (buffer[rp+0] == 0 && buffer[rp+1] == 0 && buffer[rp+2] == 1 && buffer[rp+3] == 0xb3) {
+                        sync_frame = 1;
+                        break;
+                    }
+                    rp++;
+                }
+            }
+            if (buffer_type == STREAM_TYPE_HEVC) {
+                int rp = 0;
+                int nt;
+                while (rp < buffer_size) {
+                    if (buffer[rp+0] == 0 && buffer[rp+1] == 0 && buffer[rp+2] == 1) {
+                        nt = buffer[rp+3] & 0x7f;
+                        nt = nt >> 1;
+                        if (nt == 34 || nt == 33 || nt == 32) {
+                            sync_frame = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+#if defined(DISABLE_VIDEO_DECODING)
+            sync_frame = 0;
+#endif
+
+            gettimeofday(&timer_stop, NULL);
+            timer_delta = (int64_t)get_time_difference(&timer_stop, &timer_start) / 1000;
+            if (sync_frame && timer_delta >= THUMBNAIL_UPDATE_TIME) {
+                gettimeofday(&timer_start, NULL);
+                decode_pkt->size = buffer_size;
+                decode_pkt->data = buffer;
+                decode_pkt->pts = 0;
+                decode_pkt->dts = 0;
+
+                ret = avcodec_send_packet(decode_avctx, decode_pkt);
+
+                while (ret >= 0) {
+                    int is_frame_interlaced;
+                    int is_frame_tff;
+                    int frame_height;
+                    int frame_height2;
+                    int frame_width;
+                    int frame_width2;
+                    int row;
+                    AVFrame *jpeg_frame;
+
+                    ret = avcodec_receive_frame(decode_avctx, decode_av_frame);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                        break;
+                    }
+                    if (ret < 0) {
+                        break;
                     }
 
-                    sws_scale(decode_converter,
-                              (const uint8_t * const*)source_data, source_stride, 0,
-                              frame_height, output_data, output_stride);
+                    decoded_frame_count++;
 
-                    jpeg_frame = av_frame_alloc();
-                    jpeg_frame->data[0] = output_data[0];
-                    jpeg_frame->data[1] = output_data[1];
-                    jpeg_frame->data[2] = output_data[2];
-                    jpeg_frame->data[3] = output_data[3];
-                    jpeg_frame->linesize[0] = output_stride[0];
-                    jpeg_frame->linesize[1] = output_stride[1];
-                    jpeg_frame->linesize[2] = output_stride[2];
-                    jpeg_frame->linesize[3] = output_stride[3];
-                    jpeg_frame->pts = AV_NOPTS_VALUE;
-                    jpeg_frame->pkt_dts = AV_NOPTS_VALUE;
-                    jpeg_frame->pkt_pts = AV_NOPTS_VALUE;
-                    jpeg_frame->pkt_duration = 0;
-                    jpeg_frame->pkt_pos = -1;
-                    jpeg_frame->pkt_size = -1;
-                    jpeg_frame->key_frame = -1;
-                    jpeg_frame->sample_aspect_ratio = (AVRational){1,1};
-                    jpeg_frame->format = 0;
-                    jpeg_frame->extended_data = NULL;
-                    jpeg_frame->color_primaries = AVCOL_PRI_BT709;
-                    jpeg_frame->color_trc = AVCOL_TRC_BT709;
-                    jpeg_frame->colorspace = AVCOL_SPC_BT709;
-                    jpeg_frame->color_range = AVCOL_RANGE_JPEG;
-                    jpeg_frame->chroma_location = AVCHROMA_LOC_UNSPECIFIED;
-                    jpeg_frame->flags = 0;
-                    jpeg_frame->channels = 0;
-                    jpeg_frame->channel_layout = 0;
-                    jpeg_frame->width = THUMBNAIL_WIDTH;
-                    jpeg_frame->height = THUMBNAIL_HEIGHT;
-                    jpeg_frame->interlaced_frame = 0;
-                    jpeg_frame->top_field_first = 0;
+                    is_frame_interlaced = decode_av_frame->interlaced_frame;
+                    is_frame_tff = decode_av_frame->top_field_first;
+                    source_format = decode_av_frame->format;
+                    frame_height = decode_avctx->height;
+                    frame_width = decode_avctx->width;
 
-                    save_frame_as_jpeg(srtcore, jpeg_frame);
+                    source_data[0] = decode_av_frame->data[0];
+                    source_data[1] = decode_av_frame->data[1];
+                    source_data[2] = decode_av_frame->data[2];
+                    source_data[3] = decode_av_frame->data[3];
+                    source_stride[0] = decode_av_frame->linesize[0];
+                    source_stride[1] = decode_av_frame->linesize[1];
+                    source_stride[2] = decode_av_frame->linesize[2];
+                    source_stride[3] = decode_av_frame->linesize[3];
 
-                    av_frame_free(&jpeg_frame);
+                    if (!decode_converter) {
+                        decode_converter = sws_getContext(frame_width, frame_height, source_format,
+                                                          THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format,
+                                                          SWS_BICUBIC, NULL, NULL, NULL);
+                        av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
+                    }
+
+                    {
+                        /*
+                          fprintf(stderr,"srt_thumbnail_thread: decoded video frame, resolution is %d x %d\n",
+                          frame_width, frame_height);
+                        */
+                        char codec[MAX_STRING_SIZE];
+                        if (buffer_type == STREAM_TYPE_H264) {
+                            sprintf(codec,"h264");
+                        } else if (buffer_type == STREAM_TYPE_MPEG2) {
+                            sprintf(codec,"mpeg2");
+                        } else if (buffer_type == STREAM_TYPE_HEVC) {
+                            sprintf(codec,"hevc");
+                        } else {
+                            sprintf(codec,"unknown");
+                        }
+                        FILE *statsfile = fopen(statsfilename,"wb");
+                        if (statsfile) {
+                            fprintf(statsfile,"{\n");
+                            fprintf(statsfile,"    \"width\":%d,\n", frame_width);
+                            fprintf(statsfile,"    \"height\":%d,\n", frame_height);
+                            fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
+                            fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
+                            fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
+                            fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
+                            fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
+                            fprintf(statsfile,"    \"last-source-error\":\"%s\",\n", corruptiontimedate);
+                            fprintf(statsfile,"    \"decode-errors\":0\n");
+                            fprintf(statsfile,"}\n");
+                            fclose(statsfile);
+                        }
+
+                        sws_scale(decode_converter,
+                                  (const uint8_t * const*)source_data, source_stride, 0,
+                                  frame_height, output_data, output_stride);
+
+                        jpeg_frame = av_frame_alloc();
+                        if (jpeg_frame) {
+                            jpeg_frame->data[0] = output_data[0];
+                            jpeg_frame->data[1] = output_data[1];
+                            jpeg_frame->data[2] = output_data[2];
+                            jpeg_frame->data[3] = output_data[3];
+                            jpeg_frame->linesize[0] = output_stride[0];
+                            jpeg_frame->linesize[1] = output_stride[1];
+                            jpeg_frame->linesize[2] = output_stride[2];
+                            jpeg_frame->linesize[3] = output_stride[3];
+                            jpeg_frame->pts = AV_NOPTS_VALUE;
+                            jpeg_frame->pkt_dts = AV_NOPTS_VALUE;
+                            jpeg_frame->pkt_pts = AV_NOPTS_VALUE;
+                            jpeg_frame->pkt_duration = 0;
+                            jpeg_frame->pkt_pos = -1;
+                            jpeg_frame->pkt_size = -1;
+                            jpeg_frame->key_frame = -1;
+                            jpeg_frame->sample_aspect_ratio = (AVRational){1,1};
+                            jpeg_frame->format = 0;
+                            jpeg_frame->extended_data = NULL;
+                            jpeg_frame->color_primaries = AVCOL_PRI_BT709;
+                            jpeg_frame->color_trc = AVCOL_TRC_BT709;
+                            jpeg_frame->colorspace = AVCOL_SPC_BT709;
+                            jpeg_frame->color_range = AVCOL_RANGE_JPEG;
+                            jpeg_frame->chroma_location = AVCHROMA_LOC_UNSPECIFIED;
+                            jpeg_frame->flags = 0;
+                            jpeg_frame->channels = 0;
+                            jpeg_frame->channel_layout = 0;
+                            jpeg_frame->width = THUMBNAIL_WIDTH;
+                            jpeg_frame->height = THUMBNAIL_HEIGHT;
+                            jpeg_frame->interlaced_frame = 0;
+                            jpeg_frame->top_field_first = 0;
+
+                            save_frame_as_jpeg(srtcore, jpeg_frame);
+
+                            av_frame_free(&jpeg_frame);
+                        }
+                    }
                 }
             }
             memory_return(srtcore->videopool, buffer);
@@ -2426,7 +2479,6 @@ cleanup_thumbnail_thread:
         msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
     }
 
-#endif
     return NULL;
 }
 
