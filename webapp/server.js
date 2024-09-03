@@ -97,13 +97,16 @@ cpuIAverage = function(i) {
     var cpu, cpus, idle, len, total, totalIdle, totalTick, type;
     totalIdle = 0;
     totalTick = 0;
+    var count = 0;
     cpus = os.cpus();
     cpu = cpus[i];
     for (type in cpu.times) {
         totalTick += cpu.times[type];
+        count++;
     }
     totalIdle += cpu.times.idle;
 
+    console.log('cpus = '+cpus.length);
     idle = totalIdle / cpus.length;
     total = totalTick / cpus.length;
     return {
