@@ -17,8 +17,9 @@ can view thumbnails, bitrates, codecs as well as information about signal loss. 
 2. Execute the setup script (sudo ./setupopensrthub.sh)
 3. Navigate your browser to port 8080
    - If the web application does not come up, you may need to navigate in the terminal to the /var/app directory and run the following commands:
-   - sudo pm2 start --name 'opensrthub' server.js --wait-ready
-   - sudo pm2 save
+   - ************************* PAY ATTENTION: YOU MUST BE IN THE /var/app DIRECTORY FOR THIS TO WORK *****************************
+   - username@server:/var/app:$ sudo pm2 start --name 'opensrthub' server.js --wait-ready
+   - username@server:/var/app:$ sudo pm2 save
 5. Select to add "New SRT Receiver" or "New SRT Server"
 6. Save your configuration
 ```
