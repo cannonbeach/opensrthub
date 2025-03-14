@@ -44,6 +44,7 @@
 
 #define MAX_CONFIG_SIZE 16384
 #define MAX_UDP_BUFFER_READ 2048
+#define MAX_SRT_PACKET_SIZE ((188*7)+12)
 
 #define MESSAGE_TYPE_START 0x01
 #define MESSAGE_TYPE_STOP 0x02
@@ -167,6 +168,23 @@ int64_t realtime_clock_difference(struct timespec *now, struct timespec *start)
     }
 
     return ((tnsec / 1000) + (tsec * 1000000));
+}
+
+static int check_for_rtp(int packetsize)
+{
+    int ts_packets = packetsize / 188;
+    int packetsize_check = ts_packets * 188;
+
+    if (packetsize_check != packetsize) {
+        int updated_packetsize = packetsize - 12;
+        int ts_packets = updated_packetsize / 188;
+
+        packetsize_check = ts_packets * 188;
+        if (packetsize_check == updated_packetsize) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int save_frame_as_jpeg(srthub_core_struct *srtcore, AVFrame *pFrame)
@@ -322,6 +340,7 @@ static void *srt_receiver_thread_listener(void *context)
     SRT_TRACEBSTATS stats;
     int threadid = gettid();
     int32_t latencyms;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     decode->pat_version_number = -1;
 
@@ -358,7 +377,13 @@ static void *srt_receiver_thread_listener(void *context)
 
     srterr = srt_setsockflag(listener, SRTO_LATENCY, &latencyms, sizeof(latencyms));
     if (srterr == SRT_ERROR) {
-        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+        fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_listener;
+    }
+
+    srterr = srt_setsockflag(listener, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_receiver_thread_listener;
     }
 
@@ -559,7 +584,12 @@ static void *srt_receiver_thread_listener(void *context)
                 update_stats++;
                 tp = recvbytes / 188;
                 //fprintf(stderr,"decode packets: tp=%d\n", tp);
-                decode_packets((uint8_t*)buffer, tp, decode, 0);
+                if (check_for_rtp(recvbytes)) {
+                    uint8_t *updated_buffer = (uint8_t*)buffer+12;
+                    decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                } else {
+                    decode_packets((uint8_t*)buffer, tp, decode, 0);
+                }
                 //fprintf(stderr,"done decode packets\n");
 
                 {
@@ -633,6 +663,7 @@ static void *srt_receiver_thread_caller(void *context)
     int srt_connected = 0;
     int threadid = gettid();
     int32_t latencyms;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     decode->pat_version_number = -1;
 
@@ -692,6 +723,12 @@ static void *srt_receiver_thread_caller(void *context)
     }
 
     srterr = srt_setsockflag(serversock, SRTO_LATENCY, &latencyms, sizeof(latencyms));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_caller;
+    }
+
+    srterr = srt_setsockflag(serversock, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
     if (srterr == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_receiver_thread_caller;
@@ -872,7 +909,13 @@ static void *srt_receiver_thread_caller(void *context)
             }
             update_stats++;
             tp = recvbytes / 188;
-            decode_packets((uint8_t*)buffer, tp, decode, 0);
+
+            if (check_for_rtp(recvbytes)) {
+                uint8_t *updated_buffer = (uint8_t*)buffer+12;
+                decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+            } else {
+                decode_packets((uint8_t*)buffer, tp, decode, 0);
+            }
 
             {
                 dataqueue_message_struct *msg;
@@ -1076,6 +1119,7 @@ static void *srt_server_thread_pull(void *context)
     int slots_available = 0;
     int64_t total_bytes_sent = 0;
     int64_t total_packets_sent = 0;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     srt_startup();
 
@@ -1120,6 +1164,12 @@ static void *srt_server_thread_pull(void *context)
             fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
             goto cleanup_srt_server_thread_pull;
         }
+    }
+
+    srterr = srt_setsockflag(listener, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_server_thread_pull;
     }
 
     srterr = srt_bind(listener, (struct sockaddr*)&server_addr, sizeof(server_addr));
@@ -1233,6 +1283,7 @@ static void *srt_server_thread_push(void *context)
     char statsfilename[MAX_STRING_SIZE];
     struct timespec server_time_stop;
     struct timespec server_time_start;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     srt_startup();
 
@@ -1285,6 +1336,12 @@ retry_srt_server_push_connection:
             fprintf(stderr,"srt_server_thread_push: unable to proceed with srt_setsockflag()\n");
             goto cleanup_srt_server_thread_push;
         }
+    }
+
+    srterr = srt_setsockflag(sendersock, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_server_thread_push;
     }
 
     /*
@@ -1596,7 +1653,12 @@ static void *udp_receiver_thread(void *context)
 
                 // check if rtp or something else?
                 tp = bytes_read / 188;
-                decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                if (check_for_rtp(bytes_read)) {
+                    uint8_t *updated_buffer = (uint8_t*)udp_buffer+12;
+                    decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                } else {
+                    decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                }
 
                 clock_gettime(CLOCK_MONOTONIC, &receive_time_stop);
                 diff = realtime_clock_difference(&receive_time_stop, &receive_time_start) / 1000000;
