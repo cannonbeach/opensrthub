@@ -752,6 +752,9 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                        }
 
                        for (pid_count = 0; pid_count < tsdata->pmt_pid_count; pid_count++) {
+                           fprintf(stderr,"pmt_pid_index[%d] = %d, current_pid = %d\n",
+                                   pid_count, tsdata->pmt_pid_index[pid_count], current_pid);
+
                            if (tsdata->pmt_pid_index[pid_count] == current_pid) {
                                int acquired_data_so_far = pdata - pdata_initial;
                                int unit_size = pdata[0];
@@ -765,11 +768,16 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                pmt_version_input = (*(pdata+6) & 0x1e) >> 1;
 
                                if (table_id != 0x02) {
+                                   fprintf(stderr,"table_id is not PMT\n");
                                    goto continue_packet_processing;
+                               } else {
+                                   fprintf(stderr,"table id is 0x02 which is a PMT table\n");
                                }
 
+                               fprintf(stderr,"pmt_table_entries = %d\n", tsdata->master_pat_table.pmt_table_entries);
                                for (each_pmt = 0; each_pmt < tsdata->master_pat_table.pmt_table_entries; each_pmt++)  {
                                    if (each_pmt == stream_select && stream_select != -1) {
+                                       fprintf(stderr,"pmt_pid = %d, current_pid = %d\n", tsdata->master_pmt_table[each_pmt].pmt_pid, current_pid);
                                        if (tsdata->master_pmt_table[each_pmt].pmt_pid == current_pid) {
                                            if (tsdata->master_pmt_table[each_pmt].max_pmt_time == 0) {
                                                tsdata->master_pmt_table[each_pmt].min_pmt_time = 999999999;
@@ -800,9 +808,18 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                    }
                                }
 
-                               if (pmt_version_input != tsdata->pmt_version[pid_count] ||
-                                   tsdata->pmt_decoded[pid_count] == 0 ||
-                                   tsdata->pmt_version[pid_count] == -1) {
+                               fprintf(stderr,"current_pid = %d, pmt_version_input = %d, tsdata->pmt_version[%d] = %d, pmt_table_acquired = %d, pmt_table_expected = %d, section_size = %d\n",
+                                       current_pid,
+                                       pmt_version_input,
+                                       pid_count,
+                                       tsdata->pmt_version[pid_count],
+                                       tsdata->pmt_table_acquired,
+                                       tsdata->pmt_table_expected,
+                                       section_size);
+
+                               if ((pmt_version_input != tsdata->pmt_version[pid_count]) ||
+                                   (tsdata->pmt_decoded[pid_count] == 0) ||
+                                   (tsdata->pmt_version[pid_count] == -1)) {
                                    tsdata->pmt_table_acquired = 184 - acquired_data_so_far;
                                    tsdata->pmt_table_expected = section_size;
                                    if (tsdata->pmt_position == 0) {
@@ -826,8 +843,8 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                            tsdata->pmt_table_acquired = 0;
                                            tsdata->pmt_table_expected = 0;
                                        } else {
-                                           unsigned short crc_position;
-                                           unsigned long crc32_length;
+                                           uint16_t crc_position;
+                                           uint32_t crc32_length;
                                            uint32_t *pmt_crc1;
                                            uint32_t calculated_crc;
 
@@ -850,6 +867,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
 
                                                if (pmt_crc2 == calculated_crc) {
                                                    tsdata->pmt_version[pid_count] = pmt_version_input;
+                                                   fprintf(stderr,"calling decode_pmt_table....current_pid=%d pmt_data_size=%d\n", current_pid, tsdata->pmt_data_size);
                                                    decode_pmt_table(&tsdata->master_pat_table, tsdata->master_pmt_table, tsdata->pmt_data, tsdata->pmt_data_size, current_pid);
                                                    tsdata->pmt_decoded[pid_count] = 1;
                                                } else {
@@ -1302,21 +1320,21 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                tsdata->pmt_pid_count = 0;
                                memset(tsdata->pmt_decoded, 0, sizeof(tsdata->pmt_decoded));
                                for (program_index = 0; program_index < tsdata->pat_program_count; program_index++) {
-                                   pat_program_number = (unsigned long)(((unsigned long)*(pdata+entry_index) >> 8) +
-                                                                        (unsigned long)*(pdata+entry_index+1));
+                                   pat_program_number = (int)(((uint32_t)*(pdata+entry_index) >> 8) +
+                                                              (uint32_t)*(pdata+entry_index+1));
 
                                    if (pat_program_number == 0) {
                                        //backup_caller(2000, 300, 0, 0, 0, 0, backup_context);
                                    } else {
-                                       pmt_pid = (unsigned short)((((unsigned long)*(pdata+entry_index+2) << 8)) |
-                                                                  (unsigned long)(*(pdata+entry_index+3)));
+                                       pmt_pid = (uint16_t)((((uint32_t)*(pdata+entry_index+2) << 8)) |
+                                                            (uint32_t)(*(pdata+entry_index+3)));
                                        pmt_pid = pmt_pid & 0x1fff;
 
                                        //backup_caller(2000, 200, pmt_pid, 0, 0, 0, backup_context);
                                        tsdata->pmt_pid_index[tsdata->pmt_pid_count] = pmt_pid;
                                        tsdata->pmt_pid_count++;
 
-                                       fprintf(stderr,"decoding PAT table, pmt_pid = %d\n", pmt_pid);
+                                       fprintf(stderr,"decoding PAT table, pmt_pid = %d, pmt_pid_count = %d, pat_program_number = %d\n", pmt_pid, tsdata->pmt_pid_count, pat_program_number);
                                    }
                                    entry_index += 4;
                                }
@@ -1328,105 +1346,110 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                        }
                    } else { // NOT THE START
                        int pid_count = 0;
-                         int acquired_data_so_far = 0;
-                         int tempval;
+                       int acquired_data_so_far = 0;
+                       int tempval;
 
-                         tempval = pdata - pdata_initial;
+                       tempval = pdata - pdata_initial;
 
-                         acquired_data_so_far = 184 - tempval;
+                       acquired_data_so_far = 184 - tempval;
 
-                         for (pid_count = 0; pid_count < tsdata->pmt_pid_count; pid_count++) {
-                              if (tsdata->pmt_pid_index[pid_count] == current_pid) {
-                                   if (tsdata->pmt_table_acquired > 0 &&
-                                       tsdata->pmt_table_acquired < MAX_TABLE_SIZE &&
-                                       tsdata->pmt_table_expected > 0) {
-                                       int pmt_bytes_remaining = tsdata->pmt_table_expected - tsdata->pmt_table_acquired;
+                       for (pid_count = 0; pid_count < tsdata->pmt_pid_count; pid_count++) {
+                           if (tsdata->pmt_pid_index[pid_count] == current_pid) {
+                               if (tsdata->pmt_table_acquired > 0 &&
+                                   tsdata->pmt_table_acquired < MAX_TABLE_SIZE &&
+                                   tsdata->pmt_table_expected > 0) {
+                                   int pmt_bytes_remaining = tsdata->pmt_table_expected - tsdata->pmt_table_acquired;
 
-                                       if (tsdata->pmt_table_acquired + acquired_data_so_far > MAX_TABLE_SIZE) {
-                                           acquired_data_so_far = pmt_bytes_remaining;
-                                       }
-                                       memcpy(&tsdata->pmt_data[tsdata->pmt_table_acquired], pdata, acquired_data_so_far);
-                                       tsdata->pmt_table_acquired += acquired_data_so_far;
-
-                                       if (tsdata->pmt_table_acquired >= tsdata->pmt_table_expected) {
-                                           unsigned short crc_position;
-                                           unsigned long crc32_length;
-                                           unsigned long *pmt_crc1;
-                                           unsigned long calculated_crc;
-
-                                           tsdata->pmt_data_size = tsdata->pmt_table_expected;
-                                           crc_position = ((tsdata->pmt_data[2] << 8) + tsdata->pmt_data[3]) & 0x0fff;
-                                           crc32_length = crc_position - 1;
-                                           if (crc_position > 4 && crc_position < 1020) {
-                                               unsigned long pmt_crc2;
-
-                                               pmt_crc1 = (unsigned long*)&tsdata->pmt_data[crc_position];
-                                               calculated_crc = getcrc32(&tsdata->pmt_data[1], crc32_length);
-                                               calculated_crc ^= 0xffffffff;
-                                               calculated_crc = htonl(calculated_crc);
-                                               pmt_crc2 = (unsigned long)*pmt_crc1;
-                                               pmt_crc2 ^= 0xffffffff;
-
-                                               if (pmt_crc2 == calculated_crc) {
-                                                   int pmt_version = ((tsdata->pmt_data[6]) & 0x1e) >> 1;
-                                                   if (pmt_version != tsdata->pmt_version[pid_count] ||
-                                                       tsdata->pmt_version[pid_count] == -1) {
-                                                       tsdata->pmt_version[pid_count] = pmt_version;
-                                                       decode_pmt_table(&tsdata->master_pat_table, tsdata->master_pmt_table, tsdata->pmt_data, tsdata->pmt_data_size, current_pid);
-                                                   }
-                                                   tsdata->pmt_decoded[pid_count] = 1;
-                                               } else {
-                                                   //backup_caller(2000, 201, calculated_crc, 0, 0, 0, backup_context);
-                                               }
-                                           }
-
-                                           tsdata->pmt_table_acquired = 0;
-                                           tsdata->pmt_table_expected = 0;
-                                       }
-                                       continue;
+                                   if (tsdata->pmt_table_acquired + acquired_data_so_far > MAX_TABLE_SIZE) {
+                                       acquired_data_so_far = pmt_bytes_remaining;
                                    }
-                              }
-                         }
+                                   memcpy(&tsdata->pmt_data[tsdata->pmt_table_acquired], pdata, acquired_data_so_far);
+                                   tsdata->pmt_table_acquired += acquired_data_so_far;
 
-                         for (each_pmt = 0; each_pmt < tsdata->master_pat_table.pmt_table_entries; each_pmt++)  {
-                             if (each_pmt == stream_select && stream_select != -1) {
-                                 int stream_count = tsdata->master_pmt_table[each_pmt].stream_count;
-                                 for (pid_count = 0; pid_count < stream_count; pid_count++) {
-                                     if (tsdata->master_pmt_table[each_pmt].stream_pid[pid_count] == current_pid) {
-                                         int last_cc;
+                                   // pmt_bytes_remaining = 14, pmt_table_acquired = 368, pmt_table_expected = 198, acquired_data_so_far = 184
+                                   fprintf(stderr,"pmt_bytes_remaining = %d, pmt_table_acquired = %d, pmt_table_expected = %d, acquired_data_so_far = %d\n",
+                                           pmt_bytes_remaining, tsdata->pmt_table_acquired, tsdata->pmt_table_expected, acquired_data_so_far);
 
-                                         last_cc = tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc;
-                                         if (last_cc == -1) {
-                                             tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc = cc;
-                                         } else {
-                                             int expected_continuity;
-                                             expected_continuity = (last_cc + 1) % 16;
-                                             if (expected_continuity != cc) {
-                                                 /*backup_caller(2000, 900+cc,
-                                                               expected_continuity, current_pid,
-                                                               total_input_packets, 0, backup_context);*/
-                                                 tsdata->master_pmt_table[each_pmt].data_engine[pid_count].corruption_count++;
-                                             }
-                                             tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc = cc;
-                                         }
+                                   if (tsdata->pmt_table_acquired >= tsdata->pmt_table_expected) {
+                                       uint16_t crc_position;
+                                       uint32_t crc32_length;
+                                       uint32_t *pmt_crc1;
+                                       uint32_t calculated_crc;
 
-                                         if (tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index > 0) {
-                                             int remaining_samples = 184 - adaptation_size;
-                                             if (remaining_samples < 0) {
-                                                 continue;
-                                             }
-                                             if (tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index + remaining_samples <= MAX_BUFFER_SIZE) {
-                                                 memcpy(tsdata->master_pmt_table[each_pmt].data_engine[pid_count].buffer +
-                                                        tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index,
-                                                        pdata,
-                                                        remaining_samples);
-                                                 tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index += remaining_samples;
-                                             }
-                                         }
-                                     }
-                                 }
-                             }  // stream select
-                         } // each pmt
+                                       tsdata->pmt_data_size = tsdata->pmt_table_expected;
+                                       crc_position = ((tsdata->pmt_data[2] << 8) + tsdata->pmt_data[3]) & 0x0fff;
+                                       crc32_length = crc_position - 1;
+                                       if (crc_position > 4 && crc_position < 1020) {
+                                           uint32_t pmt_crc2;
+
+                                           pmt_crc1 = (uint32_t*)&tsdata->pmt_data[crc_position];
+                                           calculated_crc = getcrc32(&tsdata->pmt_data[1], crc32_length);
+                                           calculated_crc ^= 0xffffffff;
+                                           calculated_crc = htonl(calculated_crc);
+                                           pmt_crc2 = (uint32_t)*pmt_crc1;
+                                           pmt_crc2 ^= 0xffffffff;
+
+                                           if (pmt_crc2 == calculated_crc) {
+                                               int pmt_version = ((tsdata->pmt_data[6]) & 0x1e) >> 1;
+                                               if (pmt_version != tsdata->pmt_version[pid_count] ||
+                                                   tsdata->pmt_version[pid_count] == -1) {
+                                                   tsdata->pmt_version[pid_count] = pmt_version;
+                                                   decode_pmt_table(&tsdata->master_pat_table, tsdata->master_pmt_table, tsdata->pmt_data, tsdata->pmt_data_size, current_pid);
+                                               }
+                                               tsdata->pmt_decoded[pid_count] = 1;
+                                           } else {
+                                               fprintf(stderr,"decode_pmt_table: invalid crc calculated, not decoding, 0x%x != 0x%x\n", pmt_crc2, calculated_crc);
+                                               //backup_caller(2000, 201, calculated_crc, 0, 0, 0, backup_context);
+                                           }
+                                       }
+
+                                       tsdata->pmt_table_acquired = 0;
+                                       tsdata->pmt_table_expected = 0;
+                                   }
+                                   continue;
+                               }
+                           }
+                       }
+
+                       for (each_pmt = 0; each_pmt < tsdata->master_pat_table.pmt_table_entries; each_pmt++)  {
+                           if (each_pmt == stream_select && stream_select != -1) {
+                               int stream_count = tsdata->master_pmt_table[each_pmt].stream_count;
+                               for (pid_count = 0; pid_count < stream_count; pid_count++) {
+                                   if (tsdata->master_pmt_table[each_pmt].stream_pid[pid_count] == current_pid) {
+                                       int last_cc;
+
+                                       last_cc = tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc;
+                                       if (last_cc == -1) {
+                                           tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc = cc;
+                                       } else {
+                                           int expected_continuity;
+                                           expected_continuity = (last_cc + 1) % 16;
+                                           if (expected_continuity != cc) {
+                                               /*backup_caller(2000, 900+cc,
+                                                 expected_continuity, current_pid,
+                                                 total_input_packets, 0, backup_context);*/
+                                               tsdata->master_pmt_table[each_pmt].data_engine[pid_count].corruption_count++;
+                                           }
+                                           tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc = cc;
+                                       }
+
+                                       if (tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index > 0) {
+                                           int remaining_samples = 184 - adaptation_size;
+                                           if (remaining_samples < 0) {
+                                               continue;
+                                           }
+                                           if (tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index + remaining_samples <= MAX_BUFFER_SIZE) {
+                                               memcpy(tsdata->master_pmt_table[each_pmt].data_engine[pid_count].buffer +
+                                                      tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index,
+                                                      pdata,
+                                                      remaining_samples);
+                                               tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index += remaining_samples;
+                                           }
+                                       }
+                                   }
+                               }
+                           }  // stream select
+                       } // each pmt
                    }// end of pusi
                }
           } // end of check for 0x47

@@ -6,7 +6,7 @@ else
     git clone https://github.com/Haivision/srt.git ./cbsrt
     pushd cbsrt
     echo "Configuring libsrt"
-    git checkout tags/v1.4.4 -b v1.4.4
+    git checkout tags/v1.5.4 -b v1.5.4
     ./configure --prefix=/usr
     make -j8
     if [ -f "libsrt.a" ]; then

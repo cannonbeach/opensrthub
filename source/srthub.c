@@ -501,6 +501,7 @@ static void *srt_receiver_thread_listener(void *context)
                         send_restart_message(srtcore);
                         goto cleanup_srt_receiver_thread_listener;
                     }
+                    usleep(200000);
                 } else if (lasterr == SRT_ECONNLOST) {
                     srt_connected = 0;
                     char signal_message[MAX_STRING_SIZE];
@@ -754,7 +755,7 @@ static void *srt_receiver_thread_caller(void *context)
         }
     }
 
-    modes = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+    modes = SRT_EPOLL_IN | SRT_EPOLL_ERR;
     srterr = srt_epoll_add_usock(epollid, serversock, &modes);
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
@@ -831,6 +832,7 @@ static void *srt_receiver_thread_caller(void *context)
                     send_restart_message(srtcore);
                     goto cleanup_srt_receiver_thread_caller;
                 }
+                usleep(200000);
             } else if (lasterr == SRT_ECONNLOST) {
                 char signal_message[MAX_STRING_SIZE];
                 fprintf(stderr,"srt_receiver_thread_caller: SRT connection has been lost!\n");
