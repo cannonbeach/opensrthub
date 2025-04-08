@@ -608,11 +608,12 @@ static void *srt_receiver_thread_listener(void *context)
                             if (check_for_rtp(recvbytes)) {
                                 uint8_t *updated_buffer = (uint8_t*)buffer+12;
                                 memcpy(obuffer, updated_buffer, recvbytes-12);
+                                msg->buffer_size = recvbytes-12;
                             } else {
                                 memcpy(obuffer, buffer, recvbytes);
+                                msg->buffer_size = recvbytes;
                             }
                             msg->buffer = obuffer;
-                            msg->buffer_size = recvbytes;
                             msg->pts = srtcontrol.srctime;
                             dataqueue_put_front(srtcore->udpserverqueue, msg);
                         } else {
@@ -939,11 +940,12 @@ static void *srt_receiver_thread_caller(void *context)
                         if (check_for_rtp(recvbytes)) {
                             uint8_t *updated_buffer = (uint8_t*)buffer+12;
                             memcpy(obuffer, updated_buffer, recvbytes-12);
+                            msg->buffer_size = recvbytes-12;
                         } else {
                             memcpy(obuffer, buffer, recvbytes);
+                            msg->buffer_size = recvbytes;
                         }
                         msg->buffer = obuffer;
-                        msg->buffer_size = recvbytes;
                         msg->pts = srtcontrol.srctime;
                         dataqueue_put_front(srtcore->udpserverqueue, msg);
                     } else {
@@ -1705,20 +1707,23 @@ static void *udp_receiver_thread(void *context)
                     if (srtcore->srtserverqueue[thread] != NULL) {
                         outputbuffer = (uint8_t*)memory_take(srtcore->packetpool, threadid);
                         if (outputbuffer) {
+                            int updated_bytes_read;
                             if (bytes_read > MAX_PACKET_BUFFER_SIZE) {
                                 bytes_read = MAX_PACKET_BUFFER_SIZE;
                             }
                             if (check_for_rtp(bytes_read)) {
                                 uint8_t *updated_buffer = (uint8_t*)udp_buffer+12;
                                 memcpy(outputbuffer, updated_buffer, bytes_read-12);
+                                updated_bytes_read = bytes_read-12;
                             } else {
                                 memcpy(outputbuffer, udp_buffer, bytes_read);
+                                updated_bytes_read = bytes_read;
                             }
                             msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
                             if (msg) {
                                 memset(msg, 0, sizeof(dataqueue_message_struct));
                                 msg->buffer = outputbuffer;
-                                msg->buffer_size = bytes_read;
+                                msg->buffer_size = updated_bytes_read;
                                 msg->pts = source_time;
                                 dataqueue_put_front(srtcore->srtserverqueue[thread], msg);
                                 msg = NULL;
