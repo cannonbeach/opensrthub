@@ -49,10 +49,10 @@
 #define MESSAGE_TYPE_STOP 0x02
 #define MESSAGE_TYPE_RESTART 0x99
 
-#define MAX_MSG_BUFFERS            16384*8
-#define MAX_PACKET_BUFFERS         16384*8
+#define MAX_MSG_BUFFERS            8192
+#define MAX_PACKET_BUFFERS         16384
 #define MAX_PACKET_BUFFER_SIZE     1536
-#define MAX_THUMBNAIL_BUFFERS      384
+#define MAX_THUMBNAIL_BUFFERS      16
 #define MAX_THUMBNAIL_BUFFER_SIZE  1024*1024*4
 #define MAX_AUDIO_BUFFERS          128
 #define MAX_AUDIO_BUFFER_SIZE      32768
@@ -240,6 +240,18 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     }
 
     if (sample_type == STREAM_TYPE_H264 || sample_type == STREAM_TYPE_HEVC || sample_type == STREAM_TYPE_MPEG2) {
+        if (!srtcore->video_initialized) {
+            pthread_mutex_lock(srtcore->video_init_lock);
+            if (!srtcore->video_initialized) {
+                fprintf(stderr,"receive_frame: video detected, initializing video resources\n");
+                srtcore->videopool = memory_create(MAX_THUMBNAIL_BUFFERS, MAX_THUMBNAIL_BUFFER_SIZE);
+                srtcore->thumbnail_thread_running = 1;
+                pthread_create(&srtcore->thumbnail_thread_id, NULL, srthub_thumbnail_thread, srtcore);
+                srtcore->video_initialized = 1;
+            }
+            pthread_mutex_unlock(srtcore->video_init_lock);
+        }
+
         srtcore->thumbnail_frame_counter++;
         
         #define THUMBNAIL_FRAME_INTERVAL 120
@@ -2650,7 +2662,10 @@ int main(int argc, char **argv)
 
     srtcore.msgpool = memory_create(MAX_MSG_BUFFERS, sizeof(dataqueue_message_struct));
     srtcore.packetpool = memory_create(MAX_PACKET_BUFFERS, MAX_PACKET_BUFFER_SIZE);
-    srtcore.videopool = memory_create(MAX_THUMBNAIL_BUFFERS, MAX_THUMBNAIL_BUFFER_SIZE);
+    srtcore.videopool = NULL;
+    srtcore.video_initialized = 0;
+    srtcore.video_init_lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(srtcore.video_init_lock, NULL);
     srtcore.audiopool = memory_create(MAX_AUDIO_BUFFERS, MAX_AUDIO_BUFFER_SIZE);
 
     srtcore.session_identifier = session_identifier;
@@ -2676,9 +2691,6 @@ int main(int argc, char **argv)
 
 restart_srt:
     register_frame_callback(receive_frame, (void*)&srtcore);
-
-    srtcore.thumbnail_thread_running = 1;
-    pthread_create(&srtcore.thumbnail_thread_id, NULL, srthub_thumbnail_thread, &srtcore);
 
     for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
         srt_audio_thread_struct *srtaudio;
@@ -2855,10 +2867,15 @@ restart_srt:
                     pthread_join(srtcore.srt_server_thread_id, NULL);
                     fprintf(stderr,"main: done stopping srt_server_thread\n");
                 }
-                srtcore.thumbnail_thread_running = 0;
-                fprintf(stderr,"main: stopping thumbnail_thread\n");
-                pthread_join(srtcore.thumbnail_thread_id, NULL);
-                fprintf(stderr,"main: done stopping thumbnail thread\n");
+                if (srtcore.video_initialized) {
+                    srtcore.thumbnail_thread_running = 0;
+                    fprintf(stderr,"main: stopping thumbnail_thread\n");
+                    pthread_join(srtcore.thumbnail_thread_id, NULL);
+                    fprintf(stderr,"main: done stopping thumbnail thread\n");
+                    memory_destroy(srtcore.videopool);
+                    srtcore.videopool = NULL;
+                    srtcore.video_initialized = 0;
+                }
 
                 for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
                     srtcore.audio_decode_thread_running[thread] = 0;
@@ -2899,8 +2916,13 @@ restart_srt:
     srtcore.msgpool = NULL;
     memory_destroy(srtcore.packetpool);
     srtcore.packetpool = NULL;
-    memory_destroy(srtcore.videopool);
-    srtcore.videopool = NULL;
+    if (srtcore.videopool) {
+        memory_destroy(srtcore.videopool);
+        srtcore.videopool = NULL;
+    }
+    pthread_mutex_destroy(srtcore.video_init_lock);
+    free(srtcore.video_init_lock);
+    srtcore.video_init_lock = NULL;
     memory_destroy(srtcore.audiopool);
     srtcore.audiopool = NULL;
 
