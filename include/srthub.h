@@ -75,6 +75,7 @@ typedef struct _srthub_core_struct_ {
     void *signalqueue;
     int64_t last_corruption_count;
     time_t last_corruption_time;
+    int64_t thumbnail_frame_counter;  // Counter to skip frames for thumbnail generation
     void *msgpool;
     void *packetpool;
     void *videopool;

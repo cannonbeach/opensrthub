@@ -65,7 +65,9 @@ extern "C" {
     int dataqueue_destroy(void *queue);
     int dataqueue_get_size(void *queue);
     int dataqueue_put_front(void *queue, dataqueue_message_struct *message);
+    int dataqueue_put_back(void *queue, dataqueue_message_struct *message);
     dataqueue_message_struct *dataqueue_take_back(void *queue);
+    dataqueue_message_struct *dataqueue_take_back_wait(void *queue, volatile int *running);
 
 #if defined(__cplusplus)
 }
