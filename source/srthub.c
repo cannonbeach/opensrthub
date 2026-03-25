@@ -49,10 +49,10 @@
 #define MESSAGE_TYPE_STOP 0x02
 #define MESSAGE_TYPE_RESTART 0x99
 
-#define MAX_MSG_BUFFERS            16384*8
-#define MAX_PACKET_BUFFERS         16384*8
+#define MAX_MSG_BUFFERS            8192
+#define MAX_PACKET_BUFFERS         16384
 #define MAX_PACKET_BUFFER_SIZE     1536
-#define MAX_THUMBNAIL_BUFFERS      384
+#define MAX_THUMBNAIL_BUFFERS      16
 #define MAX_THUMBNAIL_BUFFER_SIZE  1024*1024*4
 #define MAX_AUDIO_BUFFERS          128
 #define MAX_AUDIO_BUFFER_SIZE      32768
@@ -240,44 +240,45 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     }
 
     if (sample_type == STREAM_TYPE_H264 || sample_type == STREAM_TYPE_HEVC || sample_type == STREAM_TYPE_MPEG2) {
-        //if (sample_flags == 1)
-        {
-            /*fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
-              source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);*/
-
-            /*if (dataqueue_get_size(srtcore->thumbnailqueue) > 0) {
-                fprintf(stderr,"received frame: thumbnail queue already has a sample... waiting\n");
-                return 0;
-            }*/
-
-            int i;
-            for (i = 0; i < sample_size-3; i++) {
-                if (sample[i] == 0x00 && sample[i+1] == 0x00 && sample[i+2] == 0x01) {
-                    //fprintf(stderr,"received frame: start code found pos %4d: type=0x%x\n", i, sample[i+3]);
-                }
+        if (!srtcore->video_initialized) {
+            pthread_mutex_lock(srtcore->video_init_lock);
+            if (!srtcore->video_initialized) {
+                fprintf(stderr,"receive_frame: video detected, initializing video resources\n");
+                srtcore->videopool = memory_create(MAX_THUMBNAIL_BUFFERS, MAX_THUMBNAIL_BUFFER_SIZE);
+                srtcore->thumbnail_thread_running = 1;
+                pthread_create(&srtcore->thumbnail_thread_id, NULL, srthub_thumbnail_thread, srtcore);
+                srtcore->video_initialized = 1;
             }
+            pthread_mutex_unlock(srtcore->video_init_lock);
+        }
 
-            msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
-            if (msg) {
-                uint8_t *buffer = (uint8_t*)memory_take(srtcore->videopool, threadid);
-                if (buffer) {
-                    memcpy(buffer, sample, sample_size);
-                    msg->buffer = (void*)buffer;
-                    msg->buffer_size = sample_size;
-                    msg->buffer_type = sample_type;
-                    msg->flags = muxstreams;
-                    msg->stream_index = source;
-                    msg->source_discontinuity = corruption_count;
-                    dataqueue_put_front(srtcore->thumbnailqueue, msg);
-                    msg = NULL;
-                } else {
-                    fprintf(stderr,"received frame: thumbnail buffers exhausted\n");
-                    memory_return(srtcore->msgpool, msg);
-                    msg = NULL;
-                }
+        srtcore->thumbnail_frame_counter++;
+        
+        #define THUMBNAIL_FRAME_INTERVAL 120
+        if ((srtcore->thumbnail_frame_counter % THUMBNAIL_FRAME_INTERVAL) != 0) {
+            return 0;
+        }
+
+        msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
+        if (msg) {
+            uint8_t *buffer = (uint8_t*)memory_take(srtcore->videopool, threadid);
+            if (buffer) {
+                memcpy(buffer, sample, sample_size);
+                msg->buffer = (void*)buffer;
+                msg->buffer_size = sample_size;
+                msg->buffer_type = sample_type;
+                msg->flags = muxstreams;
+                msg->stream_index = source;
+                msg->source_discontinuity = corruption_count;
+                dataqueue_put_front(srtcore->thumbnailqueue, msg);
+                msg = NULL;
             } else {
-                fprintf(stderr,"received frame: msg buffers exhausted, thumbnailqueue=%d\n", dataqueue_get_size(srtcore->msgpool));
+                fprintf(stderr,"received frame: thumbnail buffers exhausted\n");
+                memory_return(srtcore->msgpool, msg);
+                msg = NULL;
             }
+        } else {
+            fprintf(stderr,"received frame: msg buffers exhausted, thumbnailqueue=%d\n", dataqueue_get_size(srtcore->msgpool));
         }
     }
 
@@ -495,9 +496,9 @@ static void *srt_receiver_thread_listener(void *context)
                     send_restart_message(srtcore);
                     goto cleanup_srt_receiver_thread_listener;
                 }
-                usleep(100);
+                usleep(10000);
             } else if (recvbytes == 0) {
-                usleep(100);
+                usleep(10000);
             } else {
                 int cp;
                 int tp;
@@ -809,9 +810,9 @@ static void *srt_receiver_thread_caller(void *context)
             } else {
                 fprintf(stderr,"srt_receiver_thread_caller: SRT unknown error: %s\n", srt_getlasterror_str());
             }
-            usleep(100);
+            usleep(10000);
         } else if (recvbytes == 0) {
-            usleep(100);
+            usleep(10000);
         } else {
             int cp;
             int tp;
@@ -961,16 +962,7 @@ static void *srt_server_worker_output_thread(void *context)
 
     clock_gettime(CLOCK_MONOTONIC, &server_time_start);
     while (srtcore->srt_server_worker_thread_running[thread]) {
-        pthread_mutex_lock(srtcore->srtserverlock);
-        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
-        pthread_mutex_unlock(srtcore->srtserverlock);
-
-        while (!msg && srtcore->srt_server_worker_thread_running[thread]) {
-            usleep(1000);
-            pthread_mutex_lock(srtcore->srtserverlock);
-            msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->srtserverqueue[thread]);
-            pthread_mutex_unlock(srtcore->srtserverlock);
-        }
+        msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->srtserverqueue[thread], &srtcore->srt_server_worker_thread_running[thread]);
 
         if (!srtcore->srt_server_worker_thread_running[thread]) {
             if (msg) {
@@ -1031,9 +1023,9 @@ static void *srt_server_worker_output_thread(void *context)
             } else {
                 fprintf(stderr,"srt_server_worker_output_thread: SRT unknown error: %s\n", srt_getlasterror_str());
             }
-            usleep(100);
+            usleep(10000);
         } else if (sent_bytes == 0) {
-            usleep(100);
+            usleep(10000);
         } else {
             total_packets_sent++;
             total_bytes_sent += sent_bytes;
@@ -1447,9 +1439,9 @@ retry_srt_server_push_connection:
                 fprintf(stderr,"srt_server_thread_push: SRT unknown error: %s\n", srt_getlasterror_str());
                 // need to handle this error
             }
-            usleep(100);
+            usleep(10000);
         } else if (sent_bytes == 0) {
-            usleep(100);
+            usleep(10000);
         } else {
             total_packets_sent++;
             total_bytes_sent += sent_bytes;
@@ -1827,42 +1819,37 @@ static void *udp_server_thread(void *context)
     sprintf(statsfilename,"/opt/srthub/status/udp_server_%d.json", srtcore->session_identifier);
 
     clock_gettime(CLOCK_MONOTONIC, &stats_start);
+    clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
     while (srtcore->udp_server_thread_running) {
-        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
+        msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->udpserverqueue, &srtcore->udp_server_thread_running);
 
-        if (!msg) {
-            clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
-        }
-        while (!msg && srtcore->udp_server_thread_running) {
-            usleep(1000);
-            msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->udpserverqueue);
-            if (!msg) {
-                clock_gettime(CLOCK_MONOTONIC, &signal_check_stop);
-                diff = realtime_clock_difference(&signal_check_stop, &signal_check_start) / 1000;
-                if (diff >= 2000) {  // 2 second timeout
-                    FILE *statsfile = fopen(statsfilename,"wb");
-                    if (statsfile) {
-                        fprintf(statsfile,"{\n");
-                        fprintf(statsfile,"    \"udp-output-address\":\"%s\",\n", udpdata->destination_address);
-                        fprintf(statsfile,"    \"udp-output-port\":%d,\n", udpdata->destination_port);
-                        fprintf(statsfile,"    \"udp-output-interface\":\"%s\",\n", udpdata->interface_name);
-                        fprintf(statsfile,"    \"udp-output-ttl\":%d,\n", udpdata->ttl);
-                        fprintf(statsfile,"    \"udp-output-active\":0,\n");
-                        fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
-                        fprintf(statsfile,"    \"total-packets-sent\":%ld,\n", total_packets_sent);
-                        fprintf(statsfile,"    \"last-buffer-size\":%d,\n", 0);
-                        fprintf(statsfile,"    \"multicast-output\":%d,\n", multicast_output);
-                        fprintf(statsfile,"    \"udpserver-queue\":%d\n", dataqueue_get_size(srtcore->udpserverqueue));
-                        fprintf(statsfile,"}\n");
-                        fclose(statsfile);
-                    }
-                    if (!signal_outage_flagged) {
-                        signal_outage_flagged = 1;
-
-                        send_signal(srtcore, SIGNAL_NO_DATA, "No Data on SRT Connection");
-                    }
+        if (!msg && srtcore->udp_server_thread_running) {
+            clock_gettime(CLOCK_MONOTONIC, &signal_check_stop);
+            diff = realtime_clock_difference(&signal_check_stop, &signal_check_start) / 1000;
+            if (diff >= 2000) {
+                FILE *statsfile = fopen(statsfilename,"wb");
+                if (statsfile) {
+                    fprintf(statsfile,"{\n");
+                    fprintf(statsfile,"    \"udp-output-address\":\"%s\",\n", udpdata->destination_address);
+                    fprintf(statsfile,"    \"udp-output-port\":%d,\n", udpdata->destination_port);
+                    fprintf(statsfile,"    \"udp-output-interface\":\"%s\",\n", udpdata->interface_name);
+                    fprintf(statsfile,"    \"udp-output-ttl\":%d,\n", udpdata->ttl);
+                    fprintf(statsfile,"    \"udp-output-active\":0,\n");
+                    fprintf(statsfile,"    \"total-bytes-sent\":%ld,\n", total_bytes_sent);
+                    fprintf(statsfile,"    \"total-packets-sent\":%ld,\n", total_packets_sent);
+                    fprintf(statsfile,"    \"last-buffer-size\":%d,\n", 0);
+                    fprintf(statsfile,"    \"multicast-output\":%d,\n", multicast_output);
+                    fprintf(statsfile,"    \"udpserver-queue\":%d\n", dataqueue_get_size(srtcore->udpserverqueue));
+                    fprintf(statsfile,"}\n");
+                    fclose(statsfile);
                 }
+                if (!signal_outage_flagged) {
+                    signal_outage_flagged = 1;
+                    send_signal(srtcore, SIGNAL_NO_DATA, "No Data on SRT Connection");
+                }
+                clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
             }
+            continue;
         }
 
         if (!srtcore->udp_server_thread_running) {
@@ -1985,13 +1972,7 @@ static void *srthub_audio_thread(void *context)
 
     clock_gettime(CLOCK_MONOTONIC, &audio_start);
     while (srtcore->audio_decode_thread_running[audio_stream]) {
-        //fprintf(stderr,"srthub_audio_thread: srtcore=%p\n", srtcore);
-        //fprintf(stderr,"srthub_audio_thread: queue=%p audio_stream=%d\n", srtcore->audiodecodequeue[audio_stream], audio_stream);
-        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->audiodecodequeue[audio_stream]);
-        while (!msg && srtcore->audio_decode_thread_running[audio_stream]) {
-            usleep(1000);
-            msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->audiodecodequeue[audio_stream]);
-        }
+        msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->audiodecodequeue[audio_stream], &srtcore->audio_decode_thread_running[audio_stream]);
 
         if (!srtcore->audio_decode_thread_running[audio_stream]) {
             if (msg) {
@@ -2189,11 +2170,7 @@ static void *srthub_thumbnail_thread(void *context)
 
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
     while (srtcore->thumbnail_thread_running) {
-        msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
-        while (!msg && srtcore->thumbnail_thread_running) {
-            usleep(1000);
-            msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
-        }
+        msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->thumbnailqueue, &srtcore->thumbnail_thread_running);
 
         if (!srtcore->thumbnail_thread_running) {
             if (msg) {
@@ -2327,11 +2304,7 @@ static void *srthub_thumbnail_thread(void *context)
                     av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
                 }
 
-                if ((decoded_frame_count % 120)==0) {
-                    /*
-                    fprintf(stderr,"srt_thumbnail_thread: decoded video frame, resolution is %d x %d\n",
-                            frame_width, frame_height);
-                    */
+                {
                     char codec[MAX_STRING_SIZE];
                     if (buffer_type == STREAM_TYPE_H264) {
                         sprintf(codec,"h264");
@@ -2689,7 +2662,10 @@ int main(int argc, char **argv)
 
     srtcore.msgpool = memory_create(MAX_MSG_BUFFERS, sizeof(dataqueue_message_struct));
     srtcore.packetpool = memory_create(MAX_PACKET_BUFFERS, MAX_PACKET_BUFFER_SIZE);
-    srtcore.videopool = memory_create(MAX_THUMBNAIL_BUFFERS, MAX_THUMBNAIL_BUFFER_SIZE);
+    srtcore.videopool = NULL;
+    srtcore.video_initialized = 0;
+    srtcore.video_init_lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(srtcore.video_init_lock, NULL);
     srtcore.audiopool = memory_create(MAX_AUDIO_BUFFERS, MAX_AUDIO_BUFFER_SIZE);
 
     srtcore.session_identifier = session_identifier;
@@ -2715,9 +2691,6 @@ int main(int argc, char **argv)
 
 restart_srt:
     register_frame_callback(receive_frame, (void*)&srtcore);
-
-    srtcore.thumbnail_thread_running = 1;
-    pthread_create(&srtcore.thumbnail_thread_id, NULL, srthub_thumbnail_thread, &srtcore);
 
     for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
         srt_audio_thread_struct *srtaudio;
@@ -2894,10 +2867,15 @@ restart_srt:
                     pthread_join(srtcore.srt_server_thread_id, NULL);
                     fprintf(stderr,"main: done stopping srt_server_thread\n");
                 }
-                srtcore.thumbnail_thread_running = 0;
-                fprintf(stderr,"main: stopping thumbnail_thread\n");
-                pthread_join(srtcore.thumbnail_thread_id, NULL);
-                fprintf(stderr,"main: done stopping thumbnail thread\n");
+                if (srtcore.video_initialized) {
+                    srtcore.thumbnail_thread_running = 0;
+                    fprintf(stderr,"main: stopping thumbnail_thread\n");
+                    pthread_join(srtcore.thumbnail_thread_id, NULL);
+                    fprintf(stderr,"main: done stopping thumbnail thread\n");
+                    memory_destroy(srtcore.videopool);
+                    srtcore.videopool = NULL;
+                    srtcore.video_initialized = 0;
+                }
 
                 for (thread = 0; thread < MAX_WORKER_THREADS; thread++) {
                     srtcore.audio_decode_thread_running[thread] = 0;
@@ -2938,8 +2916,13 @@ restart_srt:
     srtcore.msgpool = NULL;
     memory_destroy(srtcore.packetpool);
     srtcore.packetpool = NULL;
-    memory_destroy(srtcore.videopool);
-    srtcore.videopool = NULL;
+    if (srtcore.videopool) {
+        memory_destroy(srtcore.videopool);
+        srtcore.videopool = NULL;
+    }
+    pthread_mutex_destroy(srtcore.video_init_lock);
+    free(srtcore.video_init_lock);
+    srtcore.video_init_lock = NULL;
     memory_destroy(srtcore.audiopool);
     srtcore.audiopool = NULL;
 

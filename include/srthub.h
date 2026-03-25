@@ -75,6 +75,9 @@ typedef struct _srthub_core_struct_ {
     void *signalqueue;
     int64_t last_corruption_count;
     time_t last_corruption_time;
+    int64_t thumbnail_frame_counter;
+    int video_initialized;
+    pthread_mutex_t *video_init_lock;
     void *msgpool;
     void *packetpool;
     void *videopool;
