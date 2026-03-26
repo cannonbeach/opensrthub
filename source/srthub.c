@@ -1,5 +1,5 @@
 /*****************************************************************************
-  Copyright (C) 2018-2023 John William
+  Copyright (C) 2018-2025 John William
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -173,35 +173,39 @@ int64_t realtime_clock_difference(struct timespec *now, struct timespec *start)
 
 int save_frame_as_jpeg(srthub_core_struct *srtcore, AVFrame *pFrame)
 {
-    AVCodec *jpegCodec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+    const AVCodec *jpegCodec = (const AVCodec*)avcodec_find_encoder(AV_CODEC_ID_MJPEG);
     AVCodecContext *jpegContext = avcodec_alloc_context3(jpegCodec);
     FILE *JPEG = NULL;
 #define MAX_FILENAME_SIZE 256
     char temp_filename[MAX_FILENAME_SIZE];
     char actual_filename[MAX_FILENAME_SIZE];
-    AVPacket packet = {.data = NULL, .size = 0};
+    AVPacket *packet = NULL;
     int encodedFrame = 0;
 
     jpegContext->bit_rate = 500000;
     jpegContext->width = THUMBNAIL_WIDTH;
     jpegContext->height = THUMBNAIL_HEIGHT;
     jpegContext->time_base = (AVRational){1,30};
+    jpegContext->framerate = (AVRational){30,1};
     jpegContext->pix_fmt = AV_PIX_FMT_YUVJ420P;
 
     avcodec_open2(jpegContext, jpegCodec, NULL);
-    av_init_packet(&packet);
-    avcodec_encode_video2(jpegContext, &packet, pFrame, &encodedFrame);
+    packet = av_packet_alloc();
+    avcodec_send_frame(jpegContext, pFrame);
+    avcodec_receive_packet(jpegContext, packet);
 
     snprintf(temp_filename, MAX_FILENAME_SIZE-1, "/opt/srthub/thumbnail/%d.jpg.temp", srtcore->session_identifier);
     snprintf(actual_filename, MAX_FILENAME_SIZE-1, "/opt/srthub/thumbnail/%d.jpg", srtcore->session_identifier);
     JPEG = fopen(temp_filename, "wb");
     if (JPEG) {
-        fwrite(packet.data, 1, packet.size, JPEG);
+        fwrite(packet->data, 1, packet->size, JPEG);
         fclose(JPEG);
-        rename(temp_filename,actual_filename);
+        rename(temp_filename, actual_filename);
     }
-    av_free_packet(&packet);
+    av_packet_unref(packet);
+
     avcodec_free_context(&jpegContext);
+    av_packet_free(&packet);
     return 0;
 }
 
@@ -479,6 +483,7 @@ static void *srt_receiver_thread_listener(void *context)
                         send_restart_message(srtcore);
                         goto cleanup_srt_receiver_thread_listener;
                     }
+                    usleep(200000);
                 } else if (lasterr == SRT_ECONNLOST) {
                     srt_connected = 0;
                     char signal_message[MAX_STRING_SIZE];
@@ -720,7 +725,7 @@ static void *srt_receiver_thread_caller(void *context)
         }
     }
 
-    modes = SRT_EPOLL_OUT | SRT_EPOLL_ERR;
+    modes = SRT_EPOLL_IN | SRT_EPOLL_ERR;
     srterr = srt_epoll_add_usock(epollid, serversock, &modes);
     if (srterr == SRT_ERROR) {
         // srt_getlasterror_str();
@@ -797,6 +802,7 @@ static void *srt_receiver_thread_caller(void *context)
                     send_restart_message(srtcore);
                     goto cleanup_srt_receiver_thread_caller;
                 }
+                usleep(200000);
             } else if (lasterr == SRT_ECONNLOST) {
                 char signal_message[MAX_STRING_SIZE];
                 fprintf(stderr,"srt_receiver_thread_caller: SRT connection has been lost!\n");
@@ -823,7 +829,7 @@ static void *srt_receiver_thread_caller(void *context)
 
             if (srt_connected == 0) {
                 char signal_message[MAX_STRING_SIZE];
-                snprintf(signal_message, MAX_STRING_SIZE-1, "SRT Connected to %s:%d", srtdata->server_address, srtdata->server_port);
+                snprintf(signal_message, MAX_STRING_SIZE-1, "SRT Connected To %s:%d", srtdata->server_address, srtdata->server_port);
                 send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
             }
             srt_connected = 1;
@@ -1953,7 +1959,7 @@ static void *srthub_audio_thread(void *context)
 {
     srt_audio_thread_struct *srtaudio = (srt_audio_thread_struct*)context;
     srthub_core_struct *srtcore = (srthub_core_struct*)srtaudio->core;
-    AVCodec *decode_codec = NULL;
+    const AVCodec *decode_codec = NULL;
     AVCodecContext *decode_avctx = NULL;
     AVPacket *decode_pkt = NULL;
     AVFrame *decode_av_frame = NULL;
@@ -1997,11 +2003,11 @@ static void *srthub_audio_thread(void *context)
 
             if (!audio_decoder_ready) {
                 if (buffer_type == STREAM_TYPE_MPEG) {
-                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_MP3);
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_MP3);
                 } else if (buffer_type == STREAM_TYPE_AAC) {
-                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_AAC);
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_AAC);
                 } else if (buffer_type == STREAM_TYPE_AC3) {
-                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_AC3);
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_AC3);
                 } else {
                     decode_codec = NULL;
                 }
@@ -2149,7 +2155,7 @@ void *srthub_thumbnail_thread(void *context)
 #if defined(ENABLE_THUMBNAIL)
     srthub_core_struct *srtcore = NULL;
     AVCodecContext *decode_avctx = NULL;
-    AVCodec *decode_codec = NULL;
+    const AVCodec *decode_codec = NULL;
     AVPacket *decode_pkt = NULL;
     AVFrame *decode_av_frame = NULL;
     enum AVPixelFormat source_format = AV_PIX_FMT_YUV420P;
@@ -2214,13 +2220,13 @@ void *srthub_thumbnail_thread(void *context)
 
             if (!video_decoder_ready) {
                 if (buffer_type == STREAM_TYPE_H264) {
-                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_H264);
                 } else if (buffer_type == STREAM_TYPE_MPEG2) {
-                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_MPEG2VIDEO);
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_MPEG2VIDEO);
                 } else if (buffer_type == STREAM_TYPE_HEVC) {
-                    decode_codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-                //} else if (buffer_type == STREAM_TYPE_AV1) {
-                //decode_codec = avcodec_find_decoder(AV_CODEC_ID_AV1);
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_HEVC);
+                } else if (buffer_type == STREAM_TYPE_AV1) {
+                    decode_codec = (const AVCodec*)avcodec_find_decoder(AV_CODEC_ID_AV1);
                 } else {
                     // unknown codec
                 }
@@ -2348,7 +2354,6 @@ void *srthub_thumbnail_thread(void *context)
                     jpeg_frame->linesize[3] = output_stride[3];
                     jpeg_frame->pts = AV_NOPTS_VALUE;
                     jpeg_frame->pkt_dts = AV_NOPTS_VALUE;
-                    jpeg_frame->pkt_pts = AV_NOPTS_VALUE;
                     jpeg_frame->pkt_duration = 0;
                     jpeg_frame->pkt_pos = -1;
                     jpeg_frame->pkt_size = -1;
