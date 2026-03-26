@@ -213,6 +213,204 @@ app.get('/api/v1/get_service_count', (req, res) => {
     res.send(retdata);
 });
 
+// NEW: JSON-based endpoint for the redesigned frontend
+app.get('/api/v1/get_services', (req, res) => {
+    var services = [];
+    
+    if (!fs.existsSync(configFolder)) {
+        return res.json({ services: [] });
+    }
+    
+    var files = fs.readdirSync(configFolder);
+    var configIndex = 0;
+
+    files.forEach(file => {
+        if (getExtension(file) == '.json') {
+            configIndex++;
+            var fullfile = configFolder + '/' + file;
+            var fileprefix = path.basename(fullfile, '.json');
+            
+            try {
+                var configdata = fs.readFileSync(fullfile, 'utf8');
+                var config = JSON.parse(configdata);
+                
+                var service = {
+                    id: configIndex,
+                    fileprefix: fileprefix,
+                    sourcename: config.sourcename || 'Unnamed Service',
+                    sourcemode: config.sourcemode || 'unknown',
+                    sourceaddress: config.sourceaddress || '',
+                    sourceport: config.sourceport || '',
+                    sourceinterface: config.sourceinterface || '',
+                    outputmode: config.outputmode || 'unknown',
+                    outputaddress: config.outputaddress || '',
+                    outputport: config.outputport || '',
+                    outputinterface: config.outputinterface || '',
+                    clienttype: config.clienttype || '',
+                    servertype: config.servertype || '',
+                    connectionqueue: config.connectionqueue || '',
+                    passphrase: config.passphrase ? 'enabled' : 'none',
+                    streamid: config.streamid || '',
+                    status: 'stopped',
+                    uptime: -1,
+                    thumbnailUrl: '/api/v1/thumbnail/' + fileprefix + '.jpg',
+                    audioservices: []
+                };
+
+                // Check if service is running by looking for corestatus file
+                var corestatusfile = statusFolder + '/corestatus_' + fileprefix + '.json';
+                if (fs.existsSync(corestatusfile)) {
+                    try {
+                        var statusdata = fs.readFileSync(corestatusfile, 'utf8');
+                        var sfd = JSON.parse(statusdata);
+                        service.status = 'running';
+                        // Uptime is in milliseconds, convert to seconds
+                        service.uptime = sfd["srthub-uptime"] ? sfd["srthub-uptime"] / 1000 : 0;
+                    } catch (e) {
+                        console.log('Error reading status file:', e);
+                    }
+                }
+
+                // Get audio service info (up to 8 audio tracks)
+                for (var i = 0; i < 8; i++) {
+                    var audioStatusFile = statusFolder + '/audio_' + i + '_' + fileprefix + '.json';
+                    if (fs.existsSync(audioStatusFile)) {
+                        try {
+                            var audiodata = fs.readFileSync(audioStatusFile, 'utf8');
+                            if (audiodata) {
+                                var ad = JSON.parse(audiodata);
+                                service.audioservices.push({
+                                    codec: ad["audio-codec"] || 'Unknown',
+                                    channels: ad["audio-channels"] || 0,
+                                    samplerate: ad["audio-samplerate"] || 0
+                                });
+                            }
+                        } catch (e) {
+                            console.log('Error reading audio file:', e);
+                        }
+                    }
+                }
+
+                // Get SRT receiver stats if applicable
+                if (config.sourcemode === 'srt') {
+                    var srtReceiverFile = statusFolder + '/srt_receiver_' + fileprefix + '.json';
+                    if (fs.existsSync(srtReceiverFile)) {
+                        try {
+                            var srtdata = fs.readFileSync(srtReceiverFile, 'utf8');
+                            var srt = JSON.parse(srtdata);
+                            service.srt = {
+                                connected: srt["srt-connection"] === 1,
+                                mode: srt["srt-mode"] || '',
+                                bitrate: srt["bitrate-kbps"] || 0,
+                                packetsReceived: srt["packets-received"] || 0,
+                                packetsDropped: srt["packets-dropped"] || 0,
+                                packetsLost: srt["packets-lost"] || 0,
+                                packetsRetransmitted: srt["packets-retransmitted"] || 0,
+                                lossPercentage: srt["loss-percentage"] || 0,
+                                rtt: srt.rtt || 0,
+                                latency: srt.latencyms || 0,
+                                clientAddress: srt["client-address"] || '',
+                                clientPort: srt["client-port"] || ''
+                            };
+                        } catch (e) {
+                            console.log('Error reading SRT receiver file:', e);
+                        }
+                    }
+                }
+
+                // Get UDP receiver stats if applicable
+                if (config.sourcemode === 'udp') {
+                    var udpReceiverFile = statusFolder + '/udp_receiver_' + fileprefix + '.json';
+                    if (fs.existsSync(udpReceiverFile)) {
+                        try {
+                            var udpdata = fs.readFileSync(udpReceiverFile, 'utf8');
+                            var udp = JSON.parse(udpdata);
+                            service.udpReceiver = {
+                                active: udp["udp-source-active"] === 1,
+                                bytesReceived: udp["total-bytes-received"] || 0,
+                                packetsReceived: udp["total-packets-received"] || 0,
+                                bitrate: udp["udp-source-kbps"] || 0,
+                                multicastInput: udp["multicast-input"] || ''
+                            };
+                        } catch (e) {
+                            console.log('Error reading UDP receiver file:', e);
+                        }
+                    }
+                }
+
+                // Get thumbnail/video info if available
+                var thumbnailStatusFile = statusFolder + '/thumbnail_' + fileprefix + '.json';
+                if (fs.existsSync(thumbnailStatusFile)) {
+                    try {
+                        var thumbdata = fs.readFileSync(thumbnailStatusFile, 'utf8');
+                        var thumb = JSON.parse(thumbdata);
+                        service.video = {
+                            width: thumb.width || 0,
+                            height: thumb.height || 0,
+                            codec: thumb["video-codec"] || '',
+                            format: thumb["source-format"] || '',
+                            totalStreams: thumb["total-streams"] || 0,
+                            currentStream: thumb["current-stream"] || 0,
+                            errors: thumb["transport-source-errors"] || 0,
+                            lastError: thumb["last-source-error"] || ''
+                        };
+                    } catch (e) {
+                        console.log('Error reading thumbnail status file:', e);
+                    }
+                }
+
+                // Get SRT server stats if applicable (output mode)
+                if (config.outputmode === 'srt') {
+                    service.srtServer = { connections: [] };
+                    for (var i = 0; i < 16; i++) {
+                        var srtServerFile = statusFolder + '/srt_server_thread_' + i + '_' + fileprefix + '.json';
+                        if (fs.existsSync(srtServerFile)) {
+                            try {
+                                var serverdata = fs.readFileSync(srtServerFile, 'utf8');
+                                var server = JSON.parse(serverdata);
+                                service.srtServer.connections.push({
+                                    thread: server.thread,
+                                    clientAddress: server["client-address"],
+                                    clientPort: server["client-port"],
+                                    bytesSent: server["total-bytes-sent"],
+                                    packetsSent: server["total-packets-sent"]
+                                });
+                            } catch (e) {
+                                // Connection file doesn't exist or is invalid
+                            }
+                        }
+                    }
+                }
+
+                // Get UDP server stats if applicable (output mode)
+                if (config.outputmode === 'udp') {
+                    var udpServerFile = statusFolder + '/udp_server_' + fileprefix + '.json';
+                    if (fs.existsSync(udpServerFile)) {
+                        try {
+                            var udpServerData = fs.readFileSync(udpServerFile, 'utf8');
+                            var udpServer = JSON.parse(udpServerData);
+                            service.udpServer = {
+                                active: udpServer["udp-output-active"] === 1,
+                                bytesSent: udpServer["total-bytes-sent"] || 0,
+                                packetsSent: udpServer["total-packets-sent"] || 0,
+                                lastBufferSize: udpServer["last-buffer-size"] || 0
+                            };
+                        } catch (e) {
+                            console.log('Error reading UDP server file:', e);
+                        }
+                    }
+                }
+
+                services.push(service);
+            } catch (e) {
+                console.log('Error processing config file:', fullfile, e);
+            }
+        }
+    });
+
+    res.json({ services: services });
+});
+
 app.get('/api/v1/get_scan_data', (req, res) => {
     var source;
     var sourcestreams = [];
@@ -311,15 +509,15 @@ app.get('/api/v1/get_control_page', (req, res) => {
     html += '<table>';
     html += '<thead>';
     html += '<tr class="header">';
-    html += '<th>#<div>#</div></th>';
-    html += '<th>Name<div>Name</div></th>';
-    html += '<th>Control<div>Control</div></th>';
-    html += '<th>State<div>State</div></th>';
-    html += '<th>Uptime<div>Uptime</div></th>';
-    html += '<th>Source<div>Source</div></th>';
-    html += '<th>Output<div>Output</div></th>';
-    html += '<th>Input Thumbnail<div>Input Thumbnail</div></th>';
-    html += '<th>Status<div>Status</div></th>';
+    html += '<th>#<div><font size="4">#</font></div></th>';
+    html += '<th>Name<div><font size="4">Name</font></div></th>';
+    html += '<th>Control<div><font size="4">Control</font></div></th>';
+    html += '<th>Connection State<div><font size="4">Connection State</font></div></th>';
+    html += '<th hidden>Time Connected<div><font size="4">Time Connected</font></div></th>';
+    html += '<th>Input/Output Info<div><font size="4">Input/Output Info</font></div></th>';
+    html += '<th hidden>Output<div><font size="4">Output</font></div></th>';
+    html += '<th>Source Image<div><font size="4">Source Image</font></div></th>';
+    html += '<th>Status<div><font size="4">Status</font></div></th>';
     html += '</tr>';
     html += '</thead>';
     html += '<tbody>';
@@ -335,31 +533,34 @@ app.get('/api/v1/get_control_page', (req, res) => {
 
             listedfiles++;
 
+            html += '<div>';
+            html += '<tr><td style="background-color:#800"></td>';
+            html += '<td style="background-color:#800"></td>';
+            html += '<td style="background-color:#800"></td>';
+            //html += '<td style="background-color:darkgrey"></td>';
+            html += '<td style="background-color:#800"></td>';
+            html += '<td style="background-color:#800"></td>';
+            html += '<td style="background-color:#800"></td>';
+            html += '<td style="background-color:#800"></td></tr>';
+            html += '</div>';
+
             html += '<tr>';
-            html += '<td>' + fileprefix + '</td>';
-            html += '<td>' + words.sourcename + '</td>';
+            html += '<td><font size="4">' + fileprefix + '</font></td>';
+            html += '<td><font size="4">' + words.sourcename + '</font></td>';
             html += '<td>';
-            html += '<button style="width:95%" id=\'start_service'+configindex+'\'>Start </button><br>';
-            html += '<button style="width:95%" id=\'stop_service'+configindex+'\'>Stop </button><br>';
+            html += '<button style="width:95%;border-radius:12px;cursor:pointer;background-color:darkgrey;font-size:18px;padding:10px 10px;" id=\'start_service'+configindex+'\'>Start Service</button><br><br>';
+            html += '<button style="width:95%;border-radius:12px;cursor:pointer;background-color:darkgrey;font-size:18px;padding:10px 10px;" id=\'stop_service'+configindex+'\'>Stop Service</button><br><br>';
             html += '<button hidden style="width:95%" id=\'reset_button'+configindex+'\'>Reset</button>';
-            html += '<button style="width:95%" id=\'remove'+configindex+'\' type=\'remove\'>Remove<br>Service</button>';
+            html += '<button style="width:95%;border-radius:12px;cursor:pointer;background-color:darkgrey;font-size:18px;padding:10px 10px;" id=\'update_service'+configindex+'\'>Update Service</button><br><br>';
+            html += '<button style="width:95%;border-radius:12px;cursor:pointer;background-color:darkgrey;font-size:18px;padding:10px 10px;" id=\'remove'+configindex+'\' type=\'remove\'>Remove Service</button>';
             html += '</td>';
             html += '<td><div id=\'active'+configindex+'\'></div></td>';
-            html += '<td><div id=\'uptime'+configindex+'\'></div></td>';
+            html += '<td hidden><div id=\'uptime'+configindex+'\'></div></td>';
             html += '<td><div id=\'input'+configindex+'\'></div></td>';
 
+            html += '<td hidden><div id=\'output'+configindex+'\'></div></td>';
             html += '<td>';
-            html += '<table>';
-            html += '<tr>';
-            html += '<td><div id=\'output'+configindex+'\'></div></td>';
-            html += '</tr>';
-            html += '<tr>';
-            html += '<td><div id=\'event'+configindex+'\'></div></td>';
-            html += '</tr>';
-            html += '</table>';
-            html += '</td>';
-            html += '<td>';
-            html += '<img src=\'http://'+req.hostname+':8080'+'/api/v1/thumbnail/'+fileprefix+'.jpg?='+ new Date().getTime() +'\' id=\'thumbnail'+fileprefix+'\'/>';
+            html += '<center><img class="w3-border w3-padding w3-topbar w3-bottombar" style="padding:16px;height:100%;width:100X" src=\'http://'+req.hostname+':8080'+'/api/v1/thumbnail/'+fileprefix+'.jpg?='+ new Date().getTime() +'\' id=\'thumbnail'+fileprefix+'\'/></center>';
             html += '</td>'
             html += '<td><div id=\'statusinfo'+configindex+'\'></div></td>';
             html += '</tr>';
@@ -1000,6 +1201,91 @@ app.get('/api/v1/list_services', (req, res) => {
     res.send(retdata);
 });
 
+// Get raw config for a single service (for editing)
+app.get('/api/v1/get_config/:uid', (req, res) => {
+    console.log('get_config request for: ', req.params.uid);
+
+    var files = fs.readdirSync(configFolder);
+    var listedfiles = 0;
+    var found = false;
+
+    files.forEach(file => {
+        if (getExtension(file) == '.json') {
+            var configindex = listedfiles + 1;
+            var fullfile = configFolder + '/' + file;
+            var fileprefix = path.basename(fullfile, '.json');
+
+            if ((configindex == req.params.uid) || (fileprefix == req.params.uid)) {
+                try {
+                    var configdata = fs.readFileSync(fullfile, 'utf8');
+                    var config = JSON.parse(configdata);
+                    config.fileprefix = fileprefix;
+                    config.configindex = configindex;
+                    res.status(200).json(config);
+                    found = true;
+                } catch (e) {
+                    console.error('Error reading config:', e);
+                    res.status(500).json({ error: 'Failed to read config' });
+                    found = true;
+                }
+            }
+            listedfiles++;
+        }
+    });
+
+    if (!found) {
+        res.status(404).json({ error: 'Config not found' });
+    }
+});
+
+// Update an existing service config
+app.post('/api/v1/update_config/:uid', (req, res) => {
+    console.log('update_config request for: ', req.params.uid);
+    console.log('body is ', req.body);
+
+    var files = fs.readdirSync(configFolder);
+    var listedfiles = 0;
+    var found = false;
+
+    files.forEach(file => {
+        if (getExtension(file) == '.json') {
+            var configindex = listedfiles + 1;
+            var fullfile = configFolder + '/' + file;
+            var fileprefix = path.basename(fullfile, '.json');
+
+            if ((configindex == req.params.uid) || (fileprefix == req.params.uid)) {
+                try {
+                    var existingdata = fs.readFileSync(fullfile, 'utf8');
+                    var existingconfig = JSON.parse(existingdata);
+
+                    // Merge submitted fields into existing config, preserving fields not in the update
+                    var updates = req.body;
+                    // Remove frontend-only helper fields if sent
+                    delete updates.fileprefix;
+                    delete updates.configindex;
+
+                    var newconfig = Object.assign({}, existingconfig, updates);
+
+                    fs.writeFileSync(fullfile, JSON.stringify(newconfig));
+                    console.log('Config updated: ', fullfile);
+
+                    res.status(200).json({ status: 'success', fileprefix: fileprefix });
+                    found = true;
+                } catch (e) {
+                    console.error('Error updating config:', e);
+                    res.status(500).json({ status: 'failed', error: e.message });
+                    found = true;
+                }
+            }
+            listedfiles++;
+        }
+    });
+
+    if (!found) {
+        res.status(404).json({ status: 'invalid' });
+    }
+});
+
 function output_stream(height, width, video_bitrate) {
     this.height = height;
     this.width = width;
@@ -1190,11 +1476,11 @@ app.get('/api/v1/get_service_status/:uid', (req, res) => {
                                         obj.audioservices.push(audioservice);
                                     }
                                 } else {
-                                    var audiocodec = "Unknown";
+                                    /*var audiocodec = "Unknown";
                                     var audiochannels = 0;
                                     var audiosamplerate = 0;
                                     var audioservice = new audio_service(audiocodec, audiochannels, audiosamplerate);
-                                    obj.audioservices.push(audioservice);
+                                    obj.audioservices.push(audioservice);*/
                                 }
                             }
 

@@ -1,960 +1,1886 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SRT Gateway</title>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-* {
-    box-sizing: border-box;
-    font-family: Arial, Helvetica, sans-serif;
-}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e14;
+      --bg-secondary: #131920;
+      --bg-card: #1a2028;
+      --bg-elevated: #242c38;
+      --border-color: #2a3542;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #6e7681;
+      --accent-blue: #58a6ff;
+      --accent-cyan: #39d4e0;
+      --accent-green: #3fb950;
+      --accent-red: #f85149;
+      --accent-orange: #d29922;
+      --accent-purple: #a371f7;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --font-sans: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
 
-body {
-  margin: 0;
-    font-family: Arial, Helvetica, sans-serif;
-}
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
-/* Style the top navigation bar */
-.topnav {
-    overflow: hidden;
-    background-color: #800;
-    text-align: center;
-    padding: 5px 5px;
-    color: #fff;
-    font-size: 1.5em;
-}
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
 
-/* Style the topnav links */
-.topnav a {
-    float: left;
-    display: block;
-    color: #fff;
-    text-align: center;
-    padding: 14px 16px;
-    text-decoration: none;
-}
+    /* Header */
+    .header {
+      background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+      border-bottom: 1px solid var(--border-color);
+      padding: 1rem 2rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
 
-/* Change color on hover */
-.topnav a:hover {
-    background-color: #001f3f;
-    color: black;
-}
+    .header-content {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 2rem;
+    }
 
-/* Style the content */
-.content {
-    background-color: #ddd;
-    padding: 10px;
-    height: 800px;
-}
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
 
-/* Style the footer */
-.footer {
-    background-color: #0074D9;
-    padding: 10px;
-}
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--bg-primary);
+    }
 
-section {
-   position: relative;
-   border: 1px solid #000;
-   padding-top: 37px;
-   background: #500;
-}
+    .logo-text {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
 
-section.anchortable {
-   position: absolute;
-   top:750px;
-   left:50px;
-   box-shadow: 0 0 15px #333;
-}
+    .logo-text span {
+      color: var(--accent-cyan);
+    }
 
-section.logheader {
-   position: absolute;
-   top:275px;
-   left:50px;
-   box-shadow: 0 0 15px #333;
-}
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+    }
 
-section.logtable {
-   position: absolute;
-   top:375px;
-   left:50px;
-   box-shadow: 0 0 15px #333;
-}
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
 
-section.configtable {
-   position: relative;
-   width: 95%;
-   left:15px;
-   margin-right:30px;
-   box-shadow: 0 0 15px #333;
-   color: black;
-}
-section.controls {
-   position: absolute;
-   top:185px;
-   left:50px;
-   box-shadow: 0 0 15px #333;
-}
-section.cpustatusinfo {
-   position: absolute;
-   top:185px;
-   left:450px;
-   box-shadow: 0 0 15px #333;
-}
+    .meta-label {
+      color: var(--text-muted);
+    }
 
-section.gpustatusinfo {
-   position: absolute;
-   top:375px;
-   left:50px;
-   box-shadow: 0 0 15px #333;
-}
-.container {
-   overflow-y: auto;
-   height: auto;
-   width: auto;
-}
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+      animation: pulse 2s infinite;
+    }
 
-table {
-   border-spacing: 3px;
-   width:100%;
-}
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
 
-td + td {
-   border-left:1px solid #eee;
-}
+    /* Navigation */
+    .nav {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0 2rem;
+    }
 
-td, th {
-   border-bottom:1px solid #eee;
-   background: #ddd;
-   color: #000;
-   padding: 5px 15px;
-}
+    .nav-content {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: flex;
+      gap: 0.5rem;
+    }
 
-th {
-   height: 0;
-   line-height: 0;
-   padding-top: 0;
-   padding-bottom: 0;
-   color: transparent;
-   border: none;
-   white-space: nowrap;
-}
+    .nav-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      padding: 1rem 1.25rem;
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      position: relative;
+      transition: color 0.2s;
+    }
 
-th div{
-   position: absolute;
-   background: transparent;
-   color: #fff;
-   padding: 10px 15px;
-   top: 0;
-   margin-left: -15px;
-   line-height: normal;
-   border-left: 1px solid #800;
-}
+    .nav-btn:hover {
+      color: var(--text-primary);
+    }
 
-th:first-child div{
-   border: none;
-}
+    .nav-btn.active {
+      color: var(--accent-cyan);
+    }
 
-.row {
-   display: -ms-flexbox; /* IE10 */
-   display: flex;
-   -ms-flex-wrap: wrap; /* IE10 */
-   flex-wrap: wrap;
-   margin: 0 -16px;
-}
+    .nav-btn.active::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 1rem;
+      right: 1rem;
+      height: 2px;
+      background: var(--accent-cyan);
+      border-radius: 2px 2px 0 0;
+    }
 
-.col-25 {
-   -ms-flex: 25%; /* IE10 */
-   flex: 25%;
-}
+    .nav-btn-new {
+      background: var(--accent-blue);
+      color: var(--bg-primary) !important;
+      border-radius: var(--radius-sm);
+      margin: 0.5rem 0;
+      padding: 0.6rem 1rem;
+    }
 
-.col-50 {
-   -ms-flex: 50%; /* IE10 */
-   flex: 50%;
-}
+    .nav-btn-new:hover {
+      background: var(--accent-cyan);
+    }
 
-.col-75 {
-   -ms-flex: 75%; /* IE10 */
-   flex: 75%;
-}
+    /* Main Content */
+    .main {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
 
-.col-25,
-.col-50,
-.col-75 {
-   padding: 0 16px;
-}
+    /* System Status Bar */
+    .status-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
 
-.container {
-   background-color: #f2f2f2;
-   padding: 5px 20px 15px 20px;
-   border: 1px solid lightgrey;
-   border-radius: 3px;
-}
+    .status-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
 
-input[type=text] {
-   width: 80%;
-   margin-bottom: 5px;
-   padding: 6px;
-   border: 1px solid #ccc;
-   border-radius: 3px;
-}
+    .status-card:hover {
+      border-color: var(--accent-blue);
+      box-shadow: var(--shadow-md);
+    }
 
-label {
-   margin-bottom: 10px;
-   display: block;
-}
+    .status-card-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
 
-.icon-container {
-   margin-bottom: 20px;
-   padding: 7px 0;
-   font-size: 24px;
-}
+    .status-card-value {
+      font-size: 1.5rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+    }
 
-.btngreen {
-   background-color: #4CAF50;
-   color: white;
-   padding: 12px;
-   margin: 10px 0;
-   border: none;
-   width: 20%;
-   border-radius: 3px;
-   cursor: pointer;
-   font-size: 17px;
-}
+    .status-card-value.highlight {
+      color: var(--accent-cyan);
+    }
 
-.btngreen:hover {
-   background-color: #45a049;
-}
+    /* Section Headers */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+    }
 
-.btnred {
-   background-color: #FF0000;
-   color: white;
-   padding: 12px;
-   margin: 10px 0;
-   border: none;
-   width: 20%;
-   border-radius: 3px;
-   cursor: pointer;
-   font-size: 17px;
-}
+    .section-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
 
-.btnred:hover {
-   background-color: #800000;
-}
+    .section-badge {
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      font-size: 0.75rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 100px;
+      font-family: var(--font-mono);
+    }
 
-.btnblue {
-   background-color: #000080;
-   color: white;
-   padding: 12px;
-   margin: 10px 0;
-   border: none;
-   width: 20%;
-   border-radius: 3px;
-   cursor: pointer;
-   font-size: 17px;
-}
+    /* Service Cards */
+    .services-grid {
+      display: grid;
+      gap: 1.5rem;
+    }
 
-.btnblue:hover {
-   background-color: #191970;
-}
+    .service-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+    }
 
-img {
-   width:176px;
-   height:144px;
-   background: no-repeat scroll 0 0;
-}
+    .service-card:hover {
+      border-color: var(--border-color);
+      box-shadow: var(--shadow-lg);
+      transform: translateY(-2px);
+    }
 
-@media (max-width: 800px) {
-   .row {
-       flex-direction: column-reverse;
-   }
-   .col-25 {
-       margin-bottom: 20px;
-   }
-}
+    .service-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 1.5rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-color);
+    }
 
-</style>
+    .service-info {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .service-type-badge {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+      padding: 0.35rem 0.75rem;
+      border-radius: var(--radius-sm);
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent-blue);
+    }
+
+    .service-type-badge.receiver {
+      background: rgba(163, 113, 247, 0.15);
+      color: var(--accent-purple);
+    }
+
+    .service-type-badge.server {
+      background: rgba(57, 212, 224, 0.15);
+      color: var(--accent-cyan);
+    }
+
+    .service-name {
+      font-weight: 600;
+      font-size: 1.1rem;
+    }
+
+    .service-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+
+    .service-status.running {
+      color: var(--accent-green);
+    }
+
+    .service-status.stopped {
+      color: var(--text-muted);
+    }
+
+    .service-status.error {
+      color: var(--accent-red);
+    }
+
+    .service-body {
+      padding: 1.5rem;
+    }
+
+    .service-details {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .detail-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .detail-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .detail-value {
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: var(--text-primary);
+    }
+
+    .service-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* Thumbnail Preview */
+    .service-content {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (min-width: 900px) {
+      .service-content {
+        grid-template-columns: 280px 1fr;
+      }
+    }
+
+    .thumbnail-container {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .thumbnail-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .thumbnail-placeholder {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      text-align: center;
+      padding: 1rem;
+    }
+
+    .thumbnail-placeholder-icon {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+      opacity: 0.5;
+    }
+
+    .thumbnail-live-badge {
+      position: absolute;
+      top: 0.5rem;
+      left: 0.5rem;
+      background: var(--accent-red);
+      color: white;
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .thumbnail-live-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: white;
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+
+    .service-details-panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1rem;
+      font-family: var(--font-sans);
+      font-size: 0.85rem;
+      font-weight: 500;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent-green);
+      color: var(--bg-primary);
+    }
+
+    .btn-primary:hover {
+      background: #4cc764;
+      box-shadow: 0 0 12px rgba(63, 185, 80, 0.4);
+    }
+
+    .btn-danger {
+      background: var(--accent-red);
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #ff6b63;
+      box-shadow: 0 0 12px rgba(248, 81, 73, 0.4);
+    }
+
+    .btn-secondary {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border-color: var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background: var(--border-color);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+
+    .btn-ghost:hover {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+    }
+
+    .btn-warning {
+      background: rgba(210, 153, 34, 0.15);
+      color: var(--accent-orange);
+      border-color: rgba(210, 153, 34, 0.3);
+    }
+
+    .btn-warning:hover {
+      background: rgba(210, 153, 34, 0.25);
+      box-shadow: 0 0 10px rgba(210, 153, 34, 0.25);
+    }
+
+    /* Log Section */
+    .log-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-bottom: 2rem;
+    }
+
+    .log-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.5rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .log-section-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--text-secondary);
+    }
+
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+    }
+
+    .log-table thead th {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.7rem;
+      border-bottom: 1px solid var(--border-color);
+      white-space: nowrap;
+    }
+
+    .log-table tbody tr {
+      border-bottom: 1px solid rgba(42, 53, 66, 0.5);
+      transition: background 0.15s;
+    }
+
+    .log-table tbody tr:last-child {
+      border-bottom: none;
+    }
+
+    .log-table tbody tr:hover {
+      background: var(--bg-elevated);
+    }
+
+    .log-table td {
+      padding: 0.55rem 0.75rem;
+      color: var(--text-secondary);
+      vertical-align: top;
+    }
+
+    .log-table td:first-child {
+      color: var(--text-muted);
+      width: 2rem;
+    }
+
+    .log-severity {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    .log-severity.error {
+      background: rgba(248, 81, 73, 0.15);
+      color: var(--accent-red);
+    }
+
+    .log-severity.warn {
+      background: rgba(210, 153, 34, 0.15);
+      color: var(--accent-orange);
+    }
+
+    .log-severity.info {
+      background: rgba(63, 185, 80, 0.12);
+      color: var(--accent-green);
+    }
+
+    .log-severity.debug {
+      background: rgba(88, 166, 255, 0.12);
+      color: var(--accent-blue);
+    }
+
+    .log-empty {
+      text-align: center;
+      padding: 1.5rem;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 0.85rem;
+    }
+
+    /* Form Modal/Page */
+    .form-page {
+      display: none;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-bottom: 2rem;
+      animation: slideIn 0.3s ease;
+    }
+
+    .form-page.active {
+      display: block;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .form-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.5rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .form-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .form-body {
+      padding: 2rem;
+      display: grid;
+      gap: 2rem;
+    }
+
+    .form-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 1.5rem;
+    }
+
+    .form-section-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--accent-cyan);
+    }
+
+    .form-section-title::before {
+      content: '';
+      width: 3px;
+      height: 1em;
+      background: var(--accent-cyan);
+      border-radius: 2px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .form-label {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .form-input,
+    .form-select {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: var(--text-primary);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .form-input:focus,
+    .form-select:focus {
+      outline: none;
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 3px rgba(57, 212, 224, 0.15);
+    }
+
+    .form-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .form-actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: flex-end;
+      padding: 1.5rem;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+    }
+
+    .empty-state-icon {
+      width: 64px;
+      height: 64px;
+      background: var(--bg-elevated);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 1.5rem;
+      font-size: 1.5rem;
+    }
+
+    .empty-state-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .header-content {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+      }
+
+      .header-meta {
+        flex-wrap: wrap;
+        gap: 1rem;
+      }
+
+      .nav-content {
+        overflow-x: auto;
+        padding-bottom: 0.5rem;
+      }
+
+      .main {
+        padding: 1rem;
+      }
+
+      .status-bar {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .form-body {
+        padding: 1rem;
+      }
+
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
 <body>
 
-<div class="topnav">
-  <p>SRT Server and Receiver Gateway</p>
-</div>
-
-<div class="control" id="cpusystempage">
-  <section class="cpustatusinfo">
-    <div class="container">
-      <table>
-        <thead>
-          <tr class="header">
-            <th>Hostname<div>Hostname</div></th>
-            <th>SRT Version<div>SRT Version</div></th>
-            <th>srthub Version<div>srthub Version</div></th>
-            <th>CPU Core Count<div>CPU Core Count</div></th>
-            <th>CPU Load<div>CPU Load</div></th>
-            <th>CPU Memory<div>CPU Memory</div></th>
-            <th>Used CPU Memory<div>Used CPU Memory</div></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>
-              <div id='hostname'></div>
-            </td>
-            <td>
-              <div id='srtversion'></div>
-            </td>
-            <td>
-              <div id='srthubversion'></div>
-            </td>
-            <td>
-              <div id='cpucount'></div>
-            </td>
-            <td>
-              <div id='cpuload'></div>
-            </td>
-            <td>
-              <div id='totalmem'></div>
-            </td>
-            <td>
-              <div id='usedmem'></div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-content">
+      <div class="logo">
+        <div class="logo-icon">SRT</div>
+        <div class="logo-text">SRT <span>Gateway</span></div>
+      </div>
+      <div class="header-meta">
+        <div class="meta-item">
+          <span class="meta-label">Host:</span>
+          <span id="hostname">srt-gateway-01</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">SRT:</span>
+          <span id="srtversion">v1.5.3</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Hub:</span>
+          <span id="srthubversion">v2.1.0</span>
+        </div>
+        <div class="meta-item">
+          <span class="status-dot"></span>
+          <span>System Online</span>
+        </div>
+      </div>
     </div>
-  </section>
-</div>
+  </header>
 
-<div class="control" id="controlpage">
-  <section class="controls">
-    <div class="container">
-      <table>
-        <thead>
-          <tr class="header">
-            <th>Add SRT Receiver<div>Add SRT Receiver</div></th>
-            <th>Add SRT Server<div>Add SRT Server</div></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>
-              <div><button id='srt_receiver_button'>New SRT Receiver</button></div>
-            </td>
-            <td>
-              <div><button id='srt_server_button'>New SRT Server</button></div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="nav-content">
+      <button class="nav-btn active" id="statuspage_btn">Dashboard</button>
+      <button class="nav-btn nav-btn-new" id="srt_receiver_button">+ SRT Receiver</button>
+      <button class="nav-btn nav-btn-new" id="srt_server_button">+ SRT Server</button>
     </div>
-  </section>
-</div>
+  </nav>
 
-<div></div>
+  <!-- Main Content -->
+  <main class="main">
 
-<div></div>
+    <!-- System Status Bar -->
+    <div class="status-bar">
+      <div class="status-card">
+        <div class="status-card-label">CPU Cores</div>
+        <div class="status-card-value" id="cpucount">8 cores</div>
+      </div>
+      <div class="status-card">
+        <div class="status-card-label">CPU Load</div>
+        <div class="status-card-value highlight" id="cpuload">23.4%</div>
+      </div>
+      <div class="status-card">
+        <div class="status-card-label">Total Memory</div>
+        <div class="status-card-value" id="totalmem">32,768 MB</div>
+      </div>
+      <div class="status-card">
+        <div class="status-card-label">Memory Used</div>
+        <div class="status-card-value" id="usedmem">12,450 MB</div>
+      </div>
+    </div>
 
-<div class="content" id="logpageheader">
-<section2 class="logheader">
-  <h1>Configuration Options and Status<br><br><br><br><br>Status Log Information<br><br><br><br><br><br><br><br><br><br>SRT Services Configured</h1>
-</section2>
-</div>
-
-<div class="content" id="logpage">
-<section class="logtable">
-  <div class="container" id="logtable">
-    <script>
-      fetch('/api/v1/get_log_page',{method: 'GET'})
-      .then(response => {
-          if (response.ok) {
-              return response.text();
-          } else {
-              return Promise.reject('something went wrong!');
-          }
-      })
-      .then(data => {
-          document.getElementById("logtable").innerHTML = data;
-      })
-    </script>
-  </div>
-</section>
-</div>
-
-<div class="content" id="statuspage">
-<section class="anchortable">
-  <div class="container" id="controltable">
-    <script>
-      fetch('/api/v1/get_control_page',{method: 'GET'})
-      .then(response => {
-          if (response.ok) {
-              return response.text();
-          } else {
-              return Promise.reject('something went wrong!');
-          }
-      })
-      .then(data => {
-          document.getElementById("controltable").innerHTML = data;
-      })
-    </script>
-  </div>
-</section>
-</div>
-
-<div class="row" id="newsrtreceiverpage">
-  <div class="col-75">
-    <div class="container">
-      <div class="row">
-        <div class="col-50">
-          <h2>Add A New SRT Receiver</h2>
-            <h2>SRT Receiver Configuration Options</h2>
-
-            <section class="configtable">
-              <table>
-              <thead>
-                <tr>
-                  <th><div> </div></th>
-                  <th><div>Source Information</div></th>
-                </tr>
-              </thead>
-
-              <tbody>
-                <tr>
-                  <td>
-                    <label>SRT Source Name</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtreceiver_sourcename" name="srtreceiver_sourcename" placeholder="XYZ Sports Network"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Access Control StreamID (Optional)</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtreceiver_streamid" name="srtreceiver_streamid" placeholder="#!::u=admin,m=request"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Decryption Passphrase (Optional)</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtreceiver_passphrase" name="srtreceiver_passphrase" placeholder=""/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Receiver(Pull) or SRT Receiver(Push)</label>
-                  </td>
-                  <td>
-                    <select id="srtreceiver_clienttype">
-                      <option value="pull">PULL (Caller)</option>
-                      <option value="push">PUSH (Listener)</option>
-                    </select>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Receiver Latency</label>
-                  </td>
-                  <td>
-                    <select id="srtreceiver_latency">
-                      <option value="120">120ms (Default)</option>
-                      <option value="250">250ms</option>
-                      <option value="500">500ms</option>
-                      <option value="1000">1000ms</option>
-                      <option value="1500">1500ms</option>
-                      <option value="2000">2000ms</option>
-                    </select>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Source IP Address</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtreceiver_sourceaddress" name="srtreceiver_sourceaddress" placeholder="192.168.86.40"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Source Port Number</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtreceiver_sourceport" name="srtreceiver_sourceport" placeholder="6000"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Source Network Interface</label>
-                  </td>
-                  <td>
-                    <select id="srtreceiver_sourceinterface">
-                      <script>
-                        fetch('/api/v1/get_interfaces',{method: 'GET'})
-                            .then(response => {
-                            if (response.ok) {
-                                return response.json()
-                            } else {
-                                return Promise.reject('something went wrong!')
-                            }
-                        })
-                        .then(data => {
-                            console.log('data is', data);
-
-                            var parsedJSON = JSON.parse(JSON.stringify(data));
-                            select = document.getElementById('srtreceiver_sourceinterface');
-                            for (var prop in parsedJSON) {
-                                if (parsedJSON.hasOwnProperty(prop)) {
-                                    console.log("prop: " + prop);
-                                    var opt = document.createElement('option');
-                                    opt.value = prop;
-                                    opt.innerHTML = prop;
-                                    select.appendChild(opt);
-                                }
-                            }
-                        })
-                      </script>
-                    </select>
-                  </td>
-<!---
-                  <td>
-                    <select id="inputstream1" style="visibility:hidden">
-                      <script>
-                        fetch('/api/v1/get_scan_data',{method: 'GET'})
-                            .then(response => {
-                            if (response.ok) {
-                                return response.text();
-                            } else {
-                                return Promise.reject('something went wrong!');
-                            }
-                        })
-                        .then(data => {
-                            console.log('data is', data);
-
-                            var parsedJSON = JSON.parse(data);
-                            console.log('parsed: ', parsedJSON.sources.length);
-                            select = document.getElementById('inputstream1');
-
-                            var s;
-                            for (s = 0; s < parsedJSON.sources.length; s++) {
-                                console.log("prop: " + parsedJSON.sources[s]);
-                                var opt = document.createElement('option');
-                                opt.value = parsedJSON.sources[s];
-                                opt.innerHTML = parsedJSON.sources[s];
-                                select.appendChild(opt);
-                            }
-                        })
-                      </script>
-                    </select>
-                  </td>
-!--->
-                </tr>
-
-              </tbody>
-            </table>
-            </section>
-
-<!---            <button id='scan_button_transcode' class="btnblue">Check Source</button>
-    !--->
-
-            <div>
-              <h2>UDP Output Configuration Options</h2>
+    <!-- New SRT Receiver Form -->
+    <div class="form-page" id="newsrtreceiverpage">
+      <div class="form-header">
+        <h2 class="form-title">Add New SRT Receiver</h2>
+        <button class="btn btn-ghost" id="abort_button_srtreceiver">✕ Cancel</button>
+      </div>
+      <div class="form-body">
+        <div class="form-section">
+          <h3 class="form-section-title">SRT Source Configuration</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Source Name</label>
+              <input type="text" class="form-input" id="srtreceiver_sourcename" placeholder="e.g., ESPN Main Feed">
             </div>
-
-            <section class="configtable">
-            <table>
-              <thead>
-              <tr>
-                <th><div> </div></th>
-                <th><div>Selection</div></th>
-              </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    <label>UDP Destination IP Address</label>
-                  </td>
-                  <td>
-                    <input type="text" style="width:20%" id="srtreceiver_destinationaddress" name="srtreceiver_destinationaddress" placeholder="239.192.1.1"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>UDP Destination Port Number</label>
-                  </td>
-                  <td>
-                    <input type="text" style="width:20%" id="srtreceiver_destinationport" name="srtreceiver_destinationport" placeholder="12000"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>UDP Multicast Time To Live (TTL)</label>
-                  </td>
-                  <td>
-                    <input type="text" style="width:10%" id="srtreceiver_destinationttl" name="srtreceiver_destinationttl" placeholder="16"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>UDP Destination Network Interface</label>
-                  </td>
-                  <td>
-                    <select id="srtreceiver_destinationinterface">
-                      <script>
-                        fetch('/api/v1/get_interfaces',{method: 'GET'})
-                            .then(response => {
-                            if (response.ok) {
-                                return response.json()
-                            } else {
-                                return Promise.reject('something went wrong!')
-                            }
-                        })
-                        .then(data => {
-                            console.log('data is', data);
-
-                            var parsedJSON = JSON.parse(JSON.stringify(data));
-                            select = document.getElementById('srtreceiver_destinationinterface');
-                            for (var prop in parsedJSON) {
-                                if (parsedJSON.hasOwnProperty(prop)) {
-                                    console.log("prop: " + prop);
-                                    var opt = document.createElement('option');
-                                    opt.value = prop;
-                                    opt.innerHTML = prop;
-                                    select.appendChild(opt);
-                                }
-                            }
-                        })
-                      </script>
-                    </select>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            </section>
-
-            <div>
-              <h2>Status Monitoring</h2>
-              <section class="configtable">
-                <table>
-                  <thead>
-                    <tr>
-                      <th><div></div></th>
-                      <th><div>Server</div></th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    <tr>
-                      <td>
-                        <label>Remote Management Server IP (Optional)</label>
-                      </td>
-                      <td>
-                        <input type="text" id="srtreceiver_managementserverip" name="srtreceiver_managementserverip" placeholder="http://192.168.100.1/status"/>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </section>
+            <div class="form-group">
+              <label class="form-label">SRT Server Address</label>
+              <input type="text" class="form-input" id="srtreceiver_address" placeholder="192.168.1.100">
+            </div>
+            <div class="form-group">
+              <label class="form-label">SRT Port Number</label>
+              <input type="text" class="form-input" id="srtreceiver_port" placeholder="9000">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Network Interface</label>
+              <select class="form-select" id="srtreceiver_interface">
+                <option>eth0</option>
+                <option>eth1</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">SRT Mode</label>
+              <select class="form-select" id="srtreceiver_mode">
+                <option value="listener">Listener (Wait for connection)</option>
+                <option value="caller">Caller (Connect to server)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Stream ID (Optional)</label>
+              <input type="text" class="form-input" id="srtreceiver_streamid" placeholder="#!::u=admin,m=request">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Encryption Passphrase (Optional)</label>
+              <input type="text" class="form-input" id="srtreceiver_passphrase" placeholder="Leave blank for none">
             </div>
           </div>
         </div>
-        </div>
-        <button id='submit_button_srtreceiver' class="btngreen">Submit New Source</button>
-        <button id='abort_button_srtreceiver' class="btnred">Abort</button>
-    </div>
-</div>
 
-<div class="row" id="newsrtserverpage">
-  <div class="col-75">
-    <div class="container">
-      <div class="row">
-        <div class="col-50">
-          <h2>Add A New SRT Server</h2>
-          <h2>UDP Source Configuration Options</h2>
-
-            <section class="configtable">
-              <table>
-              <thead>
-                <tr>
-                  <th><div> </div></th>
-                  <th><div>Source Information</div></th>
-                </tr>
-              </thead>
-
-              <tbody>
-                <tr>
-                  <td>
-                    <label>UDP Source Name</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtserver_sourcename" name="srtserver_sourcename" placeholder="XYZ Sports Network"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>UDP Source IP Address</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtserver_sourceaddress" name="srtserver_sourceaddress" placeholder="239.192.100.100"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>UDP Source Port Number</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtserver_sourceport" name="srtserver_sourceport" placeholder="6000"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>UDP Source Network Interface</label>
-                  </td>
-                  <td>
-                    <select id="srtserver_sourceinterface">
-                      <script>
-                        fetch('/api/v1/get_interfaces',{method: 'GET'})
-                            .then(response => {
-                            if (response.ok) {
-                                return response.json()
-                            } else {
-                                return Promise.reject('something went wrong!')
-                            }
-                        })
-                        .then(data => {
-                            console.log('data is', data);
-
-                            var parsedJSON = JSON.parse(JSON.stringify(data));
-                            select = document.getElementById('srtserver_sourceinterface');
-                            for (var prop in parsedJSON) {
-                                if (parsedJSON.hasOwnProperty(prop)) {
-                                    console.log("prop: " + prop);
-                                    var opt = document.createElement('option');
-                                    opt.value = prop;
-                                    opt.innerHTML = prop;
-                                    select.appendChild(opt);
-                                }
-                            }
-                        })
-                      </script>
-                    </select>
-                  </td>
-<!---
-                  <td>
-                    <select id="inputstream1" style="visibility:hidden">
-                      <script>
-                        fetch('/api/v1/get_scan_data',{method: 'GET'})
-                            .then(response => {
-                            if (response.ok) {
-                                return response.text();
-                            } else {
-                                return Promise.reject('something went wrong!');
-                            }
-                        })
-                        .then(data => {
-                            console.log('data is', data);
-
-                            var parsedJSON = JSON.parse(data);
-                            console.log('parsed: ', parsedJSON.sources.length);
-                            select = document.getElementById('inputstream1');
-
-                            var s;
-                            for (s = 0; s < parsedJSON.sources.length; s++) {
-                                console.log("prop: " + parsedJSON.sources[s]);
-                                var opt = document.createElement('option');
-                                opt.value = parsedJSON.sources[s];
-                                opt.innerHTML = parsedJSON.sources[s];
-                                select.appendChild(opt);
-                            }
-                        })
-                      </script>
-                    </select>
-                  </td>
-!--->
-                </tr>
-
-              </tbody>
-            </table>
-            </section>
-
-<!---            <button id='scan_button_transcode' class="btnblue">Check Source</button>
-    !--->
-
-            <div>
-              <h2>SRT Output Server Configuration Options</h2>
+        <div class="form-section">
+          <h3 class="form-section-title">UDP Output Configuration</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">UDP Destination Address</label>
+              <input type="text" class="form-input" id="srtreceiver_outputaddress" placeholder="239.192.100.100">
             </div>
-
-            <section class="configtable">
-            <table>
-              <thead>
-              <tr>
-                <th><div> </div></th>
-                <th><div>Selection</div></th>
-              </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    <label>SRT Server Address</label>
-                  </td>
-                  <td>
-                    <input type="text" style="width:20%" id="srtserver_address" name="srtserver_address" placeholder="192.168.1.1"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Server Port Number</label>
-                  </td>
-                  <td>
-                    <input type="text" style="width:20%" id="srtserver_port" name="srtserver_port" placeholder="12000"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Server Network Interface</label>
-                  </td>
-                  <td>
-                    <select id="srtserver_interface">
-                      <script>
-                        fetch('/api/v1/get_interfaces',{method: 'GET'})
-                            .then(response => {
-                            if (response.ok) {
-                                return response.json()
-                            } else {
-                                return Promise.reject('something went wrong!')
-                            }
-                        })
-                        .then(data => {
-                            console.log('data is', data);
-
-                            var parsedJSON = JSON.parse(JSON.stringify(data));
-                            select = document.getElementById('srtserver_interface');
-                            for (var prop in parsedJSON) {
-                                if (parsedJSON.hasOwnProperty(prop)) {
-                                    console.log("prop: " + prop);
-                                    var opt = document.createElement('option');
-                                    opt.value = prop;
-                                    opt.innerHTML = prop;
-                                    select.appendChild(opt);
-                                }
-                            }
-                        })
-                      </script>
-                    </select>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Access Control StreamID (Optional)</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtserver_streamid" name="srtserver_streamid" placeholder="#!::u=admin,m=request"/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Encryption Passphrase (Optional)</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtserver_passphrase" name="srtserver_passphrase" placeholder=""/>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Server(Pull) or SRT Server(Push)</label>
-                  </td>
-                  <td>
-                    <select id="srtserver_servertype">
-                      <option value="pull">PULL (Listener)</option>
-                      <option value="push">PUSH (Caller)</option>
-                    </select>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Connection Queue Size (Only Valid In Pull)</label>
-                  </td>
-                  <td>
-                    <select id="srtserver_connectionqueue">
-                      <option value="1">1</option>
-                      <option value="2">2</option>
-                      <option value="3">3</option>
-                      <option value="5">5</option>
-                      <option value="8">8</option>
-                      <option value="13">13</option>
-                      <option value="21">21</option>
-                      <option value="34">34</option>
-                    </select>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <label>SRT Server IP Whitelist (Only Valid In Pull, Comma Separated, No Wildcards)</label>
-                  </td>
-                  <td>
-                    <input type="text" id="srtserver_whitelist" name="srtserver_whitelist" placeholder=""/>
-                  </td>
-                </tr>
-
-              </tbody>
-            </table>
-            </section>
-
-            <div>
-              <h2>Status Monitoring</h2>
-              <section class="configtable">
-                <table>
-                  <thead>
-                    <tr>
-                      <th><div></div></th>
-                      <th><div>Server</div></th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    <tr>
-                      <td>
-                        <label>Remote Management Server IP (Optional)</label>
-                      </td>
-                      <td>
-                        <input type="text" id="srtserver_managementserverip" name="srtserver_managementserverip" placeholder="http://192.168.100.1/status"/>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </section>
+            <div class="form-group">
+              <label class="form-label">UDP Destination Port</label>
+              <input type="text" class="form-input" id="srtreceiver_outputport" placeholder="5000">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Output Interface</label>
+              <select class="form-select" id="srtreceiver_outputinterface">
+                <option>eth0</option>
+                <option>eth1</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Time-to-Live (TTL)</label>
+              <select class="form-select" id="srtreceiver_ttl">
+                <option>1</option>
+                <option>8</option>
+                <option>16</option>
+                <option selected>32</option>
+                <option>64</option>
+              </select>
             </div>
           </div>
         </div>
-        </div>
-        <button id='submit_button_srtserver' class="btngreen">Submit New Source</button>
-        <button id='abort_button_srtserver' class="btnred">Abort</button>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" id="abort_button_srtreceiver_2">Cancel</button>
+        <button class="btn btn-primary" id="submit_button_srtreceiver">Create SRT Receiver</button>
+      </div>
     </div>
-</div>
+
+    <!-- New SRT Server Form -->
+    <div class="form-page" id="newsrtserverpage">
+      <div class="form-header">
+        <h2 class="form-title">Add New SRT Server</h2>
+        <button class="btn btn-ghost" id="abort_button_srtserver">✕ Cancel</button>
+      </div>
+      <div class="form-body">
+        <div class="form-section">
+          <h3 class="form-section-title">UDP Source Configuration</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Source Name</label>
+              <input type="text" class="form-input" id="srtserver_sourcename" placeholder="e.g., XYZ Sports Network">
+            </div>
+            <div class="form-group">
+              <label class="form-label">UDP Source Address</label>
+              <input type="text" class="form-input" id="srtserver_sourceaddress" placeholder="239.192.100.100">
+            </div>
+            <div class="form-group">
+              <label class="form-label">UDP Source Port</label>
+              <input type="text" class="form-input" id="srtserver_sourceport" placeholder="6000">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Source Interface</label>
+              <select class="form-select" id="srtserver_sourceinterface">
+                <option>eth0</option>
+                <option>eth1</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h3 class="form-section-title">SRT Server Output Configuration</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">SRT Server Address</label>
+              <input type="text" class="form-input" id="srtserver_address" placeholder="0.0.0.0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">SRT Server Port</label>
+              <input type="text" class="form-input" id="srtserver_port" placeholder="12000">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Server Interface</label>
+              <select class="form-select" id="srtserver_interface">
+                <option>eth0</option>
+                <option>eth1</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Server Mode</label>
+              <select class="form-select" id="srtserver_servertype">
+                <option value="pull">Pull (Listener)</option>
+                <option value="push">Push (Caller)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Max Connections</label>
+              <select class="form-select" id="srtserver_connectionqueue">
+                <option>1</option>
+                <option>2</option>
+                <option>4</option>
+                <option>8</option>
+                <option selected>16</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Stream ID (Optional)</label>
+              <input type="text" class="form-input" id="srtserver_streamid" placeholder="#!::u=admin,m=request">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Encryption Passphrase (Optional)</label>
+              <input type="text" class="form-input" id="srtserver_passphrase" placeholder="Leave blank for none">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Management Server (Optional)</label>
+              <input type="text" class="form-input" id="srtserver_managementserverip" placeholder="http://192.168.100.1/status">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" id="abort_button_srtserver_2">Cancel</button>
+        <button class="btn btn-primary" id="submit_button_srtserver">Create SRT Server</button>
+      </div>
+    </div>
+
+    <!-- Edit Service Form -->
+    <div class="form-page" id="editservicepage">
+      <div class="form-header">
+        <h2 class="form-title" id="edit-form-title">Edit Service</h2>
+        <button class="btn btn-ghost" id="abort_button_edit">✕ Cancel</button>
+      </div>
+      <div class="form-body">
+
+        <!-- SRT Receiver edit fields -->
+        <div id="edit-receiver-section">
+          <div class="form-section">
+            <h3 class="form-section-title">SRT Source Configuration</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label">Source Name</label>
+                <input type="text" class="form-input" id="edit_sourcename" placeholder="e.g., ESPN Main Feed">
+              </div>
+              <div class="form-group">
+                <label class="form-label">SRT Server Address</label>
+                <input type="text" class="form-input" id="edit_sourceaddress" placeholder="192.168.1.100">
+              </div>
+              <div class="form-group">
+                <label class="form-label">SRT Port Number</label>
+                <input type="text" class="form-input" id="edit_sourceport" placeholder="9000">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Network Interface</label>
+                <select class="form-select" id="edit_sourceinterface"></select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">SRT Mode</label>
+                <select class="form-select" id="edit_clienttype">
+                  <option value="listener">Listener (Wait for connection)</option>
+                  <option value="caller">Caller (Connect to server)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Stream ID (Optional)</label>
+                <input type="text" class="form-input" id="edit_streamid_receiver" placeholder="#!::u=admin,m=request">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Encryption Passphrase (Optional)</label>
+                <input type="text" class="form-input" id="edit_passphrase_receiver" placeholder="Leave blank for none">
+              </div>
+            </div>
+          </div>
+          <div class="form-section">
+            <h3 class="form-section-title">UDP Output Configuration</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label">UDP Destination Address</label>
+                <input type="text" class="form-input" id="edit_outputaddress_receiver" placeholder="239.192.100.100">
+              </div>
+              <div class="form-group">
+                <label class="form-label">UDP Destination Port</label>
+                <input type="text" class="form-input" id="edit_outputport_receiver" placeholder="5000">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Output Interface</label>
+                <select class="form-select" id="edit_outputinterface_receiver"></select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SRT Server edit fields -->
+        <div id="edit-server-section" style="display:none;">
+          <div class="form-section">
+            <h3 class="form-section-title">UDP Source Configuration</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label">Source Name</label>
+                <input type="text" class="form-input" id="edit_sourcename_server" placeholder="e.g., XYZ Sports Network">
+              </div>
+              <div class="form-group">
+                <label class="form-label">UDP Source Address</label>
+                <input type="text" class="form-input" id="edit_sourceaddress_server" placeholder="239.192.100.100">
+              </div>
+              <div class="form-group">
+                <label class="form-label">UDP Source Port</label>
+                <input type="text" class="form-input" id="edit_sourceport_server" placeholder="6000">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Source Interface</label>
+                <select class="form-select" id="edit_sourceinterface_server"></select>
+              </div>
+            </div>
+          </div>
+          <div class="form-section">
+            <h3 class="form-section-title">SRT Server Output Configuration</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label">SRT Server Address</label>
+                <input type="text" class="form-input" id="edit_outputaddress_server" placeholder="0.0.0.0">
+              </div>
+              <div class="form-group">
+                <label class="form-label">SRT Server Port</label>
+                <input type="text" class="form-input" id="edit_outputport_server" placeholder="12000">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Server Interface</label>
+                <select class="form-select" id="edit_outputinterface_server"></select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Server Mode</label>
+                <select class="form-select" id="edit_servertype">
+                  <option value="pull">Pull (Listener)</option>
+                  <option value="push">Push (Caller)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Max Connections</label>
+                <select class="form-select" id="edit_connectionqueue">
+                  <option>1</option>
+                  <option>2</option>
+                  <option>4</option>
+                  <option>8</option>
+                  <option>16</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Stream ID (Optional)</label>
+                <input type="text" class="form-input" id="edit_streamid_server" placeholder="#!::u=admin,m=request">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Encryption Passphrase (Optional)</label>
+                <input type="text" class="form-input" id="edit_passphrase_server" placeholder="Leave blank for none">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Management Server (Optional)</label>
+                <input type="text" class="form-input" id="edit_managementserverip" placeholder="http://192.168.100.1/status">
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" id="abort_button_edit_2">Cancel</button>
+        <button class="btn btn-primary" id="submit_button_edit">Save Changes</button>
+      </div>
+    </div>
+
+    <!-- Event Log Section -->
+    <section class="log-section">
+      <div class="log-section-header">
+        <div class="log-section-title">📋 Recent Events</div>
+        <span class="section-badge" id="log-updated">—</span>
+      </div>
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Severity</th>
+            <th>Time</th>
+            <th>Name</th>
+            <th>Resource</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="log-table-body">
+          <tr><td colspan="6" class="log-empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Services List -->
+    <section id="controlpage">
+      <div class="section-header">
+        <h2 class="section-title">
+          Active Services
+          <span class="section-badge" id="service-count">0 services</span>
+        </h2>
+      </div>
+
+      <div class="services-grid" id="services-container">
+        <!-- Services will be dynamically loaded here -->
+        <div class="empty-state" id="empty-state">
+          <div class="empty-state-icon">📡</div>
+          <div class="empty-state-title">No services configured</div>
+          <div>Click "+ SRT Receiver" or "+ SRT Server" to add a service</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // Utility: Format seconds to HH:MM:SS
+    function formatUptime(seconds) {
+      if (seconds < 0) return '--:--:--';
+      seconds = Math.floor(seconds); // Ensure integer
+      const hrs = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      const secs = seconds % 60;
+      return [hrs, mins, secs].map(v => v.toString().padStart(2, '0')).join(':');
+    }
+
+    // Utility: Format bitrate
+    function formatBitrate(kbps) {
+      if (!kbps) return '0 kbps';
+      if (kbps >= 1000) return (kbps / 1000).toFixed(1) + ' Mbps';
+      return kbps + ' kbps';
+    }
+
+    // Generate service card HTML
+    function createServiceCard(service) {
+      const isRunning = service.status === 'running';
+      const statusClass = isRunning ? 'running' : 'stopped';
+      const statusText = isRunning ? `Running · ${formatUptime(service.uptime)}` : 'Stopped';
+      
+      // Determine service type for badge
+      const isReceiver = service.sourcemode === 'srt';
+      const badgeClass = isReceiver ? 'receiver' : 'server';
+      const badgeText = isReceiver ? 'SRT Receiver' : 'SRT Server';
+
+      // Build details based on service type
+      let detailsHtml = '';
+      
+      if (isReceiver) {
+        // SRT Receiver: SRT input → UDP output
+        detailsHtml = `
+          <div class="detail-item">
+            <span class="detail-label">SRT Source</span>
+            <span class="detail-value">${service.sourceaddress}:${service.sourceport}</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">UDP Output</span>
+            <span class="detail-value">${service.outputaddress}:${service.outputport}</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Mode</span>
+            <span class="detail-value">${service.clienttype === 'listener' ? 'Listener' : 'Caller'}</span>
+          </div>
+        `;
+        if (service.srt && isRunning) {
+          detailsHtml += `
+            <div class="detail-item">
+              <span class="detail-label">Bitrate</span>
+              <span class="detail-value">${formatBitrate(service.srt.bitrate)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">RTT</span>
+              <span class="detail-value">${service.srt.rtt || 0} ms</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Loss</span>
+              <span class="detail-value">${service.srt.lossPercentage || 0}%</span>
+            </div>
+          `;
+        }
+      } else {
+        // SRT Server: UDP input → SRT output
+        detailsHtml = `
+          <div class="detail-item">
+            <span class="detail-label">UDP Source</span>
+            <span class="detail-value">${service.sourceaddress}:${service.sourceport}</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">SRT Server</span>
+            <span class="detail-value">${service.outputaddress}:${service.outputport}</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Mode</span>
+            <span class="detail-value">${service.servertype === 'push' ? 'Caller (Push)' : 'Listener (Pull)'}</span>
+          </div>
+        `;
+        if (service.srtServer && isRunning) {
+          const connCount = service.srtServer.connections ? service.srtServer.connections.length : 0;
+          const maxConn = service.connectionqueue || 16;
+          detailsHtml += `
+            <div class="detail-item">
+              <span class="detail-label">Connections</span>
+              <span class="detail-value">${connCount} / ${maxConn}</span>
+            </div>
+          `;
+        }
+        if (service.udpReceiver && isRunning) {
+          detailsHtml += `
+            <div class="detail-item">
+              <span class="detail-label">Input Bitrate</span>
+              <span class="detail-value">${formatBitrate(service.udpReceiver.bitrate)}</span>
+            </div>
+          `;
+        }
+      }
+
+      // Add video info if available
+      if (service.video && isRunning) {
+        detailsHtml += `
+          <div class="detail-item">
+            <span class="detail-label">Resolution</span>
+            <span class="detail-value">${service.video.width}×${service.video.height}</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">Video Codec</span>
+            <span class="detail-value">${service.video.codec || 'N/A'}</span>
+          </div>
+        `;
+        if (service.video.errors > 0) {
+          detailsHtml += `
+            <div class="detail-item">
+              <span class="detail-label">Errors</span>
+              <span class="detail-value" style="color: var(--accent-red);">${service.video.errors}</span>
+            </div>
+          `;
+        }
+      }
+
+      // Add audio info if available
+      if (service.audioservices && service.audioservices.length > 0 && isRunning) {
+        const audioSummary = service.audioservices.map((a, idx) => 
+          `${a.codec} ${a.channels}ch`
+        ).join(', ');
+        detailsHtml += `
+          <div class="detail-item">
+            <span class="detail-label">Audio (${service.audioservices.length} track${service.audioservices.length > 1 ? 's' : ''})</span>
+            <span class="detail-value">${audioSummary}</span>
+          </div>
+        `;
+      }
+
+      // Encryption status
+      if (service.passphrase === 'enabled') {
+        detailsHtml += `
+          <div class="detail-item">
+            <span class="detail-label">Encrypted</span>
+            <span class="detail-value">AES</span>
+          </div>
+        `;
+      }
+
+      // Thumbnail section
+      const thumbnailHtml = isRunning ? `
+        <span class="thumbnail-live-badge">Live</span>
+        <img id="thumbnail${service.id}" src="${service.thumbnailUrl}?=${Date.now()}" alt="Stream preview" 
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div class="thumbnail-placeholder" style="display: none;">
+          <div class="thumbnail-placeholder-icon">⚠</div>
+          <div>Preview unavailable</div>
+        </div>
+      ` : `
+        <div class="thumbnail-placeholder">
+          <div class="thumbnail-placeholder-icon">▶</div>
+          <div>No preview available</div>
+          <div style="font-size: 0.75rem; margin-top: 0.25rem;">Start service to view</div>
+        </div>
+        <img id="thumbnail${service.id}" src="" alt="" style="display: none;">
+      `;
+
+      // Action buttons
+      const actionsHtml = isRunning ? `
+        <button class="btn btn-danger" id="stop_service${service.id}">Stop</button>
+        <button class="btn btn-warning" id="edit_service${service.id}" disabled title="Stop service before editing" style="opacity:0.4;cursor:not-allowed;">✏ Edit</button>
+        <button class="btn btn-ghost" id="remove${service.id}">Remove</button>
+      ` : `
+        <button class="btn btn-primary" id="start_service${service.id}">Start</button>
+        <button class="btn btn-warning" id="edit_service${service.id}">✏ Edit</button>
+        <button class="btn btn-ghost" id="remove${service.id}">Remove</button>
+      `;
+
+      return `
+        <div class="service-card" data-service-id="${service.id}" data-fileprefix="${service.fileprefix}">
+          <div class="service-header">
+            <div class="service-info">
+              <span class="service-type-badge ${badgeClass}">${badgeText}</span>
+              <span class="service-name">${service.sourcename}</span>
+            </div>
+            <div class="service-status ${statusClass}">
+              ${isRunning ? '<span class="status-dot"></span>' : '○'}
+              ${statusText}
+            </div>
+          </div>
+          <div class="service-body">
+            <div class="service-content">
+              <div class="thumbnail-container">
+                ${thumbnailHtml}
+              </div>
+              <div class="service-details-panel">
+                <div class="service-details">
+                  ${detailsHtml}
+                </div>
+                <div class="service-actions">
+                  ${actionsHtml}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Fetch and render services
+    async function loadServices() {
+      try {
+        const response = await fetch('/api/v1/get_services');
+        const data = await response.json();
+        const container = document.getElementById('services-container');
+        const emptyState = document.getElementById('empty-state');
+        const countBadge = document.getElementById('service-count');
+
+        if (data.services && data.services.length > 0) {
+          // Update service count
+          const runningCount = data.services.filter(s => s.status === 'running').length;
+          countBadge.textContent = `${runningCount} running / ${data.services.length} total`;
+
+          // Render service cards
+          const cardsHtml = data.services.map(createServiceCard).join('');
+          container.innerHTML = cardsHtml + '<div id="empty-state" class="empty-state" style="display:none;"></div>';
+        } else {
+          container.innerHTML = `
+            <div class="empty-state" id="empty-state">
+              <div class="empty-state-icon">📡</div>
+              <div class="empty-state-title">No services configured</div>
+              <div>Click "+ SRT Receiver" or "+ SRT Server" to add a service</div>
+            </div>
+          `;
+          countBadge.textContent = '0 services';
+        }
+      } catch (error) {
+        console.error('Error loading services:', error);
+      }
+    }
+
+    // Toggle form pages
+    document.getElementById('srt_receiver_button').addEventListener('click', () => {
+      document.getElementById('newsrtreceiverpage').classList.add('active');
+      document.getElementById('newsrtserverpage').classList.remove('active');
+    });
+
+    document.getElementById('srt_server_button').addEventListener('click', () => {
+      document.getElementById('newsrtserverpage').classList.add('active');
+      document.getElementById('newsrtreceiverpage').classList.remove('active');
+    });
+
+    document.querySelectorAll('[id^="abort_button"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.getElementById('newsrtreceiverpage').classList.remove('active');
+        document.getElementById('newsrtserverpage').classList.remove('active');
+      });
+    });
+
+    // Nav active state
+    document.querySelectorAll('.nav-btn:not(.nav-btn-new)').forEach(btn => {
+      btn.addEventListener('click', function() {
+        document.querySelectorAll('.nav-btn:not(.nav-btn-new)').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+      });
+    });
+
+    // Auto-refresh thumbnails every 3 seconds
+    function triggerImageUpdate() {
+      const images = document.querySelectorAll('.thumbnail-container img[id^="thumbnail"]');
+      images.forEach(img => {
+        if (img.src && img.style.display !== 'none') {
+          let src = img.src.split('?=')[0];
+          img.src = src + '?=' + Date.now();
+        }
+      });
+    }
+
+    // Handle service button clicks (event delegation)
+    document.getElementById('services-container').addEventListener('click', async (e) => {
+      const btn = e.target;
+      if (!btn.matches('button')) return;
+
+      const card = btn.closest('.service-card');
+      if (!card) return;
+
+      const serviceId = card.dataset.serviceId;
+      const fileprefix = card.dataset.fileprefix;
+
+      btn.disabled = true;
+
+      try {
+        if (btn.id.startsWith('start_service')) {
+          await fetch(`/api/v1/start_service/${serviceId}`, { method: 'POST' });
+          setTimeout(loadServices, 500);
+        } else if (btn.id.startsWith('stop_service')) {
+          await fetch(`/api/v1/stop_service/${serviceId}`, { method: 'POST' });
+          setTimeout(loadServices, 500);
+        } else if (btn.id.startsWith('remove')) {
+          if (confirm('Are you sure you want to remove this service?')) {
+            await fetch(`/api/v1/remove_service/${serviceId}`, { method: 'POST' });
+            setTimeout(loadServices, 500);
+          } else {
+            btn.disabled = false;
+          }
+        } else if (btn.id.startsWith('edit_service')) {
+          btn.disabled = false;
+          openEditForm(serviceId, fileprefix);
+        }
+      } catch (error) {
+        console.error('Action failed:', error);
+        btn.disabled = false;
+      }
+    });
+
+    // ---- Log Section ----
+    async function updateLogSection() {
+      const tbody = document.getElementById('log-table-body');
+      try {
+        const response = await fetch('/api/v1/get_log_data');
+        if (!response.ok) throw new Error('No log data');
+        const entries = await response.json();
+
+        if (!Array.isArray(entries) || entries.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="log-empty">No log entries found.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = entries.map((entry, i) => {
+          const severity = (entry.severity || entry.status || entry.level || '').toLowerCase();
+          const severityClass = severity.includes('err') ? 'error'
+            : severity.includes('warn') ? 'warn'
+            : severity.includes('debug') ? 'debug'
+            : 'info';
+
+          const time     = entry.accesstime || entry.logtime || entry.time || entry.timestamp || '';
+          const name     = entry.logsourcename || entry.sourcename || entry.name || entry.source || '';
+          const resource = entry.logid || entry.id || entry.resource || '';
+          const message  = entry.logmessage || entry.message || entry.msg || '';
+
+          // Handle Unix epoch timestamps (seconds or milliseconds)
+          let timeDisplay = time;
+          if (time && !isNaN(Number(time))) {
+            const ms = Number(time) < 1e12 ? Number(time) * 1000 : Number(time);
+            timeDisplay = new Date(ms).toLocaleTimeString();
+          }
+
+          return `<tr>
+            <td>${i + 1}</td>
+            <td><span class="log-severity ${severityClass}">${severity || 'info'}</span></td>
+            <td>${timeDisplay}</td>
+            <td>${name}</td>
+            <td>${resource}</td>
+            <td style="color:var(--text-primary);">${message}</td>
+          </tr>`;
+        }).join('');
+
+        document.getElementById('log-updated').textContent =
+          'Updated ' + new Date().toLocaleTimeString();
+      } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="6" class="log-empty">No log data available.</td></tr>';
+      }
+    }
+
+    // ---- Edit Service ----
+    let currentEditUid = null;
+    let currentEditType = null; // 'receiver' or 'server'
+
+    async function openEditForm(serviceId, fileprefix) {
+      try {
+        const response = await fetch(`/api/v1/get_config/${fileprefix}`);
+        if (!response.ok) throw new Error('Config not found');
+        const config = await response.json();
+
+        currentEditUid = fileprefix;
+        currentEditType = config.sourcemode === 'srt' ? 'receiver' : 'server';
+
+        // Show/hide the correct section
+        document.getElementById('edit-receiver-section').style.display =
+          currentEditType === 'receiver' ? '' : 'none';
+        document.getElementById('edit-server-section').style.display =
+          currentEditType === 'server' ? '' : 'none';
+
+        document.getElementById('edit-form-title').textContent =
+          currentEditType === 'receiver'
+            ? `Edit SRT Receiver — ${config.sourcename || fileprefix}`
+            : `Edit SRT Server — ${config.sourcename || fileprefix}`;
+
+        if (currentEditType === 'receiver') {
+          document.getElementById('edit_sourcename').value       = config.sourcename      || '';
+          document.getElementById('edit_sourceaddress').value    = config.sourceaddress   || '';
+          document.getElementById('edit_sourceport').value       = config.sourceport      || '';
+          document.getElementById('edit_streamid_receiver').value= config.streamid        || '';
+          document.getElementById('edit_passphrase_receiver').value = config.passphrase   || '';
+          document.getElementById('edit_outputaddress_receiver').value = config.outputaddress || '';
+          document.getElementById('edit_outputport_receiver').value    = config.outputport    || '';
+          setEnumSelect('edit_clienttype', config.clienttype);
+          setSelectValue('edit_sourceinterface', config.sourceinterface);
+          setSelectValue('edit_outputinterface_receiver', config.outputinterface);
+        } else {
+          document.getElementById('edit_sourcename_server').value       = config.sourcename      || '';
+          document.getElementById('edit_sourceaddress_server').value    = config.sourceaddress   || '';
+          document.getElementById('edit_sourceport_server').value       = config.sourceport      || '';
+          document.getElementById('edit_streamid_server').value         = config.streamid        || '';
+          document.getElementById('edit_passphrase_server').value       = config.passphrase      || '';
+          document.getElementById('edit_outputaddress_server').value    = config.outputaddress   || '';
+          document.getElementById('edit_outputport_server').value       = config.outputport      || '';
+          document.getElementById('edit_managementserverip').value      = config.managementserverip || '';
+          setEnumSelect('edit_servertype', config.servertype);
+          setEnumSelect('edit_connectionqueue', config.connectionqueue);
+          setSelectValue('edit_sourceinterface_server', config.sourceinterface);
+          setSelectValue('edit_outputinterface_server', config.outputinterface);
+        }
+
+        // Close create forms, open edit form
+        document.getElementById('newsrtreceiverpage').classList.remove('active');
+        document.getElementById('newsrtserverpage').classList.remove('active');
+        document.getElementById('editservicepage').classList.add('active');
+        document.getElementById('editservicepage').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (error) {
+        console.error('Failed to load config for editing:', error);
+        alert('Could not load service config for editing.');
+      }
+    }
+
+    // For known enum selects (clienttype, servertype, connectionqueue):
+    // just assign directly — avoids injecting phantom options from stale config values.
+    function setEnumSelect(selectId, value) {
+      const select = document.getElementById(selectId);
+      if (!select || value == null) return;
+      select.value = String(value);
+    }
+
+    // For interface selects: add the value as a new option if it isn't listed yet
+    // (handles interfaces that weren't present at page load time).
+    function setSelectValue(selectId, value) {
+      const select = document.getElementById(selectId);
+      if (!select || value == null) return;
+      let found = false;
+      for (const opt of select.options) {
+        if (opt.value === String(value)) {
+          select.value = opt.value;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value;
+        select.appendChild(opt);
+        select.value = value;
+      }
+    }
+
+    function closeEditForm() {
+      document.getElementById('editservicepage').classList.remove('active');
+      currentEditUid = null;
+      currentEditType = null;
+    }
+
+    document.getElementById('abort_button_edit').addEventListener('click', closeEditForm);
+    document.getElementById('abort_button_edit_2').addEventListener('click', closeEditForm);
+
+    document.getElementById('submit_button_edit').addEventListener('click', async () => {
+      if (!currentEditUid) return;
+
+      let data = {};
+      if (currentEditType === 'receiver') {
+        data = {
+          sourcename:      document.getElementById('edit_sourcename').value,
+          sourceaddress:   document.getElementById('edit_sourceaddress').value,
+          sourceport:      document.getElementById('edit_sourceport').value,
+          sourceinterface: document.getElementById('edit_sourceinterface').value,
+          clienttype:      document.getElementById('edit_clienttype').value,
+          streamid:        document.getElementById('edit_streamid_receiver').value,
+          passphrase:      document.getElementById('edit_passphrase_receiver').value,
+          outputaddress:   document.getElementById('edit_outputaddress_receiver').value,
+          outputport:      document.getElementById('edit_outputport_receiver').value,
+          outputinterface: document.getElementById('edit_outputinterface_receiver').value,
+        };
+      } else {
+        data = {
+          sourcename:          document.getElementById('edit_sourcename_server').value,
+          sourceaddress:       document.getElementById('edit_sourceaddress_server').value,
+          sourceport:          document.getElementById('edit_sourceport_server').value,
+          sourceinterface:     document.getElementById('edit_sourceinterface_server').value,
+          outputaddress:       document.getElementById('edit_outputaddress_server').value,
+          outputport:          document.getElementById('edit_outputport_server').value,
+          outputinterface:     document.getElementById('edit_outputinterface_server').value,
+          servertype:          document.getElementById('edit_servertype').value,
+          connectionqueue:     document.getElementById('edit_connectionqueue').value,
+          streamid:            document.getElementById('edit_streamid_server').value,
+          passphrase:          document.getElementById('edit_passphrase_server').value,
+          managementserverip:  document.getElementById('edit_managementserverip').value,
+        };
+      }
+
+      try {
+        const response = await fetch(`/api/v1/update_config/${currentEditUid}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (result.status === 'success') {
+          closeEditForm();
+          setTimeout(loadServices, 300);
+        } else {
+          alert('Failed to save changes: ' + (result.error || 'unknown error'));
+        }
+      } catch (error) {
+        console.error('Failed to update config:', error);
+        alert('Failed to save changes.');
+      }
+    });
+
+    // ---- Form submissions ----
+    document.getElementById('submit_button_srtreceiver').addEventListener('click', async () => {
+      const data = {
+        srtreceiver_sourcename: document.getElementById('srtreceiver_sourcename').value,
+        srtreceiver_sourceaddress: document.getElementById('srtreceiver_address').value,
+        srtreceiver_sourceport: document.getElementById('srtreceiver_port').value,
+        srtreceiver_sourceinterface: document.getElementById('srtreceiver_interface').value,
+        srtreceiver_destinationaddress: document.getElementById('srtreceiver_outputaddress').value,
+        srtreceiver_destinationport: document.getElementById('srtreceiver_outputport').value,
+        srtreceiver_destinationinterface: document.getElementById('srtreceiver_outputinterface').value,
+        srtreceiver_streamid: document.getElementById('srtreceiver_streamid').value,
+        srtreceiver_passphrase: document.getElementById('srtreceiver_passphrase').value,
+        srtreceiver_clienttype: document.getElementById('srtreceiver_mode').value
+      };
+
+      try {
+        await fetch('/api/v1/new_srt_receiver', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        document.getElementById('newsrtreceiverpage').classList.remove('active');
+        setTimeout(loadServices, 500);
+      } catch (error) {
+        console.error('Failed to create receiver:', error);
+      }
+    });
+
+    document.getElementById('submit_button_srtserver').addEventListener('click', async () => {
+      const data = {
+        srtserver_sourcename: document.getElementById('srtserver_sourcename').value,
+        srtserver_sourceaddress: document.getElementById('srtserver_sourceaddress').value,
+        srtserver_sourceport: document.getElementById('srtserver_sourceport').value,
+        srtserver_sourceinterface: document.getElementById('srtserver_sourceinterface').value,
+        srtserver_address: document.getElementById('srtserver_address').value,
+        srtserver_port: document.getElementById('srtserver_port').value,
+        srtserver_interface: document.getElementById('srtserver_interface').value,
+        srtserver_streamid: document.getElementById('srtserver_streamid').value,
+        srtserver_passphrase: document.getElementById('srtserver_passphrase').value,
+        srtserver_servertype: document.getElementById('srtserver_servertype').value,
+        srtserver_connectionqueue: document.getElementById('srtserver_connectionqueue').value,
+        srtserver_managementserverip: document.getElementById('srtserver_managementserverip').value
+      };
+
+      try {
+        await fetch('/api/v1/new_srt_server', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        document.getElementById('newsrtserverpage').classList.remove('active');
+        setTimeout(loadServices, 500);
+      } catch (error) {
+        console.error('Failed to create server:', error);
+      }
+    });
+
+    // Load network interfaces for dropdowns
+    async function loadInterfaces() {
+      try {
+        const response = await fetch('/api/v1/get_interfaces');
+        const interfaces = await response.json();
+        
+        const selects = [
+          'srtreceiver_interface',
+          'srtreceiver_outputinterface',
+          'srtserver_sourceinterface',
+          'srtserver_interface',
+          'edit_sourceinterface',
+          'edit_outputinterface_receiver',
+          'edit_sourceinterface_server',
+          'edit_outputinterface_server'
+        ];
+
+        selects.forEach(selectId => {
+          const select = document.getElementById(selectId);
+          if (select) {
+            select.innerHTML = '';
+            for (const iface in interfaces) {
+              const opt = document.createElement('option');
+              opt.value = iface;
+              opt.textContent = iface;
+              select.appendChild(opt);
+            }
+          }
+        });
+      } catch (error) {
+        console.error('Failed to load interfaces:', error);
+      }
+    }
+
+    // Update system info
+    async function updateSystemInfo() {
+      try {
+        const response = await fetch('/api/v1/system_information');
+        const data = await response.json();
+
+        document.getElementById('hostname').textContent = data.system_hostname || 'Unknown';
+        document.getElementById('srtversion').textContent = data.srt_version || 'Unknown';
+        document.getElementById('srthubversion').textContent = data.srthub_version || 'Unknown';
+
+        // CPU info
+        const cpuCount = data.cpuinfo ? data.cpuinfo.length : 0;
+        const avgCpu = cpuCount > 0 
+          ? (data.cpuinfo.reduce((sum, cpu) => sum + cpu.percent, 0) / cpuCount).toFixed(1)
+          : 0;
+        
+        document.getElementById('cpucount').textContent = `${cpuCount} cores`;
+        document.getElementById('cpuload').textContent = `${avgCpu}%`;
+
+        // Memory info
+        const totalMem = (data.totalmem / 1000000).toFixed(0);
+        const freeMem = (data.freemem / 1000000).toFixed(0);
+        const usedMem = totalMem - freeMem;
+        const usedPercent = ((usedMem / totalMem) * 100).toFixed(1);
+
+        document.getElementById('totalmem').textContent = `${totalMem} MB`;
+        document.getElementById('usedmem').textContent = `${usedMem} MB (${usedPercent}%)`;
+      } catch (error) {
+        console.error('Failed to update system info:', error);
+      }
+    }
+
+    // Initial load
+    loadServices();
+    loadInterfaces();
+    updateSystemInfo();
+    updateLogSection();
+
+    // Periodic updates
+    setInterval(loadServices, 2000);
+    setInterval(triggerImageUpdate, 3000);
+    setInterval(updateSystemInfo, 5000);
+    setInterval(updateLogSection, 10000);
+  </script>
 
 </body>
-<script src="client.js"></script>
 </html>
