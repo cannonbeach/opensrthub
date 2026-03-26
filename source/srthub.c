@@ -76,6 +76,8 @@
 #include "../cbffmpeg/libavfilter/buffersrc.h"
 #endif
 
+static void *srthub_thumbnail_thread(void *context);
+
 typedef struct _srt_server_worker_output_thread_struct_ {
     int          thread;
     srthub_core_struct *core;
@@ -253,7 +255,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
         }
 
         srtcore->thumbnail_frame_counter++;
-        
+
         #define THUMBNAIL_FRAME_INTERVAL 120
         if ((srtcore->thumbnail_frame_counter % THUMBNAIL_FRAME_INTERVAL) != 0) {
             return 0;
@@ -2142,7 +2144,7 @@ cleanup_audio_decode_thread:
     return NULL;
 }
 
-static void *srthub_thumbnail_thread(void *context)
+void *srthub_thumbnail_thread(void *context)
 {
 #if defined(ENABLE_THUMBNAIL)
     srthub_core_struct *srtcore = NULL;
