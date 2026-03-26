@@ -96,6 +96,14 @@ echo "srthub: installing libtool"
 sudo apt-get install libtool -y
 echo "srthub: installing net-tools"
 sudo apt-get install net-tools
+echo "srthub: installing ntp"
+sudo apt-get install ntp -y
+echo "srthub: installing cpufrequtils"
+sudo apt-get install cpufrequtils -y
+echo "srthub: installing jq"
+sudo apt-get install jq -y
+echo "srthub: installing ethtool"
+sudo apt-get install ethtool -y
 echo "srthub: installing nasm"
 sudo apt-get install nasm -y
 echo "srthub: installing libz"
@@ -133,6 +141,14 @@ echo "srthub: nodejs, install winston logger (global)"
 sudo npm install -g winston
 echo "srthub: nodejs, install read-last-lines file reader (global)"
 sudo npm install -g read-last-lines
+echo "srthub: nodejs, install moment (global)"
+sudo npm install -g moment
+echo "srthub: nodejs, install js-yaml (global)"
+sudo npm install -g js-yaml
+echo "srthub: nodejs, install url-exists (global)"
+sudo npm install -g url-exists
+echo "srthub: nodejs, install shelljs (global)"
+sudo npm install -g shelljs
 echo "srthub: nodejs, creating node_modules symbolic link to current directory"
 sudo ln -s /usr/lib/node_modules ./node_modules
 popd
@@ -193,9 +209,11 @@ popd
 
 echo "Clone of FFmpeg libraries (used for decoding audio/video preview)"
 git clone https://github.com/cannonbeach/FFmpeg.git ./cbffmpeg
+rm -rf ./cbffmpeg
+git clone https://git.ffmpeg.org/ffmpeg.git ./cbffmpeg
 pushd cbffmpeg
-git checkout -b release4.0 remotes/origin/release/4.0
-./configure --prefix=/usr --disable-encoders --enable-avresample --disable-iconv --disable-v4l2-m2m --disable-muxers --disable-vaapi --disable-vdpau --disable-videotoolbox --disable-muxers --disable-avdevice --enable-encoder=mjpeg
+git checkout -b release6.1 remotes/origin/release/6.1
+./configure --prefix=/usr --disable-encoders --disable-iconv --disable-v4l2-m2m --disable-muxers --disable-vaapi --disable-vdpau --disable-videotoolbox --disable-muxers --disable-avdevice --enable-encoder=mjpeg
 make -j8
 if [ -f "./libavcodec/libavcodec.a" ]; then
     echo "srthub: libavcodec.a was compiled correctly"
@@ -213,10 +231,3 @@ else
     echo "srthub: srthub did not get built - please check manually, aborting installation!"
     exit
 fi
-pushd docker
-cp ../srthub .
-echo "Building docker package for srthub"
-sudo docker build -t dockersrthub .
-popd
-echo "Docker Package Built and Installed"
-echo "Done!"
