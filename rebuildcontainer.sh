@@ -6,7 +6,7 @@ else
     git clone https://github.com/Haivision/srt.git ./cbsrt
     pushd cbsrt
     echo "Configuring libsrt"
-    git checkout tags/v1.4.4 -b v1.4.4
+    git checkout tags/v1.5.4 -b v1.5.4
     ./configure --prefix=/usr
     make -j8
     if [ -f "libsrt.a" ]; then
@@ -47,8 +47,9 @@ if [ -f ./cbffmpeg/libavcodec/libavcodec.a ]; then
     echo "cbffmpeg already exists"
 else
     echo "Clone of FFmpeg libraries (used for decoding audio/video preview)"
-    git clone https://github.com/cannonbeach/FFmpeg.git ./cbffmpeg
+    git clone https://git.ffmpeg.org/ffmpeg.git ./cbffmpeg
     pushd cbffmpeg
+    git checkout -b release6.1 remotes/origin/release/6.1
     ./configure --prefix=/usr --disable-encoders --enable-avresample --disable-iconv --disable-v4l2-m2m --disable-muxers --disable-vaapi --disable-vdpau --disable-videotoolbox --disable-muxers --disable-avdevice --enable-encoder=mjpeg
     make -j8
     if [ -f "./libavcodec/libavcodec.a" ]; then
@@ -72,7 +73,8 @@ fi
 pushd docker
 sudo cp ../srthub .
 echo "Building docker package for srthub"
-sudo docker build -t dockersrthub .
+sudo docker buildx build . -t dockersrthub --output=type=tar,dest=dockersrthub.tar
+sudo docker buildx build . -t dockersrthub
 popd
 
 sudo cp ./webapp/server.js /var/app
