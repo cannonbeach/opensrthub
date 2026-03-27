@@ -1078,8 +1078,8 @@
               <div class="form-group">
                 <label class="form-label">SRT Mode</label>
                 <select class="form-select" id="edit_clienttype">
-                  <option value="listener">Listener (Wait for connection)</option>
-                  <option value="caller">Caller (Connect to server)</option>
+                  <option value="push">Listener (Wait for connection)</option>
+                  <option value="pull">Caller (Connect to server)</option>
                 </select>
               </div>
               <div class="form-group">
@@ -1278,7 +1278,7 @@
           </div>
           <div class="detail-item">
             <span class="detail-label">Mode</span>
-            <span class="detail-value">${service.clienttype === 'listener' ? 'Listener' : 'Caller'}</span>
+            <span class="detail-value">${service.clienttype === 'push' ? 'Listener' : 'Caller'}</span>
           </div>
         `;
         if (service.srt && isRunning) {
