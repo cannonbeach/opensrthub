@@ -155,6 +155,8 @@ popd
 
 echo "srthub: installing Docker"
 sudo apt-get install docker.io -y
+echo "srthub: installing Docker buildx"
+sudo apt-get install docker.buildx -y
 echo "srthub: installing tcpdump"
 sudo apt-get install tcpdump -y
 echo "srthub: installing ifstat"
