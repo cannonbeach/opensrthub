@@ -8,7 +8,8 @@ My goal for this project was to have a straightforward and user friendly web bas
 over SRT and UDP around public/private networks (while also providing the ability to peek at the signals along the way).  The signal peeking adds some extra value since you
 can view thumbnails, bitrates, codecs as well as information about signal loss.  There is also an API available if you choose to build your own front-end or want to automate some things.
 
-![image](https://github.com/cannonbeach/opensrthub/assets/5487649/4ed86e61-dbe4-4e29-91dd-1040e80cf3f1)
+(updated webapp view.... soon to be available)
+<img width="1666" height="1035" alt="image" src="https://github.com/user-attachments/assets/bcdc2ea7-7c8c-460c-9fba-30beb078c805" />
 
 ### Quickstart Setup Instructions (Ubuntu 22.04 Server Instructions):
 
