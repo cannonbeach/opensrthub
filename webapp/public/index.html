@@ -810,6 +810,110 @@
         grid-template-columns: 1fr;
       }
     }
+    /* ---- Bitrate graph window ---- */
+    .bitrate-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: rgba(3, 6, 10, 0.72);
+      backdrop-filter: blur(6px);
+      animation: slideIn 0.2s ease;
+    }
+    .bitrate-modal.active { display: flex; }
+
+    .bitrate-modal-card {
+      width: 100%;
+      max-width: 760px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    }
+    .bitrate-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1.1rem 1.5rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-color);
+    }
+    .bitrate-modal-title {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+    .bitrate-modal-title .name { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); }
+    .bitrate-modal-title .sub { font-size: 0.78rem; color: var(--text-muted); }
+    .bitrate-close {
+      flex: none;
+      width: 32px; height: 32px;
+      display: grid; place-items: center;
+      border: 1px solid var(--border-color);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      font-size: 1.1rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .bitrate-close:hover { color: var(--text-primary); border-color: var(--accent-red); }
+
+    .bitrate-actions { display: flex; align-items: center; gap: 0.6rem; flex: none; }
+    .bitrate-clear {
+      height: 32px;
+      padding: 0 0.8rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      border: 1px solid var(--border-color);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .bitrate-clear:hover { color: var(--text-primary); border-color: var(--accent-orange); }
+
+    .bitrate-stats {
+      display: flex;
+      gap: 2rem;
+      padding: 1rem 1.5rem 0;
+      flex-wrap: wrap;
+    }
+    .bitrate-stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+    .bitrate-stat .v { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .bitrate-stat .v.now { color: var(--accent-cyan); }
+    .bitrate-stat .v.avg { color: var(--accent-blue); }
+    .bitrate-stat .v.peak { color: var(--accent-green); }
+
+    .bitrate-canvas-wrap {
+      padding: 0.75rem 1.5rem 1.5rem;
+    }
+    #bitrate-canvas {
+      display: block;
+      width: 100%;
+      height: 280px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+    }
+    .bitrate-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 280px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
@@ -1233,6 +1337,31 @@
 
   </main>
 
+  <!-- Bitrate graph window (lives outside #services-container so the 2s re-render can't destroy it) -->
+  <div class="bitrate-modal" id="bitrate-modal">
+    <div class="bitrate-modal-card">
+      <div class="bitrate-modal-header">
+        <div class="bitrate-modal-title">
+          <span class="name" id="bitrate-modal-name">Bitrate</span>
+          <span class="sub" id="bitrate-modal-sub">Live · persists across reloads</span>
+        </div>
+        <div class="bitrate-actions">
+          <button class="bitrate-clear" id="bitrate-clear">↺ Clear</button>
+          <button class="bitrate-close" id="bitrate-close" aria-label="Close graph">✕</button>
+        </div>
+      </div>
+      <div class="bitrate-stats">
+        <div class="bitrate-stat"><div class="k">Current</div><div class="v now" id="bitrate-now">—</div></div>
+        <div class="bitrate-stat"><div class="k">Average</div><div class="v avg" id="bitrate-avg">—</div></div>
+        <div class="bitrate-stat"><div class="k">Peak</div><div class="v peak" id="bitrate-peak">—</div></div>
+      </div>
+      <div class="bitrate-canvas-wrap">
+        <canvas id="bitrate-canvas"></canvas>
+        <div class="bitrate-empty" id="bitrate-empty" style="display:none;">Waiting for samples…</div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Utility: Format seconds to HH:MM:SS
     function formatUptime(seconds) {
@@ -1244,12 +1373,256 @@
       return [hrs, mins, secs].map(v => v.toString().padStart(2, '0')).join(':');
     }
 
-    // Utility: Format bitrate
+    // Utility: Format bitrate. Input is kilobits/sec; output is in
+    // megabits/kilobits per second (bits, not bytes).
     function formatBitrate(kbps) {
-      if (!kbps) return '0 kbps';
-      if (kbps >= 1000) return (kbps / 1000).toFixed(1) + ' Mbps';
-      return kbps + ' kbps';
+      if (!kbps) return '0 kbit/s';
+      if (kbps >= 1000) return (kbps / 1000).toFixed(1) + ' Mbit/s';
+      return Math.round(kbps) + ' kbit/s';
     }
+
+    // Compact rate label for the chart's y-axis ticks (e.g. "12M", "800k").
+    function fmtRateShort(kbps) {
+      if (kbps >= 1000) {
+        const m = kbps / 1000;
+        return (m >= 10 ? m.toFixed(0) : m.toFixed(1)) + 'M';
+      }
+      return Math.round(kbps) + 'k';
+    }
+
+    // Utility: local clock + date for the graph axis
+    function fmtClock(ts) {
+      const d = new Date(ts);
+      const p = n => String(n).padStart(2, '0');
+      return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+    function fmtDate(ts) {
+      return new Date(ts).toLocaleDateString(undefined,
+        { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    // ===== Bitrate history + live graph window =====
+    // History is accumulated client-side from the existing 2s poll and keyed by
+    // fileprefix so it survives the full re-render of #services-container.
+    const BITRATE_WINDOW = 900;        // samples kept (~30 min at a 2s poll; matches server)
+    const bitrateHistory = {};         // fileprefix -> [{ t, kbps }]
+    let activeGraphPrefix = null;      // which service the window is showing
+    let activeGraphName = '';
+
+    function serviceBitrate(service) {
+      if (service.srt && typeof service.srt.bitrate === 'number') return service.srt.bitrate;
+      if (service.udpReceiver && typeof service.udpReceiver.bitrate === 'number') return service.udpReceiver.bitrate;
+      return 0;
+    }
+
+    function recordBitrateSamples(services) {
+      const now = Date.now();
+      services.forEach(s => {
+        if (!s.fileprefix) return;
+        // While stopped, append zeros so the graph clearly shows the service is down.
+        const kbps = s.status === 'running' ? serviceBitrate(s) : 0;
+        const buf = bitrateHistory[s.fileprefix] || (bitrateHistory[s.fileprefix] = []);
+        buf.push({ t: now, kbps });
+        if (buf.length > BITRATE_WINDOW) buf.shift();
+      });
+    }
+
+    function cssVar(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function sizeBitrateCanvas() {
+      const c = document.getElementById('bitrate-canvas');
+      const dpr = window.devicePixelRatio || 1;
+      const rect = c.getBoundingClientRect();
+      if (!rect.width) return;
+      c.width = Math.round(rect.width * dpr);
+      c.height = Math.round(rect.height * dpr);
+      c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function drawBitrateChart() {
+      if (!activeGraphPrefix) return;
+      const c = document.getElementById('bitrate-canvas');
+      const emptyEl = document.getElementById('bitrate-empty');
+      const ctx = c.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const W = c.width / dpr, H = c.height / dpr;
+      const data = bitrateHistory[activeGraphPrefix] || [];
+
+      const nowEl = document.getElementById('bitrate-now');
+      const avgEl = document.getElementById('bitrate-avg');
+      const peakEl = document.getElementById('bitrate-peak');
+
+      ctx.clearRect(0, 0, W, H);
+
+      if (data.length < 2) {
+        c.style.display = 'none';
+        emptyEl.style.display = 'flex';
+        nowEl.textContent = data.length ? formatBitrate(Math.round(data[data.length - 1].kbps)) : '—';
+        avgEl.textContent = '—';
+        peakEl.textContent = '—';
+        return;
+      }
+      c.style.display = 'block';
+      emptyEl.style.display = 'none';
+
+      const vals = data.map(d => d.kbps);
+      const cur = vals[vals.length - 1];
+      const peak = Math.max.apply(null, vals);
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      nowEl.textContent = formatBitrate(Math.round(cur));
+      avgEl.textContent = formatBitrate(Math.round(avg));
+      peakEl.textContent = formatBitrate(Math.round(peak));
+
+      const yMax = Math.max(peak * 1.2, 100);
+      const padL = 60, padR = 16, padT = 24, padB = 30;
+      const plotW = W - padL - padR;
+      const plotH = H - padT - padB;
+
+      const textCol = cssVar('--text-muted') || '#6e7681';
+      const gridCol = cssVar('--border-color') || '#2a3542';
+      const lineCol = cssVar('--accent-cyan') || '#39d4e0';
+
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 1;
+
+      const rows = 4;
+      for (let i = 0; i <= rows; i++) {
+        const yy = padT + (plotH * i / rows);
+        const val = yMax * (1 - i / rows);
+        ctx.strokeStyle = gridCol;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(padL, yy + 0.5);
+        ctx.lineTo(W - padR, yy + 0.5);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = textCol;
+        ctx.textAlign = 'right';
+        ctx.fillText(fmtRateShort(val), padL - 8, yy);
+      }
+
+      // y-axis unit caption (megabits, to remove any bit/byte ambiguity)
+      ctx.fillStyle = textCol;
+      ctx.textAlign = 'left';
+      ctx.fillText('Mbit/s', 6, 10);
+
+      const n = data.length;
+      const xAt = i => padL + (plotW * i / (n - 1));
+      const yAt = v => padT + plotH * (1 - Math.min(v, yMax) / yMax);
+
+      // area fill
+      ctx.beginPath();
+      ctx.moveTo(xAt(0), yAt(vals[0]));
+      for (let i = 1; i < n; i++) ctx.lineTo(xAt(i), yAt(vals[i]));
+      ctx.lineTo(xAt(n - 1), padT + plotH);
+      ctx.lineTo(xAt(0), padT + plotH);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+      grad.addColorStop(0, 'rgba(57, 212, 224, 0.28)');
+      grad.addColorStop(1, 'rgba(57, 212, 224, 0.02)');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // line
+      ctx.beginPath();
+      ctx.moveTo(xAt(0), yAt(vals[0]));
+      for (let i = 1; i < n; i++) ctx.lineTo(xAt(i), yAt(vals[i]));
+      ctx.strokeStyle = lineCol;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // leading point
+      ctx.beginPath();
+      ctx.arc(xAt(n - 1), yAt(cur), 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = lineCol;
+      ctx.fill();
+
+      // x-axis: local clock-time ticks across the actual sampled span
+      const t0 = data[0].t, tN = data[n - 1].t;
+      const cols = Math.max(2, Math.min(6, Math.floor(plotW / 110)));
+      const axisY = padT + plotH;
+      for (let i = 0; i <= cols; i++) {
+        const gx = padL + plotW * i / cols;
+        const gt = t0 + (tN - t0) * i / cols;
+
+        // faint vertical gridline
+        ctx.strokeStyle = gridCol;
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.moveTo(gx + 0.5, padT);
+        ctx.lineTo(gx + 0.5, axisY);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        // label, edge-aligned so the first/last don't clip
+        ctx.fillStyle = textCol;
+        ctx.textAlign = i === 0 ? 'left' : (i === cols ? 'right' : 'center');
+        ctx.fillText(fmtClock(gt), gx, H - 12);
+      }
+
+      // date + current local clock shown in the window subtitle
+      const subEl = document.getElementById('bitrate-modal-sub');
+      if (subEl) {
+        const dA = fmtDate(t0), dB = fmtDate(tN);
+        const datePart = (dA === dB ? dA : dA + ' – ' + dB);
+        subEl.textContent = datePart + ' · ' + fmtClock(tN);
+      }
+    }
+
+    async function openBitrateGraph(prefix, name) {
+      activeGraphPrefix = prefix;
+      activeGraphName = name || 'Service';
+      document.getElementById('bitrate-modal-name').textContent = activeGraphName;
+      document.getElementById('bitrate-modal').classList.add('active');
+      requestAnimationFrame(() => { sizeBitrateCanvas(); drawBitrateChart(); });
+
+      // Seed from the server's persisted history so the graph survives reloads.
+      try {
+        const r = await fetch('/api/v1/get_bitrate_history/' + encodeURIComponent(prefix));
+        if (r.ok) {
+          const h = await r.json();
+          if (activeGraphPrefix === prefix && Array.isArray(h.samples) && h.samples.length) {
+            bitrateHistory[prefix] = h.samples.map(s => ({ t: s.t, kbps: s.kbps }));
+            drawBitrateChart();
+          }
+        }
+      } catch (e) {
+        // no server history available — fall back to whatever is in the local buffer
+      }
+    }
+
+    function closeBitrateGraph() {
+      activeGraphPrefix = null;
+      document.getElementById('bitrate-modal').classList.remove('active');
+    }
+
+    async function clearBitrateGraph() {
+      if (!activeGraphPrefix) return;
+      const prefix = activeGraphPrefix;
+      bitrateHistory[prefix] = [];   // wipe locally and redraw to the empty state
+      drawBitrateChart();
+      try {
+        await fetch('/api/v1/clear_bitrate_history/' + encodeURIComponent(prefix), { method: 'POST' });
+      } catch (e) {
+        // server clear failed; local trace will still rebuild from the next poll
+      }
+    }
+
+    document.getElementById('bitrate-clear').addEventListener('click', clearBitrateGraph);
+    document.getElementById('bitrate-close').addEventListener('click', closeBitrateGraph);
+    document.getElementById('bitrate-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'bitrate-modal') closeBitrateGraph();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && activeGraphPrefix) closeBitrateGraph();
+    });
+    window.addEventListener('resize', () => {
+      if (activeGraphPrefix) { sizeBitrateCanvas(); drawBitrateChart(); }
+    });
 
     // Generate service card HTML
     function createServiceCard(service) {
@@ -1400,10 +1773,12 @@
       const actionsHtml = isRunning ? `
         <button class="btn btn-danger" id="stop_service${service.id}">Stop</button>
         <button class="btn btn-warning" id="edit_service${service.id}" disabled title="Stop service before editing" style="opacity:0.4;cursor:not-allowed;">✏ Edit</button>
+        <button class="btn btn-ghost" id="graph_service${service.id}">📈 Graph</button>
         <button class="btn btn-ghost" id="remove${service.id}">Remove</button>
       ` : `
         <button class="btn btn-primary" id="start_service${service.id}">Start</button>
         <button class="btn btn-warning" id="edit_service${service.id}">✏ Edit</button>
+        <button class="btn btn-ghost" id="graph_service${service.id}">📈 Graph</button>
         <button class="btn btn-ghost" id="remove${service.id}">Remove</button>
       `;
 
@@ -1446,6 +1821,11 @@
         const container = document.getElementById('services-container');
         const emptyState = document.getElementById('empty-state');
         const countBadge = document.getElementById('service-count');
+
+        // Record bitrate history (keyed by fileprefix) before any re-render,
+        // then refresh the graph window if it is open.
+        recordBitrateSamples(data.services || []);
+        if (activeGraphPrefix) drawBitrateChart();
 
         if (data.services && data.services.length > 0) {
           // Update service count
@@ -1537,6 +1917,10 @@
         } else if (btn.id.startsWith('edit_service')) {
           btn.disabled = false;
           openEditForm(serviceId, fileprefix);
+        } else if (btn.id.startsWith('graph_service')) {
+          btn.disabled = false;
+          const name = card.querySelector('.service-name')?.textContent || 'Service';
+          openBitrateGraph(fileprefix, name);
         }
       } catch (error) {
         console.error('Action failed:', error);
