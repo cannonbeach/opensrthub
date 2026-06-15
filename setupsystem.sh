@@ -28,6 +28,20 @@ else
     echo "srthub: directory /opt/srthub/thumbnail already exists"
 fi
 
+if [ ! -f "/opt/srthub/users.json" ]; then
+    cat <<EOF > /opt/srthub/users.json
+    [
+        {
+           "username":"admin",
+           "password":"password"
+        }
+    ]
+    EOF
+    echo "srthub: setting up users.json to username: admin and password: password, please edit this file to change login information"
+else
+    echo "srthub: users.json already exists, not overwriting it"
+fi
+
 if [ ! -d "/var/app" ]; then
     echo "srthub: creating directory /var/app"
     sudo mkdir -p /var/app
@@ -42,60 +56,20 @@ else
     echo "srthub: directory /var/app/public already exists"
 fi
 
-if [ -f "./webapp/server.js" ]; then
-    echo "srthub: installing server.js to /var/app"
-    sudo cp ./webapp/server.js /var/app
-else
-    echo "srthub: unable to find server.js"
-    exit
-fi
-
-#if [ -f "./webapp/public/client.js" ]; then
-#    echo "srthub: installing client.js to /var/app/public"
-#    sudo cp ./webapp/public/client.js /var/app/public
-#else
-#    echo "srthub: unable to find client.js"
-#    exit
-#fi
-
-if [ -f "./webapp/authenticate.html" ]; then
-    echo "srthub: installing authenticate.html to /var/app"
-    sudo cp ./webapp/authenticate.html /var/app
-else
-    echo "srthub: unable to find authenticate.html"
-    exit
-fi
-
-if [ -f "./webapp/public/index.html" ]; then
-    echo "srthub: installing index.html to /var/app/public"
-    sudo cp ./webapp/public/index.html /var/app/public
-else
-    echo "srthub: unable to find index.html"
-    exit
-fi
-
-if [ -f "./webapp/package.json" ]; then
-    echo "srthub: installing package.json to /var/app"
-    sudo cp ./webapp/package.json /var/app
-else
-    echo "srthub: unable to find package.json"
-    exit
-fi
-
-if [ ! -f "/opt/srthub/users.json" ]; then
-    sudo mkdir -p /opt/github
-    sudo echo '[{"username":"admin","password":"password"}]' | sudo tee /opt/srthub/users.json > /dev/null
-    echo "srthub: setting up users.json to username: admin and password: password, please edit this file to change login information"
-else
-    echo "srthub: users.json already exists, not overwriting it"
-fi
-
 if [ ! -d "/var/app/cert" ]; then
     echo "srthub: creating directory /var/app/cert"
     sudo mkdir -p /var/app/cert
 else
     echo "srthub: directory /var/app/cert already exists"
 fi
+
+#if [ -f "./webapp/package.json" ]; then
+#    echo "srthub: installing package.json to /var/app"
+#    sudo cp ./webapp/package.json /var/app
+#else
+#    echo "srthub: unable to find package.json"
+#    exit
+#fi
 
 echo "srthub: performing global Ubuntu update"
 sudo apt-get update -y
@@ -118,13 +92,13 @@ sudo apt-get install cmake -y
 echo "srthub: installing libtool"
 sudo apt-get install libtool -y
 echo "srthub: installing net-tools"
-sudo apt-get install net-tools
+sudo apt-get install net-tools -y
 echo "srthub: installing ntp"
 sudo apt-get install ntp -y
-echo "srthub: installing cpufrequtils"
-sudo apt-get install cpufrequtils -y
 echo "srthub: installing jq"
 sudo apt-get install jq -y
+echo "srthub: installing cpufrequtils"
+sudo apt-get install cpufrequtils -y
 echo "srthub: installing ethtool"
 sudo apt-get install ethtool -y
 echo "srthub: installing nasm"
@@ -151,9 +125,12 @@ echo "srthub: installing nodejs"
 sudo apt-get install -y nodejs
 echo "srthub: installing pm2 package"
 sudo npm install -g pm2
+
 pushd /var/app
 echo "srthub: nodejs, installing express (global)"
 sudo npm install -g express
+echo "srthub: nodejs, installing express-session (global)"
+sudo npm install -g express-session
 echo "srthub: nodejs, installing body-parser (global)"
 sudo npm install -g body-parser
 echo "srthub: nodejs, installing fs (global)"
@@ -174,13 +151,11 @@ echo "srthub: nodejs, install shelljs (global)"
 sudo npm install -g shelljs
 echo "srthub: installing express-validator"
 sudo npm install -g express-validator
-echo "srthub: installing express-session"
-sudo npm install -g express-session
 echo "srthub: installing helmet sanitizer"
 sudo npm install -g helmet
 echo "srthub: installing sanitize sanitizer"
 sudo npm install -g sanitize
-echo "srthub: installing sanitize validator"
+echo "srthub: installing sanitize sanitizer"
 sudo npm install -g validator
 echo "srthub: nodejs, creating node_modules symbolic link to current directory"
 sudo ln -s /usr/lib/node_modules ./node_modules
@@ -188,7 +163,7 @@ popd
 
 echo "srthub: installing Docker"
 sudo apt-get install docker.io -y
-echo "srthub: installing Docker buildx"
+echo "srthub: installing docker buildx"
 sudo apt-get install docker.buildx -y
 echo "srthub: installing tcpdump"
 sudo apt-get install tcpdump -y
@@ -201,72 +176,12 @@ sudo apt-get install unzip -y
 echo "srthub: updating pm2 (if actually needed)"
 sudo npm install pm2@latest -g
 sudo pm2 update
-sudo pm2 install pm2-logrotate
 echo ""
 echo "All Done With Standard System Setup"
 echo ""
-echo "Clone libsrt from public Github repository"
-git clone https://github.com/Haivision/srt.git ./cbsrt
-pushd cbsrt
-echo "Configuring libsrt"
-git checkout tags/v1.5.4 -b v1.5.4
-./configure --prefix=/usr
-make -j8
-if [ -f "libsrt.a" ]; then
-    echo "srthub: libsrt.a built properly"
-else
-    echo "srthub: libsrt.a did not build properly - please check manually, aborting installation!"
-    exit
-fi
-popd
-
-echo "Clone libcurl"
-git clone https://github.com/cannonbeach/curl.git ./cblibcurl
-pushd cblibcurl
-./buildconf
-if [ -f "configure" ]; then
-    echo "srthub: curl configure script generated"
-else
-    echo "srthub: curl configure script not generated - please check manually, aborting installation!"
-    exit
-fi
-echo "Configuring curl for compilation"
-./configure --prefix=/usr --enable-static --enable-pthreads --without-ssl --without-librtmp --without-libidn2 --without-nghttp2 --without-brotli
-make -j8
-if [ -f "./lib/.libs/libcurl.a" ]; then
-    echo "srthub: libcurl.a was compiled correctly"
-else
-    echo "srthub: libcurl.a was not compiled correctly - please check manually, aborting installation!"
-    exit
-fi
-popd
-
-echo "Clone of FFmpeg libraries (used for decoding audio/video preview)"
-git clone https://github.com/cannonbeach/FFmpeg.git ./cbffmpeg
-rm -rf ./cbffmpeg
-git clone https://git.ffmpeg.org/ffmpeg.git ./cbffmpeg
-pushd cbffmpeg
-git checkout -b release6.1 remotes/origin/release/6.1
-./configure --prefix=/usr --disable-encoders --disable-iconv --disable-v4l2-m2m --disable-muxers --disable-vaapi --disable-vdpau --disable-videotoolbox --disable-muxers --disable-avdevice --enable-encoder=mjpeg
-make -j8
-if [ -f "./libavcodec/libavcodec.a" ]; then
-    echo "srthub: libavcodec.a was compiled correctly"
-else
-    echo "srthub: libavcodec.a was not compiled correctly - please check manually, aborting installation!"
-    exit
-fi
-popd
-
-echo "Building opensrthub"
-make
-if [ -f "srthub" ]; then
-    echo "srthub: srthub compiled correctly"
-else
-    echo "srthub: srthub did not get built - please check manually, aborting installation!"
-    exit
-fi
-
-echo "Generating HTTPS key and certificate for system"
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /var/app/cert/server.key -out /var/app/cert/server.crt
-
-echo "Finished!"
+echo "Generating public/private key pair for system"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65537 | openssl pkcs8 -topk8 -nocrypt -outform pem > /opt/srthub/private_opensrthub.key
+openssl pkey -pubout -inform pem -in /opt/srthub/private_opensrthub.key -out /opt/srthub/public_opensrthub.key
+open "Generating HTTPS key and certificate for system"
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /var/app/cert/server.key -out /var/opt/cert/server.crt
+echo "Done!"

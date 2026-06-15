@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Meridian Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink-900: #0B1322;
+      --ink-800: #0F1A2E;
+      --ink-700: #15233D;
+      --ink-line: rgba(255, 255, 255, 0.07);
+      --ink-text: #E7ECF5;
+      --ink-text-muted: #93A0B7;
+
+      --accent: #4C6FE8;
+      --accent-600: #3D5BD9;
+      --accent-700: #3149bd;
+      --accent-tint: #EEF1FE;
+
+      --text: #1A2233;
+      --text-muted: #5C677C;
+      --text-faint: #8A93A6;
+
+      --border: #E3E7EF;
+      --border-strong: #CDD4E0;
+      --surface: #FFFFFF;
+      --surface-2: #F6F8FB;
+
+      --ring: rgba(76, 111, 232, 0.30);
+      --ok: #2FB872;
+
+      --radius: 12px;
+      --radius-sm: 9px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: var(--surface);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    .auth {
+      min-height: 100%;
+      display: grid;
+      grid-template-columns: 1.05fr 1fr;
+    }
+
+    /* ---------- Brand panel ---------- */
+    .brand {
+      position: relative;
+      overflow: hidden;
+      color: var(--ink-text);
+      background:
+        radial-gradient(900px 600px at 12% 8%, rgba(76, 111, 232, 0.22), transparent 60%),
+        radial-gradient(700px 700px at 95% 100%, rgba(76, 111, 232, 0.10), transparent 55%),
+        linear-gradient(160deg, var(--ink-800) 0%, var(--ink-900) 100%);
+      padding: 56px 60px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* faint engineered grid — the structural texture, not decoration */
+    .brand::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--ink-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--ink-line) 1px, transparent 1px);
+      background-size: 46px 46px;
+      mask-image: radial-gradient(120% 120% at 30% 20%, #000 30%, transparent 78%);
+      pointer-events: none;
+    }
+
+    .brand > * { position: relative; z-index: 1; }
+
+    .wordmark {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      font-family: "Space Grotesk", sans-serif;
+      font-weight: 600;
+      font-size: 19px;
+      letter-spacing: -0.01em;
+    }
+    .mark {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(150deg, #6E8BFF, var(--accent-600));
+      display: grid;
+      place-items: center;
+      box-shadow: 0 6px 18px rgba(61, 91, 217, 0.45);
+    }
+    .mark svg { width: 17px; height: 17px; display: block; }
+    .wordmark .sub { color: var(--ink-text-muted); font-weight: 500; }
+
+    .brand-body { margin-top: auto; padding: 40px 0; max-width: 440px; }
+    .brand h1 {
+      font-family: "Space Grotesk", sans-serif;
+      font-weight: 600;
+      font-size: 38px;
+      line-height: 1.12;
+      letter-spacing: -0.02em;
+      margin: 0 0 16px;
+    }
+    .brand p.lede {
+      margin: 0 0 30px;
+      font-size: 16px;
+      line-height: 1.6;
+      color: var(--ink-text-muted);
+    }
+
+    .features { list-style: none; margin: 0; padding: 0; }
+    .features li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 11px 0;
+      border-top: 1px solid var(--ink-line);
+      font-size: 14.5px;
+      color: var(--ink-text);
+    }
+    .features li:last-child { border-bottom: 1px solid var(--ink-line); }
+    .features .glyph {
+      flex: none;
+      margin-top: 1px;
+      color: #8AA0FF;
+    }
+    .features .glyph svg { width: 17px; height: 17px; display: block; }
+
+    .brand-foot {
+      margin-top: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 13px;
+      color: var(--ink-text-muted);
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 0 0 rgba(47, 184, 114, 0.55);
+      animation: pulse 2.6s ease-out infinite;
+    }
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(47, 184, 114, 0.5); }
+      70%  { box-shadow: 0 0 0 7px rgba(47, 184, 114, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(47, 184, 114, 0); }
+    }
+    .compliance { font-size: 12.5px; color: var(--ink-text-muted); letter-spacing: 0.01em; }
+
+    /* ---------- Form panel ---------- */
+    .panel {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 32px;
+      background: var(--surface);
+    }
+    .card { width: 100%; max-width: 384px; }
+
+    .card-head { margin-bottom: 26px; }
+    .card-head h2 {
+      margin: 0 0 7px;
+      font-size: 25px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .card-head p { margin: 0; color: var(--text-muted); font-size: 14.5px; }
+
+    .sso {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      height: 46px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-weight: 500;
+      font-size: 14.5px;
+      cursor: pointer;
+      transition: background-color .15s ease, border-color .15s ease;
+    }
+    .sso:hover { background: var(--surface-2); border-color: var(--border-strong); }
+    .sso svg { width: 18px; height: 18px; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin: 20px 0;
+      color: var(--text-faint);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .divider::before, .divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .field { margin-bottom: 16px; }
+    .field-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 7px;
+    }
+    .field label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+    }
+    .field-top a {
+      font-size: 12.5px;
+      color: var(--accent-600);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .field-top a:hover { text-decoration: underline; }
+
+    .control { position: relative; display: flex; align-items: center; }
+    .control .lead {
+      position: absolute;
+      left: 13px;
+      color: var(--text-faint);
+      pointer-events: none;
+      display: flex;
+    }
+    .control .lead svg { width: 17px; height: 17px; display: block; }
+
+    .control input {
+      width: 100%;
+      height: 46px;
+      padding: 0 14px 0 40px;
+      font: inherit;
+      font-size: 14.5px;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .control input::placeholder { color: var(--text-faint); }
+    .control input:hover { border-color: #B9C1D1; }
+    .control input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--ring);
+    }
+    .control input[type="password"] { padding-right: 44px; }
+
+    .reveal {
+      position: absolute;
+      right: 6px;
+      width: 34px;
+      height: 34px;
+      border: 0;
+      background: transparent;
+      color: var(--text-faint);
+      border-radius: 7px;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+    }
+    .reveal:hover { color: var(--text-muted); background: var(--surface-2); }
+    .reveal:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .reveal svg { width: 18px; height: 18px; }
+
+    .remember {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 4px 0 22px;
+      font-size: 13.5px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .remember input {
+      width: 16px; height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .remember label { cursor: pointer; }
+
+    .submit {
+      width: 100%;
+      height: 47px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      transition: background-color .15s ease, transform .05s ease;
+    }
+    .submit:hover { background: var(--accent-600); }
+    .submit:active { transform: translateY(1px); }
+    .submit:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--ring); }
+    .submit svg { width: 17px; height: 17px; transition: transform .15s ease; }
+    .submit:hover svg { transform: translateX(2px); }
+
+    .help {
+      margin-top: 22px;
+      text-align: center;
+      font-size: 13.5px;
+      color: var(--text-muted);
+    }
+    .help a { color: var(--accent-600); text-decoration: none; font-weight: 500; }
+    .help a:hover { text-decoration: underline; }
+
+    .secure-note {
+      margin-top: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      font-size: 12px;
+      color: var(--text-faint);
+    }
+    .secure-note svg { width: 13px; height: 13px; }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 900px) {
+      .auth { grid-template-columns: 1fr; }
+      .brand {
+        padding: 22px 24px;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        min-height: auto;
+      }
+      .brand::before { mask-image: none; opacity: 0.5; }
+      .brand-body, .features { display: none; }
+      .brand-foot { margin: 0; }
+      .compliance { display: none; }
+      .panel { padding: 40px 24px 56px; align-items: flex-start; }
+    }
+    @media (max-width: 460px) {
+      .brand-foot { display: none; }
+      .brand { justify-content: center; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dot { animation: none; }
+      .submit svg, .submit:active { transition: none; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="auth">
+    <!-- Brand panel -->
+    <aside class="brand">
+      <div class="wordmark">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2 4 6v6c0 5 3.5 7.5 8 10 4.5-2.5 8-5 8-10V6l-8-4Z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+        </span>
+        OpenSrtHub <span class="sub">Stream Manager</span>
+      </div>
+
+      <div class="brand-body">
+        <h1>Robust live stream management, end to end.</h1>
+        <p class="lede">Ingest, route, and monitor every SRT feed from one place — with low-latency transport and automatic failover that keep your streams on air.</p>
+        <ul class="features">
+          <li>
+            <span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+            Secure, low-latency SRT ingest and distribution
+          </li>
+          <li>
+            <span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+            Real-time health and bitrate monitoring for every feed
+          </li>
+          <li>
+            <span class="glyph" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+            Automatic failover that keeps streams on air
+          </li>
+        </ul>
+      </div>
+
+      <div class="brand-foot">
+        <span class="status">
+          <span class="dot" aria-hidden="true"></span>
+          All systems operational
+        </span>
+      </div>
+    </aside>
+
+    <!-- Form panel -->
+    <section class="panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>Sign in</h2>
+          <p>Enter your credentials to access Stream Manager.</p>
+        </div>
+
+        <form action="/auth" method="post" novalidate>
+          <div class="field">
+            <div class="field-top">
+              <label for="username">Username</label>
+            </div>
+            <div class="control">
+              <span class="lead" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              </span>
+              <input type="text" name="username" id="username" placeholder="you@company.com" autocomplete="username" required>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-top">
+              <label for="password">Password</label>
+            </div>
+            <div class="control">
+              <span class="lead" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </span>
+              <input type="password" name="password" id="password" placeholder="Enter your password" autocomplete="current-password" required>
+              <button type="button" class="reveal" id="reveal" aria-label="Show password" aria-pressed="false">
+                <svg id="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <button type="submit" class="submit" style="margin-top:8px;">
+            Sign in
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          </button>
+        </form>
+
+        <div class="secure-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Authorized access only · Sessions are encrypted and audited
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      var btn = document.getElementById('reveal');
+      var input = document.getElementById('password');
+      var eye = document.getElementById('eye');
+      var shown = '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>';
+      var hidden = '<path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M6.61 6.61A18.5 18.5 0 0 0 2 12s3.5 8 10 8a9.12 9.12 0 0 0 4-.86"/><path d="m2 2 20 20"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/>';
+      btn.addEventListener('click', function () {
+        var toText = input.type === 'password';
+        input.type = toText ? 'text' : 'password';
+        btn.setAttribute('aria-pressed', String(toText));
+        btn.setAttribute('aria-label', toText ? 'Hide password' : 'Show password');
+        eye.innerHTML = toText ? hidden : shown;
+        input.focus();
+      });
+    })();
+  </script>
+</body>
+</html>

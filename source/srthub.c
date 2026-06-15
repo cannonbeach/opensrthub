@@ -1,5 +1,5 @@
 /*****************************************************************************
-  Copyright (C) 2018-2025 John William
+  Copyright (C) 2018-2026 John William (Will)
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -39,15 +39,16 @@
 #include "esignal.h"
 #include "cJSON.h"
 
-#define SRTHUB_MAJOR 0
-#define SRTHUB_MINOR 1
+#define SRTHUB_MAJOR               1
+#define SRTHUB_MINOR               0
 
-#define MAX_CONFIG_SIZE 16384
-#define MAX_UDP_BUFFER_READ 2048
+#define MAX_CONFIG_SIZE            16384
+#define MAX_UDP_BUFFER_READ        2048
+#define MAX_SRT_PACKET_SIZE        ((188*7)+12)
 
-#define MESSAGE_TYPE_START 0x01
-#define MESSAGE_TYPE_STOP 0x02
-#define MESSAGE_TYPE_RESTART 0x99
+#define MESSAGE_TYPE_START         0x01
+#define MESSAGE_TYPE_STOP          0x02
+#define MESSAGE_TYPE_RESTART       0x99
 
 #define MAX_MSG_BUFFERS            8192
 #define MAX_PACKET_BUFFERS         16384
@@ -60,10 +61,10 @@
 #define ENABLE_THUMBNAIL
 
 #if defined(ENABLE_THUMBNAIL)
-#define THUMBNAIL_WIDTH   320
-#define THUMBNAIL_HEIGHT  240
-#define MAX_DECODE_WIDTH  3840
-#define MAX_DECODE_HEIGHT 2160
+#define THUMBNAIL_WIDTH            320
+#define THUMBNAIL_HEIGHT           240
+#define MAX_DECODE_WIDTH           3840
+#define MAX_DECODE_HEIGHT          2160
 
 #include "../cbffmpeg/libavcodec/avcodec.h"
 #include "../cbffmpeg/libswscale/swscale.h"
@@ -171,7 +172,24 @@ int64_t realtime_clock_difference(struct timespec *now, struct timespec *start)
     return ((tnsec / 1000) + (tsec * 1000000));
 }
 
-int save_frame_as_jpeg(srthub_core_struct *srtcore, AVFrame *pFrame)
+static int check_for_rtp(int packetsize)
+{
+    int ts_packets = packetsize / 188;
+    int packetsize_check = ts_packets * 188;
+
+    if (packetsize_check != packetsize) {
+        int updated_packetsize = packetsize - 12;
+        int ts_packets = updated_packetsize / 188;
+
+        packetsize_check = ts_packets * 188;
+        if (packetsize_check == updated_packetsize) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int save_frame_as_jpeg(srthub_core_struct *srtcore, AVFrame *pFrame)
 {
     const AVCodec *jpegCodec = (const AVCodec*)avcodec_find_encoder(AV_CODEC_ID_MJPEG);
     AVCodecContext *jpegContext = avcodec_alloc_context3(jpegCodec);
@@ -329,6 +347,7 @@ static void *srt_receiver_thread_listener(void *context)
     SRT_TRACEBSTATS stats;
     int threadid = gettid();
     int32_t latencyms;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     decode->pat_version_number = -1;
 
@@ -366,6 +385,12 @@ static void *srt_receiver_thread_listener(void *context)
     srterr = srt_setsockflag(listener, SRTO_LATENCY, &latencyms, sizeof(latencyms));
     if (srterr == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_listener;
+    }
+
+    srterr = srt_setsockflag(listener, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_receiver_thread_listener;
     }
 
@@ -566,9 +591,12 @@ static void *srt_receiver_thread_listener(void *context)
                 }
                 update_stats++;
                 tp = recvbytes / 188;
-                //fprintf(stderr,"decode packets: tp=%d\n", tp);
-                decode_packets((uint8_t*)buffer, tp, decode, 0);
-                //fprintf(stderr,"done decode packets\n");
+                if (check_for_rtp(recvbytes)) {
+                    uint8_t *updated_buffer = (uint8_t*)buffer+12;
+                    decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                } else {
+                    decode_packets((uint8_t*)buffer, tp, decode, 0);
+                }
 
                 {
                     dataqueue_message_struct *msg = NULL;
@@ -582,9 +610,15 @@ static void *srt_receiver_thread_listener(void *context)
                             if (recvbytes > MAX_PACKET_BUFFER_SIZE) {
                                 recvbytes = MAX_PACKET_BUFFER_SIZE;
                             }
-                            memcpy(obuffer, buffer, recvbytes);
+                            if (check_for_rtp(recvbytes)) {
+                                uint8_t *updated_buffer = (uint8_t*)buffer+12;
+                                memcpy(obuffer, updated_buffer, recvbytes-12);
+                                msg->buffer_size = recvbytes-12;
+                            } else {
+                                memcpy(obuffer, buffer, recvbytes);
+                                msg->buffer_size = recvbytes;
+                            }
                             msg->buffer = obuffer;
-                            msg->buffer_size = recvbytes;
                             msg->pts = srtcontrol.srctime;
                             dataqueue_put_front(srtcore->udpserverqueue, msg);
                         } else {
@@ -641,6 +675,7 @@ static void *srt_receiver_thread_caller(void *context)
     int srt_connected = 0;
     int threadid = gettid();
     int32_t latencyms;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     decode->pat_version_number = -1;
 
@@ -700,6 +735,12 @@ static void *srt_receiver_thread_caller(void *context)
     }
 
     srterr = srt_setsockflag(serversock, SRTO_LATENCY, &latencyms, sizeof(latencyms));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_receiver_thread_caller;
+    }
+
+    srterr = srt_setsockflag(serversock, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
     if (srterr == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
         goto cleanup_srt_receiver_thread_caller;
@@ -881,7 +922,13 @@ static void *srt_receiver_thread_caller(void *context)
             }
             update_stats++;
             tp = recvbytes / 188;
-            decode_packets((uint8_t*)buffer, tp, decode, 0);
+
+            if (check_for_rtp(recvbytes)) {
+                uint8_t *updated_buffer = (uint8_t*)buffer+12;
+                decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+            } else {
+                decode_packets((uint8_t*)buffer, tp, decode, 0);
+            }
 
             {
                 dataqueue_message_struct *msg;
@@ -895,9 +942,15 @@ static void *srt_receiver_thread_caller(void *context)
                         if (recvbytes > MAX_PACKET_BUFFER_SIZE) {
                             recvbytes = MAX_PACKET_BUFFER_SIZE;
                         }
-                        memcpy(obuffer, buffer, recvbytes);
+                        if (check_for_rtp(recvbytes)) {
+                            uint8_t *updated_buffer = (uint8_t*)buffer+12;
+                            memcpy(obuffer, updated_buffer, recvbytes-12);
+                            msg->buffer_size = recvbytes-12;
+                        } else {
+                            memcpy(obuffer, buffer, recvbytes);
+                            msg->buffer_size = recvbytes;
+                        }
                         msg->buffer = obuffer;
-                        msg->buffer_size = recvbytes;
                         msg->pts = srtcontrol.srctime;
                         dataqueue_put_front(srtcore->udpserverqueue, msg);
                     } else {
@@ -1076,6 +1129,7 @@ static void *srt_server_thread_pull(void *context)
     int slots_available = 0;
     int64_t total_bytes_sent = 0;
     int64_t total_packets_sent = 0;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     srt_startup();
 
@@ -1120,6 +1174,12 @@ static void *srt_server_thread_pull(void *context)
             fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
             goto cleanup_srt_server_thread_pull;
         }
+    }
+
+    srterr = srt_setsockflag(listener, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_server_thread_pull;
     }
 
     srterr = srt_bind(listener, (struct sockaddr*)&server_addr, sizeof(server_addr));
@@ -1233,6 +1293,7 @@ static void *srt_server_thread_push(void *context)
     char statsfilename[MAX_STRING_SIZE];
     struct timespec server_time_stop;
     struct timespec server_time_start;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     srt_startup();
 
@@ -1285,6 +1346,12 @@ retry_srt_server_push_connection:
             fprintf(stderr,"srt_server_thread_push: unable to proceed with srt_setsockflag()\n");
             goto cleanup_srt_server_thread_push;
         }
+    }
+
+    srterr = srt_setsockflag(sendersock, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
+    if (srterr == SRT_ERROR) {
+        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
+        goto cleanup_srt_server_thread_push;
     }
 
     /*
@@ -1596,7 +1663,12 @@ static void *udp_receiver_thread(void *context)
 
                 // check if rtp or something else?
                 tp = bytes_read / 188;
-                decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                if (check_for_rtp(bytes_read)) {
+                    uint8_t *updated_buffer = (uint8_t*)udp_buffer+12;
+                    decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                } else {
+                    decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                }
 
                 clock_gettime(CLOCK_MONOTONIC, &receive_time_stop);
                 diff = realtime_clock_difference(&receive_time_stop, &receive_time_start) / 1000000;
@@ -1631,15 +1703,23 @@ static void *udp_receiver_thread(void *context)
                     if (srtcore->srtserverqueue[thread] != NULL) {
                         outputbuffer = (uint8_t*)memory_take(srtcore->packetpool, threadid);
                         if (outputbuffer) {
+                            int updated_bytes_read = 0;
                             if (bytes_read > MAX_PACKET_BUFFER_SIZE) {
                                 bytes_read = MAX_PACKET_BUFFER_SIZE;
                             }
-                            memcpy(outputbuffer, udp_buffer, bytes_read);
+                            if (check_for_rtp(bytes_read)) {
+                                uint8_t *updated_buffer = (uint8_t*)udp_buffer+12;
+                                memcpy(outputbuffer, updated_buffer, bytes_read-12);
+                                updated_bytes_read = bytes_read-12;
+                            } else {
+                                memcpy(outputbuffer, udp_buffer, bytes_read);
+                                updated_bytes_read = bytes_read;
+                            }
                             msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
                             if (msg) {
                                 memset(msg, 0, sizeof(dataqueue_message_struct));
                                 msg->buffer = outputbuffer;
-                                msg->buffer_size = bytes_read;
+                                msg->buffer_size = updated_bytes_read;
                                 msg->pts = source_time;
                                 dataqueue_put_front(srtcore->srtserverqueue[thread], msg);
                                 msg = NULL;

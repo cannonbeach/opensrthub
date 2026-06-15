@@ -1,5 +1,5 @@
 /*****************************************************************************
-  Copyright (C) 2018-2023 John William
+  Copyright (C) 2018-2026 John William (Will)
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -26,16 +26,116 @@ var exec = require('child_process').exec;
 var os = require('os');
 var networkInterfaces = os.networkInterfaces();
 const express = require('express');
+const session = require('express-session');
 const readLastLines = require('read-last-lines');
 var bodyParser = require('body-parser');
 const fs = require('fs');
-const app = express();
 var path = require('path');
+var https = require('https');
+var http = require('http');
+var net = require('net');
+const urlExists = require('url-exists');
+const { param, validationResult } = require('express-validator');
+const validator = require('validator');
+const helmet = require('helmet');
+
+var options = {
+    key: fs.readFileSync("cert/server.key"),
+    cert: fs.readFileSync("cert/server.crt")
+};
+
+const app = express();
+
+app.use(session({
+    secret:'secret',
+    resave:true,
+    saveUninitialized:true,
+    cooke: { secure: true }
+}));
+
+/*
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        objectSrc: ["'self'"],
+        imgSrc: ["'self'"],
+        scriptSrcAttr: ["'self'"],
+        upgradeInsecureRequests: [],
+    },
+  })
+);
+*/
 
 app.use(bodyParser.json());
+app.use(express.json());
+app.use(express.urlencoded({extended:true}));
 
-// serve files from the public directory
-app.use(express.static('public'));
+var auth = function(req, res, next) {
+    if (req.session.loggedin) {
+        return next();
+    } else {
+        res.sendFile(path.join(__dirname + '/authenticate.html'));
+    }
+};
+
+app.get('/', function(req,res) {
+    if (req.session.loggedin) {
+        res.redirect('/srthub');
+        res.end();
+    } else {
+        res.sendFile(path.join(__dirname + '/authenticate.html'));
+    }
+});
+
+app.use('/srthub', auth, express.static(path.join(__dirname,'public')));
+
+app.post('/auth',
+         param('username').trim().escape().notEmpty(),
+         param('password').trim().escape().notEmpty(),
+         function(request, response) {
+             var authFile = '/opt/srthub/users.json';
+
+             // Capture the input fields
+             var username = request.body.username;
+             var password = request.body.password;
+
+             console.log('username='+username);
+             console.log('password='+password);
+
+             if (username && password) {
+                 if (fs.existsSync(authFile)) {
+                     var userdata = fs.readFileSync(authFile, 'utf8');
+                     if (userdata) {
+                         var parseduserdata = JSON.parse(userdata);
+                         var e = parseduserdata.length;
+                         var i;
+                         var f = 0;
+                         for (i = 0; i < e; i++) {
+                             if ((parseduserdata[i].username === username) &&
+                                 (parseduserdata[i].password === password)) {
+                                 request.session.loggedin = true;
+                                 request.session.username = username;
+                                 response.redirect('/srthub');
+                                 response.end();
+                                 f = 1;
+                                 break;
+                             }
+                         }
+                         if (f == 0) {
+                             response.sendFile(path.join(__dirname + '/authenticate.html'));
+                         }
+                     } else {
+                         response.sendFile(path.join(__dirname + '/authenticate.html'));
+                     }
+                 } else {
+                     response.sendFile(path.join(__dirname + '/authenticate.html'));
+                 }
+             } else {
+                 response.sendFile(path.join(__dirname + '/authenticate.html'));
+             }
+         });
 
 const logfilename = '/var/log/srthub.log';
 const scanFolder = '/opt/srthub/scan';
@@ -51,10 +151,138 @@ function getExtension(filename) {
 
 function seconds_since_epoch(){ return Math.floor( Date.now() / 1000 ) }
 
-// start the express web server listening on 8080
-app.listen(8080, () => {
-    console.log('listening on 8080');
+const httpsServer = https.createServer(options, app);
+const httpServer = http.createServer((req, res) => {
+    const host = req.headers.host.replace(/:\d+$/, ''); // strip any port
+    res.writeHead(301, { Location: `https://${host}:8080/${req.url}` });
+    res.end();
 });
+
+net.createServer(socket => {
+  socket.once('data', buffer => {
+    socket.pause();
+    const target = buffer[0] === 22 ? httpsServer : httpServer; // 22 = TLS handshake
+    socket.unshift(buffer);
+    target.emit('connection', socket);
+    process.nextTick(() => socket.resume()); // must be deferred
+  });
+}).listen(8080, () => console.log('Listening on 8080 (HTTP + HTTPS)'));
+
+//app.use((req, res, next) => {
+//    if (req.secure) {
+//        return next();
+//    }
+//    res.redirect(301, `https://${req.headers.host}${req.url}`);
+//});
+
+/*****************************************************************************
+  Bitrate history
+  ----------------------------------------------------------------------------
+  A small background sampler reads the per-service status files on a fixed
+  cadence (independent of any browser polling), keeps a rolling buffer per
+  service in memory, and persists it to disk so the history survives both a
+  page reload and a server restart. The UI seeds its graph from this buffer.
+*******************************************************************************/
+const bitrateHistoryFile = statusFolder + '/bitrate_history.json';
+const BITRATE_HISTORY_MAX = 900;   // samples kept per service (~30 min at 2s)
+const BITRATE_SAMPLE_MS   = 2000;  // sampler cadence
+const BITRATE_PERSIST_MS  = 30000; // how often the buffer is flushed to disk
+var bitrateHistory = {};           // fileprefix -> [{ t, kbps }]
+
+// The srt_receiver status file already reports "bitrate-kbps" in true
+// kilobits/sec, so no unit conversion is applied (scale = 1). If a future build
+// of the status producer ever reports kiloBYTES/s instead, set this to 8.
+const SRT_BITRATE_SCALE = 1;
+
+// Seed from disk at startup (best effort).
+try {
+    if (fs.existsSync(bitrateHistoryFile)) {
+        var rawHist = fs.readFileSync(bitrateHistoryFile, 'utf8');
+        if (rawHist) {
+            bitrateHistory = JSON.parse(rawHist) || {};
+        }
+    }
+} catch (e) {
+    console.log('Could not load bitrate history:', e.message);
+    bitrateHistory = {};
+}
+
+function readServiceBitrate(fileprefix, sourcemode) {
+    try {
+        if (sourcemode === 'srt') {
+            var srtFile = statusFolder + '/srt_receiver_' + fileprefix + '.json';
+            if (fs.existsSync(srtFile)) {
+                var srt = JSON.parse(fs.readFileSync(srtFile, 'utf8'));
+                return (srt['bitrate-kbps'] || 0) * SRT_BITRATE_SCALE;
+            }
+        } else if (sourcemode === 'udp') {
+            var udpFile = statusFolder + '/udp_receiver_' + fileprefix + '.json';
+            if (fs.existsSync(udpFile)) {
+                var udp = JSON.parse(fs.readFileSync(udpFile, 'utf8'));
+                return udp['udp-source-kbps'] || 0;
+            }
+        }
+    } catch (e) {
+        // a single bad/partial sample shouldn't break the sampler
+    }
+    return 0;
+}
+
+function sampleBitrates() {
+    if (!fs.existsSync(configFolder)) {
+        return;
+    }
+    var now = Date.now();
+    var active = {};
+    try {
+        var files = fs.readdirSync(configFolder);
+        files.forEach(function(file) {
+            if (getExtension(file) !== '.json') {
+                return;
+            }
+            var fileprefix = path.basename(file, '.json');
+            try {
+                var config = JSON.parse(fs.readFileSync(configFolder + '/' + file, 'utf8'));
+                var corestatusfile = statusFolder + '/corestatus_' + fileprefix + '.json';
+                var running = fs.existsSync(corestatusfile);
+                // Keep the buffer alive whether running or stopped; while stopped
+                // we append zeros so the graph clearly shows the service is down.
+                active[fileprefix] = true;
+                var kbps = running ? readServiceBitrate(fileprefix, config.sourcemode) : 0;
+                var buf = bitrateHistory[fileprefix] || (bitrateHistory[fileprefix] = []);
+                buf.push({ t: now, kbps: kbps });
+                if (buf.length > BITRATE_HISTORY_MAX) {
+                    buf.splice(0, buf.length - BITRATE_HISTORY_MAX);
+                }
+            } catch (e) {
+                // skip this service for this sampling round
+            }
+        });
+        // prune history for services whose config no longer exists
+        Object.keys(bitrateHistory).forEach(function(prefix) {
+            if (!active[prefix]) {
+                delete bitrateHistory[prefix];
+            }
+        });
+    } catch (e) {
+        console.log('Bitrate sampling error:', e.message);
+    }
+}
+
+function persistBitrateHistory() {
+    try {
+        fs.writeFileSync(bitrateHistoryFile, JSON.stringify(bitrateHistory));
+    } catch (e) {
+        console.log('Could not persist bitrate history:', e.message);
+    }
+}
+
+setInterval(sampleBitrates, BITRATE_SAMPLE_MS);
+setInterval(persistBitrateHistory, BITRATE_PERSIST_MS);
+
+// flush on shutdown so nothing in the last interval is lost
+process.on('SIGINT',  function() { persistBitrateHistory(); process.exit(0); });
+process.on('SIGTERM', function() { persistBitrateHistory(); process.exit(0); });
 
 function getNewestFile(dir, regexp) {
     newest = null;
@@ -144,10 +372,9 @@ cpuILoad = (function() {
         }
         return res;
     }
-
 })();
 
-app.get('/api/v1/system_information', (req, res) => {
+app.get('/api/v1/system_information', auth, (req, res) => {
     var retdata;
     var srthubcorefile = '/opt/srthub/srthub.json';
 
@@ -173,7 +400,7 @@ app.get('/api/v1/system_information', (req, res) => {
     res.send(retdata);
 });
 
-app.get('/api/v1/backup_services', (req, res) => {
+app.get('/api/v1/backup_services', auth, (req, res) => {
     var files = fs.readdirSync(configFolder);
     var archiver = require('archiver');
     var zip = archiver('zip');
@@ -182,12 +409,15 @@ app.get('/api/v1/backup_services', (req, res) => {
         res.status(500).send({error: err.message});
     });
 
+    res.setHeader('Content-Type','application/octet-stream');
+
     zip.on('end', function() {
         console.log('zip file done - wrote %d bytes', zip.pointer());
+        res.sendFile(path.join(__dirname + '/public/systemlogs.zip'));
     });
 
-    res.attachment('backup.zip');
-    zip.pipe(res);
+    const writeStream = fs.createWriteStream('/var/app/public/systemlogs.zip');
+    zip.pipe(writeStream);
 
     files.forEach(file => {
         console.log(getExtension(file));
@@ -197,10 +427,23 @@ app.get('/api/v1/backup_services', (req, res) => {
             zip.file(fullfile);
         }
     });
+    zip.file('/var/log/srthub.log');
+    if (fs.existsSync('/var/log/srthub.log.1')) {
+        zip.file('/var/log/srthub.log.1');
+    }
+    if (fs.existsSync('/var/log/srthub.log.2.gz')) {
+        zip.file('/var/log/srthub.log.2.gz');
+    }
+    zip.file('/var/log/kern.log');
+    if (fs.existsSync('/var/log/kern.log.1')) {
+        zip.file('/var/log/kern.log.1');
+    }
+    zip.file('/var/log/dpkg.log');
+    zip.file('/etc/netplan/01-network-config.yaml');
     zip.finalize();
 });
 
-app.get('/api/v1/get_service_count', (req, res) => {
+app.get('/api/v1/get_service_count', auth, (req, res) => {
     var services;
 
     obj = new Object();
@@ -214,13 +457,13 @@ app.get('/api/v1/get_service_count', (req, res) => {
 });
 
 // NEW: JSON-based endpoint for the redesigned frontend
-app.get('/api/v1/get_services', (req, res) => {
+app.get('/api/v1/get_services', auth, (req, res) => {
     var services = [];
-    
+
     if (!fs.existsSync(configFolder)) {
         return res.json({ services: [] });
     }
-    
+
     var files = fs.readdirSync(configFolder);
     var configIndex = 0;
 
@@ -229,11 +472,11 @@ app.get('/api/v1/get_services', (req, res) => {
             configIndex++;
             var fullfile = configFolder + '/' + file;
             var fileprefix = path.basename(fullfile, '.json');
-            
+
             try {
                 var configdata = fs.readFileSync(fullfile, 'utf8');
                 var config = JSON.parse(configdata);
-                
+
                 var service = {
                     id: configIndex,
                     fileprefix: fileprefix,
@@ -301,7 +544,7 @@ app.get('/api/v1/get_services', (req, res) => {
                             service.srt = {
                                 connected: srt["srt-connection"] === 1,
                                 mode: srt["srt-mode"] || '',
-                                bitrate: srt["bitrate-kbps"] || 0,
+                                bitrate: (srt["bitrate-kbps"] || 0) * SRT_BITRATE_SCALE,
                                 packetsReceived: srt["packets-received"] || 0,
                                 packetsDropped: srt["packets-dropped"] || 0,
                                 packetsLost: srt["packets-lost"] || 0,
@@ -411,6 +654,26 @@ app.get('/api/v1/get_services', (req, res) => {
     res.json({ services: services });
 });
 
+// Return the persisted bitrate history for one service (keyed by fileprefix).
+app.get('/api/v1/get_bitrate_history/:uid', auth, (req, res) => {
+    // uid is the service fileprefix; reduce to a bare basename as a precaution
+    var prefix = path.basename(String(req.params.uid));
+    var samples = bitrateHistory[prefix] || [];
+    res.json({ fileprefix: prefix, samples: samples });
+});
+
+// Clear/reset the persisted bitrate history for one service (or all with "all").
+app.post('/api/v1/clear_bitrate_history/:uid', auth, (req, res) => {
+    var prefix = path.basename(String(req.params.uid));
+    if (prefix === 'all' || prefix === '*') {
+        bitrateHistory = {};
+    } else {
+        delete bitrateHistory[prefix];
+    }
+    persistBitrateHistory();   // flush immediately so a reload/restart stays clean
+    res.json({ ok: true, fileprefix: prefix });
+});
+
 app.get('/api/v1/get_scan_data', (req, res) => {
     var source;
     var sourcestreams = [];
@@ -460,7 +723,7 @@ app.get('/api/v1/get_scan_data', (req, res) => {
     }
 });
 
-app.get('/api/v1/get_log_page', (req, res) => {
+app.get('/api/v1/get_log_page', auth, (req, res) => {
     var html = '';
     var i;
 
@@ -500,7 +763,7 @@ app.get('/api/v1/get_log_page', (req, res) => {
     res.end(html);
 });
 
-app.get('/api/v1/get_control_page', (req, res) => {
+app.get('/api/v1/get_control_page', auth, (req, res) => {
     var html = '';
     var i;
     var files = fs.readdirSync(configFolder);
@@ -578,7 +841,7 @@ app.get('/api/v1/get_control_page', (req, res) => {
     res.end(html);
 });
 
-app.get('/api/v1/thumbnail/:uid', (req, res) => {
+app.get('/api/v1/thumbnail/:uid', auth, (req, res) => {
     console.log('thumbnail request: '+req.params.uid);
 
     var thumbnailfile = '/opt/srthub/thumbnail/'+req.params.uid;
@@ -593,11 +856,11 @@ app.get('/api/v1/thumbnail/:uid', (req, res) => {
     }
 });
 
-app.get('/api/v1/get_interfaces', (req, res) => {
+app.get('/api/v1/get_interfaces', auth, (req, res) => {
     res.send(networkInterfaces);
 });
 
-app.post('/api/v1/remove_service/:uid', (req, res) => {
+app.post('/api/v1/remove_service/:uid', auth, (req, res) => {
     console.log('received remove source request: ', req.params.uid);
 
     var files = fs.readdirSync(configFolder);
@@ -657,7 +920,7 @@ app.post('/api/v1/remove_service/:uid', (req, res) => {
     }
 });
 
-app.post('/api/v1/new_srt_receiver', (req, res) => {
+app.post('/api/v1/new_srt_receiver', auth, (req, res) => {
     console.log('received new srt receiver request');
     console.log('body is ',req.body);
 
@@ -708,7 +971,7 @@ app.post('/api/v1/new_srt_receiver', (req, res) => {
     res.send(retdata);
 });
 
-app.post('/api/v1/new_srt_server', (req, res) => {
+app.post('/api/v1/new_srt_server', auth, (req, res) => {
     console.log('received new srt server request');
     console.log('body is ',req.body);
 
@@ -760,7 +1023,7 @@ app.post('/api/v1/new_srt_server', (req, res) => {
     res.send(retdata);
 });
 
-app.post('/api/v1/status_update/:uid', (req, res) => {
+app.post('/api/v1/status_update/:uid', auth, (req, res) => {
     console.log('received status update from: ', req.params.uid);
     //console.log('body is ',req.body);
 
@@ -777,7 +1040,7 @@ app.post('/api/v1/status_update/:uid', (req, res) => {
     res.send(req.body);
 });
 
-app.post('/api/v1/signal/:uid', (req, res) => {
+app.post('/api/v1/signal/:uid', auth, (req, res) => {
     console.log('receive event signal from: ', req.params.uid);
     console.log('body is ', req.body);
 
@@ -790,7 +1053,7 @@ app.post('/api/v1/signal/:uid', (req, res) => {
     res.send(req.body);
 });
 
-app.post('/api/v1/stop_service/:uid', (req, res) => {
+app.post('/api/v1/stop_service/:uid', auth, (req, res) => {
     console.log('stop button pressed: ', req.params.uid);
 
     var files = fs.readdirSync(configFolder);
@@ -905,7 +1168,7 @@ function os_func() {
     }
 }
 
-app.post('/api/v1/start_service/:uid', (req, res) => {
+app.post('/api/v1/start_service/:uid', auth, (req, res) => {
     const click = {clickTime: new Date()};
     console.log(click);
     console.log('start button pressed: ', req.params.uid);
@@ -1033,7 +1296,7 @@ function scan_response_data(streamindex, avtype, codec, pid) {
     this.pid = pid;
 }
 
-app.post('/api/v1/scan', (req, res) => {
+app.post('/api/v1/scan', auth, (req, res) => {
     console.log('address: '+JSON.stringify(req.query.address));
     console.log('interface: '+JSON.stringify(req.query.intf));
 
@@ -1174,7 +1437,7 @@ function listed_service(serviceindex, servicenum) {
     this.servicenum = servicenum;
 }
 
-app.get('/api/v1/list_services', (req, res) => {
+app.get('/api/v1/list_services', auth, (req, res) => {
     console.log('requested to list services');
 
     var files = fs.readdirSync(configFolder);
@@ -1202,7 +1465,7 @@ app.get('/api/v1/list_services', (req, res) => {
 });
 
 // Get raw config for a single service (for editing)
-app.get('/api/v1/get_config/:uid', (req, res) => {
+app.get('/api/v1/get_config/:uid', auth, (req, res) => {
     console.log('get_config request for: ', req.params.uid);
 
     var files = fs.readdirSync(configFolder);
@@ -1239,7 +1502,7 @@ app.get('/api/v1/get_config/:uid', (req, res) => {
 });
 
 // Update an existing service config
-app.post('/api/v1/update_config/:uid', (req, res) => {
+app.post('/api/v1/update_config/:uid', auth, (req, res) => {
     console.log('update_config request for: ', req.params.uid);
     console.log('body is ', req.body);
 
@@ -1299,7 +1562,7 @@ function input_stream(ip, port, input_interface, bitrate) {
     this.bitrate = bitrate;
 }
 
-app.get('/api/v1/get_log_data', (req, res) => {
+app.get('/api/v1/get_log_data', auth, (req, res) => {
     console.log('newest log filename: ', logfilename);
     if (fs.existsSync(logfilename)) {
         readLastLines.read(logfilename, 6)
@@ -1321,7 +1584,7 @@ app.get('/api/v1/get_log_data', (req, res) => {
     }
 });
 
-app.get('/api/v1/get_extended_log_data', (req, res) => {
+app.get('/api/v1/get_extended_log_data', auth, (req, res) => {
     console.log('newest log filename: ', logfilename);
     if (fs.existsSync(logfilename)) {
         readLastLines.read(logfilename, 50)
@@ -1362,7 +1625,7 @@ function audio_service(codec, channels, samplerate)
     this.samplerate = samplerate;
 }
 
-app.get('/api/v1/get_service_status/:uid', (req, res) => {
+app.get('/api/v1/get_service_status/:uid', auth, (req, res) => {
     console.log('getting signal status: ', req.params.uid);
 
     var files = fs.readdirSync(configFolder);
