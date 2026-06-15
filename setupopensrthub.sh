@@ -50,11 +50,19 @@ else
     exit
 fi
 
-if [ -f "./webapp/public/client.js" ]; then
-    echo "srthub: installing client.js to /var/app/public"
-    sudo cp ./webapp/public/client.js /var/app/public
+#if [ -f "./webapp/public/client.js" ]; then
+#    echo "srthub: installing client.js to /var/app/public"
+#    sudo cp ./webapp/public/client.js /var/app/public
+#else
+#    echo "srthub: unable to find client.js"
+#    exit
+#fi
+
+if [ -f "./webapp/authenticate.html" ]; then
+    echo "srthub: installing authenticate.html to /var/app"
+    sudo cp ./webapp/authenticate.html /var/app
 else
-    echo "srthub: unable to find client.js"
+    echo "srthub: unable to find authenticate.html"
     exit
 fi
 
