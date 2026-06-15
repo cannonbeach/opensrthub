@@ -32,6 +32,8 @@ var bodyParser = require('body-parser');
 const fs = require('fs');
 var path = require('path');
 var https = require('https');
+var http = require('http');
+var net = require('net');
 const urlExists = require('url-exists');
 const { param, validationResult } = require('express-validator');
 const validator = require('validator');
@@ -149,7 +151,29 @@ function getExtension(filename) {
 
 function seconds_since_epoch(){ return Math.floor( Date.now() / 1000 ) }
 
-https.createServer(options, app).listen(8080);
+const httpsServer = https.createServer(options, app);
+const httpServer = http.createServer((req, res) => {
+    const host = req.headers.host.replace(/:\d+$/, ''); // strip any port
+    res.writeHead(301, { Location: `https://${host}:8080/${req.url}` });
+    res.end();
+});
+
+net.createServer(socket => {
+  socket.once('data', buffer => {
+    socket.pause();
+    const target = buffer[0] === 22 ? httpsServer : httpServer; // 22 = TLS handshake
+    socket.unshift(buffer);
+    target.emit('connection', socket);
+    process.nextTick(() => socket.resume()); // must be deferred
+  });
+}).listen(8080, () => console.log('Listening on 8080 (HTTP + HTTPS)'));
+
+//app.use((req, res, next) => {
+//    if (req.secure) {
+//        return next();
+//    }
+//    res.redirect(301, `https://${req.headers.host}${req.url}`);
+//});
 
 /*****************************************************************************
   Bitrate history
