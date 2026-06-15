@@ -74,6 +74,27 @@ else
     exit
 fi
 
+if [ ! -f "/opt/srthub/users.json" ]; then
+    cat <<EOF > /opt/srthub/users.json
+    [
+        {
+           "username":"admin",
+           "password":"password"
+        }
+    ]
+    EOF
+    echo "srthub: setting up users.json to username: admin and password: password, please edit this file to change login information"
+else
+    echo "srthub: users.json already exists, not overwriting it"
+fi
+
+if [ ! -d "/var/app/cert" ]; then
+    echo "srthub: creating directory /var/app/cert"
+    sudo mkdir -p /var/app/cert
+else
+    echo "srthub: directory /var/app/cert already exists"
+fi
+
 echo "srthub: performing global Ubuntu update"
 sudo apt-get update -y
 echo "srtgub: performing global Ubuntu upgrade of packages"
@@ -151,6 +172,8 @@ echo "srthub: nodejs, install shelljs (global)"
 sudo npm install -g shelljs
 echo "srthub: installing express-validator"
 sudo npm install -g express-validator
+echo "srthub: installing express-session"
+sudo npm install -g express-session
 echo "srthub: installing helmet sanitizer"
 sudo npm install -g helmet
 echo "srthub: installing sanitize sanitizer"
@@ -240,3 +263,8 @@ else
     echo "srthub: srthub did not get built - please check manually, aborting installation!"
     exit
 fi
+
+echo "Generating HTTPS key and certificate for system"
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /var/app/cert/server.key -out /var/opt/cert/server.crt
+
+echo "Finished!"
