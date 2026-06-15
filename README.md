@@ -8,10 +8,11 @@ My goal for this project was to have a straightforward and user friendly web bas
 over SRT and UDP around public/private networks (while also providing the ability to peek at the signals along the way).  The signal peeking adds some extra value since you
 can view thumbnails, bitrates, codecs as well as information about signal loss.  There is also an API available if you choose to build your own front-end or want to automate some things.
 
-(updated webapp view.... soon to be available)
+<img width="1906" height="935" alt="image" src="https://github.com/user-attachments/assets/c0a19d9b-0687-4cce-b222-d3856c505f8b" />
+
 <img width="1666" height="1035" alt="image" src="https://github.com/user-attachments/assets/bcdc2ea7-7c8c-460c-9fba-30beb078c805" />
 
-### Quickstart Setup Instructions (Ubuntu 22.04 Server Instructions):
+### Quickstart Setup Instructions (Ubuntu 24.04 Server Instructions):
 
 ```
 1. Clone the repository (git clone git@github.com:cannonbeach/opensrthub.git)
@@ -21,8 +22,10 @@ can view thumbnails, bitrates, codecs as well as information about signal loss. 
    - ************************* PAY ATTENTION: YOU MUST BE IN THE /var/app DIRECTORY FOR THIS TO WORK *****************************
    - username@server:/var/app:$ sudo pm2 start --name 'opensrthub' server.js --wait-ready
    - username@server:/var/app:$ sudo pm2 save
-5. Select to add "New SRT Receiver" or "New SRT Server"
-6. Save your configuration
+5. The default user login is username: admin, password: password
+   - If you want to change the username and login (or add more users) there is a json formatted text file named /opt/srthub/users.json where you can edit
+6. Select to add "New SRT Receiver" or "New SRT Server"
+7. Save your configuration
 ```
 
 If you want to install on a different version of Ubuntu, you will need to update the Dockerfile in the Docker directory to be the same as the version of Ubuntu you are targeting.
@@ -38,7 +41,7 @@ There are four modes of SRT supported in the current version, which essentialy c
 
 And finally!  Your sponsorship donations are greatly appreciated since I am trying to pay off student loans.  If you find this project useful, then please donate and star it.  I work on this project in my spare time and I am available for consulting projects or customizations (new features, new projects, etc.).  I have a lot of really interesting ideas I'd like to pursue on this project, so drop me an email if you think you might be interested in more than what I am offering right now.
 
-If something doesn't work or you need some assistance, please feel free to email me or post an issue in this project.  This is the initial version of the application (as of December 2023) and will definitely have some quirks.  I am trying to get to a solid v1.0 release by early next year.
+If something doesn't work or you need some assistance, please feel free to email me or post an issue in this project.
 
 Thank you!
 
@@ -94,7 +97,7 @@ CONTAINER ID   IMAGE          COMMAND                  CREATED      STATUS      
 tapeworm@tapeworm-parasite1-cloud6:~$
 ```
 
-### API (more documentation to be provided)
+### API
 
 ```
 /api/v1/system_information
