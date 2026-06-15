@@ -259,6 +259,6 @@ else
 fi
 
 echo "Generating HTTPS key and certificate for system"
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /var/app/cert/server.key -out /var/opt/cert/server.crt
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /var/app/cert/server.key -out /var/app/cert/server.crt
 
 echo "Finished!"
