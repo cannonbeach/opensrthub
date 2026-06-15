@@ -75,14 +75,8 @@ else
 fi
 
 if [ ! -f "/opt/srthub/users.json" ]; then
-    cat <<EOF > /opt/srthub/users.json
-    [
-        {
-           "username":"admin",
-           "password":"password"
-        }
-    ]
-    EOF
+    sudo mkdir -p /opt/github
+    sudo echo '[{"username":"admin","password":"password"}]' | sudo tee /opt/srthub/users.json > /dev/null
     echo "srthub: setting up users.json to username: admin and password: password, please edit this file to change login information"
 else
     echo "srthub: users.json already exists, not overwriting it"
