@@ -278,10 +278,10 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
 
         srtcore->thumbnail_frame_counter++;
 
-        #define THUMBNAIL_FRAME_INTERVAL 120
-        if ((srtcore->thumbnail_frame_counter % THUMBNAIL_FRAME_INTERVAL) != 0) {
-            return 0;
-        }
+        //#define THUMBNAIL_FRAME_INTERVAL 120
+        //        if ((srtcore->thumbnail_frame_counter % THUMBNAIL_FRAME_INTERVAL) != 0) {
+        //            return 0;
+        //        }
 
         msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
         if (msg) {
@@ -2134,7 +2134,7 @@ static void *srthub_audio_thread(void *context)
                 previous_samples = 0;
             }
 
-            fprintf(stderr,"srthub_audio_thread(%d): processing audio, size=%d\n", audio_stream, data_size);
+            //fprintf(stderr,"srthub_audio_thread(%d): processing audio, size=%d\n", audio_stream, data_size);
             while (data_size > 0) {
                 int dret;
 
@@ -2150,7 +2150,7 @@ static void *srthub_audio_thread(void *context)
                     break;
                 }
 
-                fprintf(stderr,"srthub_audio_thread(%d): parsed audio, frame size for decode is %d(%d)\n", audio_stream, decode_pkt->size, ret);
+                //fprintf(stderr,"srthub_audio_thread(%d): parsed audio, frame size for decode is %d(%d)\n", audio_stream, decode_pkt->size, ret);
                 data += ret;
                 data_size -= ret;
 
@@ -2183,8 +2183,8 @@ static void *srthub_audio_thread(void *context)
                             data_size = 0;
                             break;
                         }
-                        fprintf(stderr,"srthub_audio_thread(%d) audio sample decoded, sample_rate=%d, channels=%d, pkt_size=%d\n",
-                                audio_stream, decode_av_frame->sample_rate, decode_av_frame->channels, decode_av_frame->pkt_size);
+                        /*fprintf(stderr,"srthub_audio_thread(%d) audio sample decoded, sample_rate=%d, channels=%d, pkt_size=%d\n",
+                          audio_stream, decode_av_frame->sample_rate, decode_av_frame->channels, decode_av_frame->pkt_size);*/
 
                         clock_gettime(CLOCK_MONOTONIC, &audio_stop);
                         diff = realtime_clock_difference(&audio_stop, &audio_start) / 1000;
@@ -2230,6 +2230,53 @@ cleanup_audio_decode_thread:
     return NULL;
 }
 
+
+// strip emulation-prevention bytes from up to max_out bytes of RBSP (payload after the 1-byte NAL header)
+static int unescape_rbsp(const uint8_t *p, size_t n, uint8_t *out, int max_out) {
+    int o = 0, zeros = 0;
+    for (size_t i = 0; i < n && o < max_out; i++) {
+        if (zeros >= 2 && p[i] == 0x03) { zeros = 0; continue; }
+        out[o++] = p[i];
+        zeros = (p[i] == 0) ? zeros + 1 : 0;
+    }
+    return o;
+}
+
+// minimal bit reader + Exp-Golomb
+typedef struct { const uint8_t *d; int nbits, pos; } br_t;
+static int br_u1(br_t *b){ if(b->pos>=b->nbits) return 0;
+    int v=(b->d[b->pos>>3]>>(7-(b->pos&7)))&1; b->pos++; return v; }
+static unsigned br_ue(br_t *b){ int z=0; while(b->pos<b->nbits && !br_u1(b)) z++;
+    unsigned v=0; for(int i=0;i<z;i++) v=(v<<1)|br_u1(b); return (1u<<z)-1u+v; }
+
+// slice_type for a slice NAL (0..9); I-slice iff (slice_type % 5) == 2
+static int h264_slice_type(const uint8_t *nal, size_t n)
+{
+    if (n < 2) return -1;
+    uint8_t buf[16];
+    int m = unescape_rbsp(nal + 1, n - 1, buf, sizeof buf);
+    br_t b = { buf, m * 8, 0 };
+    br_ue(&b);                 // first_mb_in_slice
+    return (int)br_ue(&b);     // slice_type
+}
+
+// 1 if this SEI NAL contains a recovery_point message (payloadType 6)
+static int h264_has_recovery_point(const uint8_t *nal, size_t n)
+{
+    if (n < 2) return 0;
+    uint8_t buf[64];
+    int m = unescape_rbsp(nal + 1, n - 1, buf, sizeof buf), i = 0;
+    while (i < m) {
+        int type = 0; while (i < m && buf[i] == 0xff) type += 255, i++;
+        if (i < m) type += buf[i++]; else break;
+        int size = 0; while (i < m && buf[i] == 0xff) size += 255, i++;
+        if (i < m) size += buf[i++]; else break;
+        if (type == 6) return 1;     // recovery_point
+        i += size;
+    }
+    return 0;
+}
+
 void *srthub_thumbnail_thread(void *context)
 {
 #if defined(ENABLE_THUMBNAIL)
@@ -2238,6 +2285,7 @@ void *srthub_thumbnail_thread(void *context)
     const AVCodec *decode_codec = NULL;
     AVPacket *decode_pkt = NULL;
     AVFrame *decode_av_frame = NULL;
+    AVCodecParserContext *decode_parser = NULL;
     enum AVPixelFormat source_format = AV_PIX_FMT_YUV420P;
     enum AVPixelFormat output_format = AV_PIX_FMT_YUV420P;
     struct SwsContext *decode_converter = NULL;
@@ -2251,11 +2299,17 @@ void *srthub_thumbnail_thread(void *context)
     char statsfilename[MAX_STRING_SIZE];
     char corruptiontimedate[MAX_STRING_SIZE];
     uint32_t decode_errors = 0;
+    int rp = 0;
+    int nt = 0;
+    struct timeval thumbnail_timer_stop;
+    struct timeval thumbnail_timer_start;
+    int64_t thumbnail_timer_delta = 0;
 
     srtcore = (srthub_core_struct*)context;
 
     sprintf(statsfilename,"/opt/srthub/status/thumbnail_%d.json", srtcore->session_identifier);
 
+    gettimeofday(&thumbnail_timer_start, NULL);
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->thumbnailqueue, &srtcore->thumbnail_thread_running);
@@ -2279,6 +2333,9 @@ void *srthub_thumbnail_thread(void *context)
             int stream_index = msg->stream_index;
             int corruption_count = msg->source_discontinuity;
             int ret;
+            int sync_frame = 0;
+            uint8_t *data = buffer;
+            int data_size = buffer_size;
 
             corruption_count = corruption_count - 1;  // hack for the startup condition that needs to be fixed (since we always report one at startup)
             if (corruption_count < 0) {
@@ -2312,12 +2369,22 @@ void *srthub_thumbnail_thread(void *context)
                 }
                 if (decode_codec) {
                     decode_avctx = avcodec_alloc_context3(decode_codec);
+                    if (!decode_parser) {
+                        decode_parser = av_parser_init(decode_codec->id);
+                    }
                     avcodec_open2(decode_avctx, decode_codec, NULL);
-                    decode_av_frame = av_frame_alloc();
-                    decode_pkt = av_packet_alloc();
+                    if (!decode_av_frame) {
+                        decode_av_frame = av_frame_alloc();
+                    }
+                    if (!decode_pkt) {
+                        decode_pkt = av_packet_alloc();
+                    }
                     video_decoder_ready = 1;
                 }
             }
+
+            //fprintf(stderr,"initializing video, decoder_ready=%d\n", video_decoder_ready);
+
             if (!video_decoder_ready) {
                 memory_return(srtcore->videopool, buffer);
                 memory_return(srtcore->msgpool, msg);
@@ -2343,124 +2410,256 @@ void *srthub_thumbnail_thread(void *context)
                 continue;
             }
 
-            decode_pkt->size = buffer_size;
-            decode_pkt->data = buffer;
-            decode_pkt->pts = 0;
-            decode_pkt->dts = 0;
-
-            ret = avcodec_send_packet(decode_avctx, decode_pkt);
-
-            while (ret >= 0) {
-                int is_frame_interlaced;
-                int is_frame_tff;
-                int frame_height;
-                int frame_height2;
-                int frame_width;
-                int frame_width2;
-                int row;
-                AVFrame *jpeg_frame;
-
-                ret = avcodec_receive_frame(decode_avctx, decode_av_frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                    break;
-                }
-                if (ret < 0) {
-                    break;
-                }
-
-                decoded_frame_count++;
-
-                is_frame_interlaced = decode_av_frame->interlaced_frame;
-                is_frame_tff = decode_av_frame->top_field_first;
-                source_format = decode_av_frame->format;
-                frame_height = decode_avctx->height;
-                frame_width = decode_avctx->width;
-
-                source_data[0] = decode_av_frame->data[0];
-                source_data[1] = decode_av_frame->data[1];
-                source_data[2] = decode_av_frame->data[2];
-                source_data[3] = decode_av_frame->data[3];
-                source_stride[0] = decode_av_frame->linesize[0];
-                source_stride[1] = decode_av_frame->linesize[1];
-                source_stride[2] = decode_av_frame->linesize[2];
-                source_stride[3] = decode_av_frame->linesize[3];
-
-                if (!decode_converter) {
-                    decode_converter = sws_getContext(frame_width, frame_height, source_format,
-                                                      THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format,
-                                                      SWS_BICUBIC, NULL, NULL, NULL);
-                    av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
-                }
-
-                {
-                    char codec[MAX_STRING_SIZE];
-                    if (buffer_type == STREAM_TYPE_H264) {
-                        sprintf(codec,"h264");
-                    } else if (buffer_type == STREAM_TYPE_MPEG2) {
-                        sprintf(codec,"mpeg2");
-                    } else if (buffer_type == STREAM_TYPE_HEVC) {
-                        sprintf(codec,"hevc");
-                    } else {
-                        sprintf(codec,"unknown");
+            rp = 0;
+            if (buffer_type == STREAM_TYPE_MPEG2) {
+                while (rp + 4 < data_size) {
+                    if (data[rp+0] == 0 &&
+                        data[rp+1] == 0 &&
+                        data[rp+2] == 1 &&
+                        data[rp+3] == 0xb3) {
+                        sync_frame = 1;
+                        break;
                     }
-                    FILE *statsfile = fopen(statsfilename,"wb");
-                    if (statsfile) {
-                        fprintf(statsfile,"{\n");
-                        fprintf(statsfile,"    \"width\":%d,\n", frame_width);
-                        fprintf(statsfile,"    \"height\":%d,\n", frame_height);
-                        fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
-                        fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
-                        fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
-                        fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
-                        fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
-                        fprintf(statsfile,"    \"last-source-error\":\"%s\",\n", corruptiontimedate);
-                        fprintf(statsfile,"    \"decode-errors\":0\n");
-                        fprintf(statsfile,"}\n");
-                        fclose(statsfile);
-                    }
-
-                    sws_scale(decode_converter,
-                              (const uint8_t * const*)source_data, source_stride, 0,
-                              frame_height, output_data, output_stride);
-
-                    jpeg_frame = av_frame_alloc();
-                    jpeg_frame->data[0] = output_data[0];
-                    jpeg_frame->data[1] = output_data[1];
-                    jpeg_frame->data[2] = output_data[2];
-                    jpeg_frame->data[3] = output_data[3];
-                    jpeg_frame->linesize[0] = output_stride[0];
-                    jpeg_frame->linesize[1] = output_stride[1];
-                    jpeg_frame->linesize[2] = output_stride[2];
-                    jpeg_frame->linesize[3] = output_stride[3];
-                    jpeg_frame->pts = AV_NOPTS_VALUE;
-                    jpeg_frame->pkt_dts = AV_NOPTS_VALUE;
-                    jpeg_frame->pkt_duration = 0;
-                    jpeg_frame->pkt_pos = -1;
-                    jpeg_frame->pkt_size = -1;
-                    jpeg_frame->key_frame = -1;
-                    jpeg_frame->sample_aspect_ratio = (AVRational){1,1};
-                    jpeg_frame->format = 0;
-                    jpeg_frame->extended_data = NULL;
-                    jpeg_frame->color_primaries = AVCOL_PRI_BT709;
-                    jpeg_frame->color_trc = AVCOL_TRC_BT709;
-                    jpeg_frame->colorspace = AVCOL_SPC_BT709;
-                    jpeg_frame->color_range = AVCOL_RANGE_JPEG;
-                    jpeg_frame->chroma_location = AVCHROMA_LOC_UNSPECIFIED;
-                    jpeg_frame->flags = 0;
-                    jpeg_frame->channels = 0;
-                    jpeg_frame->channel_layout = 0;
-                    jpeg_frame->width = THUMBNAIL_WIDTH;
-                    jpeg_frame->height = THUMBNAIL_HEIGHT;
-                    jpeg_frame->interlaced_frame = 0;
-                    jpeg_frame->top_field_first = 0;
-
-                    save_frame_as_jpeg(srtcore, jpeg_frame);
-
-                    av_frame_free(&jpeg_frame);
+                    rp++;
                 }
             }
-            memory_return(srtcore->videopool, buffer);
-            memory_return(srtcore->msgpool, msg);
+            if (buffer_type == STREAM_TYPE_H264) {
+                int have_sps = 0;
+                int have_pps = 0;
+                while (rp + 3 < data_size) {
+                    if (data[rp] == 0 && data[rp+1] == 0 && data[rp+2] == 1) {
+                        size_t nal = rp+3;
+                        int nt = (data[nal] & 0x1f);
+                        switch (nt) {
+                        case 7: have_sps = 1; break;       // SPS
+                        case 8: have_pps = 1; break;       // PPS
+                        case 5:                            // IDR
+                            if (have_sps && have_pps)      // only decodable with param sets
+                                sync_frame = 1;
+                            break;
+                        case 6:                                // SEI: recovery point?
+                            if (have_sps && have_pps &&
+                                h264_has_recovery_point(data + nal, data_size - nal))
+                                sync_frame = 1;
+                            break;
+                        case 1:                                // non-IDR slice: I-slice?
+                            if (have_sps && have_pps &&
+                                (h264_slice_type(data + nal, data_size - nal) % 5) == 2)
+                                sync_frame = 1;                // open-GOP entry
+                            break;
+                        }
+                        if (sync_frame) break;
+                        rp = nal + 1;
+                    } else {
+                        rp++;
+                    }
+                }
+            }
+            /*if (buffer_type == STREAM_TYPE_H264) {
+                while (rp + 3 < data_size) {
+                    if (data[rp+0] == 0 &&
+                        data[rp+1] == 0 &&
+                        data[rp+2] == 1) {
+                        nt = (data[rp+3] & 0x1f);
+                        if (nt == 7 || nt == 8) {  // nt == 5
+                            sync_frame = 1;
+                            break;
+                        }
+                    }
+                    rp++;
+                }
+            }*/
+            if (buffer_type == STREAM_TYPE_HEVC) {
+                while (rp + 4 < data_size) {
+                    if (data[rp+0] == 0 &&
+                        data[rp+1] == 0 &&
+                        data[rp+2] == 1) {
+                        nt = (data[rp+3] & 0x7f);
+                        nt = nt >> 1;
+                        if (nt == 34 || nt == 33 || nt == 32) {
+                            sync_frame = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            gettimeofday(&thumbnail_timer_stop, NULL);
+            thumbnail_timer_delta = (int64_t)get_time_difference(&thumbnail_timer_stop, &thumbnail_timer_start) / 1000;
+            //if (sync_frame) {
+            //    fprintf(stderr,"thumbnail_timer_delta=%ld, data_size=%d\n", thumbnail_timer_delta, data_size);
+            //} else {
+            //    fprintf(stderr,"thumbnail_timer_delta=%ld, no sync frame\n", thumbnail_timer_delta);
+            //}
+            if (sync_frame && thumbnail_timer_delta >= 1000) {
+                while (data_size > 0) {
+                    ret = av_parser_parse2(decode_parser, decode_avctx, &decode_pkt->data, &decode_pkt->size,
+                                           data, data_size, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+                    if (ret < 0) {
+                        memory_return(srtcore->videopool, buffer);
+                        memory_return(srtcore->msgpool, msg);
+                        buffer = NULL;
+                        buffer_size = 0;
+                        msg = NULL;
+                        data_size = 0;
+                        break;
+                    }
+
+                    data += ret;
+                    data_size -= ret;
+
+                    if (decode_pkt->size > 0) {
+                        int dret;
+                        dret = avcodec_send_packet(decode_avctx, decode_pkt);
+                        if (dret < 0) {
+                            memory_return(srtcore->videopool, buffer);
+                            memory_return(srtcore->msgpool, msg);
+                            buffer = NULL;
+                            buffer_size = 0;
+                            msg = NULL;
+                            data_size = 0;
+                            break;
+                        }
+
+                        while (dret >= 0) {
+                            int is_frame_interlaced;
+                            int is_frame_tff;
+                            int frame_height;
+                            int frame_height2;
+                            int frame_width;
+                            int frame_width2;
+                            int row;
+                            AVFrame *jpeg_frame;
+
+                            dret = avcodec_receive_frame(decode_avctx, decode_av_frame);
+                            if (dret == AVERROR(EAGAIN) || dret == AVERROR_EOF) {
+                                break;
+                            }
+                            if (dret < 0) {
+                                memory_return(srtcore->videopool, buffer);
+                                memory_return(srtcore->msgpool, msg);
+                                buffer = NULL;
+                                buffer_size = 0;
+                                msg = NULL;
+                                data_size = 0;
+                                break;
+                            }
+
+                            decoded_frame_count++;
+
+                            is_frame_interlaced = decode_av_frame->interlaced_frame;
+                            is_frame_tff = decode_av_frame->top_field_first;
+                            source_format = decode_av_frame->format;
+                            frame_height = decode_avctx->height;
+                            frame_width = decode_avctx->width;
+
+                            source_data[0] = decode_av_frame->data[0];
+                            source_data[1] = decode_av_frame->data[1];
+                            source_data[2] = decode_av_frame->data[2];
+                            source_data[3] = decode_av_frame->data[3];
+                            source_stride[0] = decode_av_frame->linesize[0];
+                            source_stride[1] = decode_av_frame->linesize[1];
+                            source_stride[2] = decode_av_frame->linesize[2];
+                            source_stride[3] = decode_av_frame->linesize[3];
+
+                            if (!decode_converter) {
+                                decode_converter = sws_getContext(frame_width, frame_height, source_format,
+                                                                  THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format,
+                                                                  SWS_BICUBIC, NULL, NULL, NULL);
+                                av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
+                            }
+
+                            {
+                                char codec[MAX_STRING_SIZE];
+                                if (buffer_type == STREAM_TYPE_H264) {
+                                    sprintf(codec,"h264");
+                                } else if (buffer_type == STREAM_TYPE_MPEG2) {
+                                    sprintf(codec,"mpeg2");
+                                } else if (buffer_type == STREAM_TYPE_HEVC) {
+                                    sprintf(codec,"hevc");
+                                } else if (buffer_type == STREAM_TYPE_HEVC) {
+                                    sprintf(codec,"av1");
+                                } else {
+                                    sprintf(codec,"unknown");
+                                }
+                                FILE *statsfile = fopen(statsfilename,"wb");
+                                if (statsfile) {
+                                    fprintf(statsfile,"{\n");
+                                    fprintf(statsfile,"    \"width\":%d,\n", frame_width);
+                                    fprintf(statsfile,"    \"height\":%d,\n", frame_height);
+                                    fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
+                                    fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
+                                    fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
+                                    fprintf(statsfile,"    \"current-stream\":%d,\n", stream_index+1);
+                                    fprintf(statsfile,"    \"transport-source-errors\":%d,\n", corruption_count);
+                                    fprintf(statsfile,"    \"last-source-error\":\"%s\",\n", corruptiontimedate);
+                                    fprintf(statsfile,"    \"decode-errors\":0\n");
+                                    fprintf(statsfile,"}\n");
+                                    fclose(statsfile);
+                                }
+
+                                sws_scale(decode_converter,
+                                          (const uint8_t * const*)source_data, source_stride, 0,
+                                          frame_height, output_data, output_stride);
+
+                                jpeg_frame = av_frame_alloc();
+                                if (jpeg_frame) {
+                                    gettimeofday(&thumbnail_timer_start, NULL);
+
+                                    jpeg_frame->data[0] = output_data[0];
+                                    jpeg_frame->data[1] = output_data[1];
+                                    jpeg_frame->data[2] = output_data[2];
+                                    jpeg_frame->data[3] = output_data[3];
+                                    jpeg_frame->linesize[0] = output_stride[0];
+                                    jpeg_frame->linesize[1] = output_stride[1];
+                                    jpeg_frame->linesize[2] = output_stride[2];
+                                    jpeg_frame->linesize[3] = output_stride[3];
+                                    jpeg_frame->pts = AV_NOPTS_VALUE;
+                                    jpeg_frame->pkt_dts = AV_NOPTS_VALUE;
+                                    jpeg_frame->pkt_duration = 0;
+                                    jpeg_frame->pkt_pos = -1;
+                                    jpeg_frame->pkt_size = -1;
+                                    jpeg_frame->key_frame = -1;
+                                    jpeg_frame->sample_aspect_ratio = (AVRational){1,1};
+                                    jpeg_frame->format = 0;
+                                    jpeg_frame->extended_data = NULL;
+                                    jpeg_frame->color_primaries = AVCOL_PRI_BT709;
+                                    jpeg_frame->color_trc = AVCOL_TRC_BT709;
+                                    jpeg_frame->colorspace = AVCOL_SPC_BT709;
+                                    jpeg_frame->color_range = AVCOL_RANGE_JPEG;
+                                    jpeg_frame->chroma_location = AVCHROMA_LOC_UNSPECIFIED;
+                                    jpeg_frame->flags = 0;
+                                    jpeg_frame->channels = 0;
+                                    jpeg_frame->channel_layout = 0;
+                                    jpeg_frame->width = THUMBNAIL_WIDTH;
+                                    jpeg_frame->height = THUMBNAIL_HEIGHT;
+                                    jpeg_frame->interlaced_frame = 0;
+                                    jpeg_frame->top_field_first = 0;
+
+                                    fprintf(stderr,"saving jpeg frame\n");
+                                    save_frame_as_jpeg(srtcore, jpeg_frame);
+
+                                    av_frame_free(&jpeg_frame);
+                                    //avcodec_close(decode_avctx);
+                                    //avcodec_free_context(&decode_avctx);
+                                    //av_parser_close(decode_parser);
+                                    //decode_parser = NULL;
+                                    //decode_avctx = NULL;
+                                    //video_decoder_ready = 0;
+                                    goto finish_parsing;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+finish_parsing:
+            if (buffer) {
+                memory_return(srtcore->videopool, buffer);
+            }
+            if (msg) {
+                memory_return(srtcore->msgpool, msg);
+            }
             msg = NULL;
             buffer = NULL;
         }
@@ -2472,6 +2671,7 @@ cleanup_thumbnail_thread:
     av_packet_free(&decode_pkt);
     avcodec_close(decode_avctx);
     avcodec_free_context(&decode_avctx);
+    av_parser_close(decode_parser);
     if (decode_converter) {
         sws_freeContext(decode_converter);
         av_freep(&output_data[0]);
