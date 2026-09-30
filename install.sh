@@ -21,6 +21,15 @@ CURL_REPO="https://github.com/cannonbeach/curl.git"
 SRT_REPO="https://github.com/Haivision/srt.git"
 FFMPEG_REPO="https://git.ffmpeg.org/ffmpeg.git"
 
+# Kernel command-line parameters this appliance requires. Add to this list to
+# have install.sh manage another one; each is added to /etc/default/grub only if
+# it is not already on the command line. A parameter whose key is already present
+# with a different value is corrected rather than duplicated.
+GRUB_PARAMS=(
+    "apparmor=0"                            # AppArmor off at the kernel level
+    "cpufreq.default_governor=performance"  # no on-demand scaling under stream load
+)
+
 APP_DIR="/var/app"
 DATA_DIR="/opt/srthub"
 DOCKER_IMAGE="dockersrthub"
@@ -237,16 +246,19 @@ verify_install() {
         check "apparmor.service disabled"      bash -c '! systemctl is-enabled apparmor.service 2>/dev/null | grep -q "^enabled$"'
         # Check the generated boot config, not /etc/default/grub: a drop-in in
         # /etc/default/grub.d can override that file, so only the generated
-        # config shows what the kernel will actually be handed.
-        check "apparmor=0 in /boot/grub/grub.cfg" bash -c "$SUDO grep -q 'apparmor=0' /boot/grub/grub.cfg"
-
-        # Whether it is in force is a separate question from whether it is
-        # configured: the kernel parameter only applies after a reboot.
-        if grep -qE '(^| )apparmor=0( |$)' /proc/cmdline 2>/dev/null; then
-            printf '  %s[ ok ]%s %s\n' "$C_GREEN" "$C_RESET" "apparmor=0 active on the running kernel"
-        elif $SUDO grep -q 'apparmor=0' /boot/grub/grub.cfg 2>/dev/null; then
-            printf '  %s[pend]%s %s\n' "$C_YELLOW" "$C_RESET" "apparmor=0 in the boot config but NOT yet active - reboot required"
-        fi
+        # config shows what the kernel will actually be handed. Whether a
+        # parameter is in force is a separate question from whether it is
+        # configured, so both are reported.
+        for gp in "${GRUB_PARAMS[@]}"; do
+            if grep -qE "(^| )${gp//./\\.}( |\$)" /proc/cmdline 2>/dev/null; then
+                printf '  %s[ ok ]%s %s\n' "$C_GREEN" "$C_RESET" "${gp} active on the running kernel"
+            elif $SUDO grep -q -- "$gp" /boot/grub/grub.cfg 2>/dev/null; then
+                printf '  %s[pend]%s %s\n' "$C_YELLOW" "$C_RESET" "${gp} in the boot config, NOT yet active - reboot required"
+            else
+                printf '  %s[fail]%s %s\n' "$C_RED" "$C_RESET" "${gp} missing from /boot/grub/grub.cfg"
+                failures=$((failures + 1))
+            fi
+        done
     fi
 
     # Give the service a moment on a cold start before probing the port.
@@ -442,15 +454,17 @@ else
         log "the AppArmor service is not installed on this system"
     fi
 
-    # --- AppArmor: kernel command line --------------------------------------
-    # Managed as a delimited block appended to /etc/default/grub.
+    # --- kernel command line ------------------------------------------------
+    # Managed as a delimited block appended to /etc/default/grub, driven by the
+    # GRUB_PARAMS list at the top of this script. Nothing is written if every
+    # parameter is already on the command line.
     #
     # Note the ordering trap: grub-mkconfig sources /etc/default/grub FIRST and
     # then /etc/default/grub.d/*.cfg, so a drop-in overrides this file. Ubuntu
     # cloud images ship /etc/default/grub.d/50-cloudimg-settings.cfg, which
-    # reassigns GRUB_CMDLINE_LINUX_DEFAULT and would silently discard apparmor=0.
-    # So after writing the block we recompute the value the way grub-mkconfig
-    # does, and if a drop-in wins we add our own higher-numbered drop-in.
+    # reassigns GRUB_CMDLINE_LINUX_DEFAULT and would silently discard our
+    # parameters. So after writing the block we recompute the value the way
+    # grub-mkconfig does, and if a drop-in wins we add our own, later, drop-in.
     GRUB_FILE="/etc/default/grub"
     GRUB_D_DIR="/etc/default/grub.d"
     GRUB_D_FILE="${GRUB_D_DIR}/99-opensrthub.cfg"
@@ -458,18 +472,42 @@ else
     GRUB_BEGIN="# BEGIN opensrthub (managed by install.sh - do not edit this block)"
     GRUB_END="# END opensrthub"
 
-    # Strip any apparmor= token from a command line and append apparmor=0, so an
-    # existing apparmor=1 is replaced rather than duplicated.
-    grub_with_apparmor_off() {
-        local cleaned
-        cleaned="$(printf '%s' "$1" \
-            | sed -E 's/(^| )apparmor=[^ ]*/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
-        printf '%s' "${cleaned:+${cleaned} }apparmor=0"
+    # Set one "key=value" on a command line, replacing any existing token with
+    # the same key so a wrong value is corrected instead of duplicated.
+    grub_set_param() {
+        local cur="$1" param="$2" key esc
+        key="${param%%=*}"
+        # Escape regex metacharacters in the key (cpufreq.default_governor has dots).
+        esc="$(printf '%s' "$key" | sed -E 's/[][^$.*+?(){}|\\/]/\\&/g')"
+        cur="$(printf '%s' "$cur" \
+            | sed -E "s/(^| )${esc}=[^ ]*/ /g; s/[[:space:]]+/ /g; s/^ //; s/ \$//")"
+        printf '%s' "${cur:+${cur} }${param}"
+    }
+
+    # Apply every managed parameter to a command line.
+    grub_apply_params() {
+        local out="$1" p
+        for p in "${GRUB_PARAMS[@]}"; do
+            out="$(grub_set_param "$out" "$p")"
+        done
+        printf '%s' "$out"
+    }
+
+    # Which managed parameters are absent from a command line (space separated).
+    grub_missing_params() {
+        local cmdline=" $1 " p out=""
+        for p in "${GRUB_PARAMS[@]}"; do
+            case "$cmdline" in
+                *" $p "*) ;;
+                *) out="${out:+$out }$p" ;;
+            esac
+        done
+        printf '%s' "$out"
     }
 
     # Replicate grub-mkconfig's own sourcing order and report the value that
-    # actually reaches the kernel. $1 is the grub file to start from; pass a
-    # second argument to skip our own drop-in.
+    # actually reaches the kernel. $1 is the grub file; pass a non-empty $2 to
+    # exclude our own drop-in from the calculation.
     grub_effective_cmdline() {
         (
             set +eu
@@ -484,126 +522,140 @@ else
     }
 
     if [ ! -f "$GRUB_FILE" ]; then
-        warn "${GRUB_FILE} does not exist; skipping the apparmor=0 kernel parameter."
+        warn "${GRUB_FILE} does not exist; skipping the kernel parameters:"
+        warn "  ${GRUB_PARAMS[*]}"
         warn "this is normal on a system that does not boot via GRUB."
-    elif case " $(grub_effective_cmdline "$GRUB_FILE") " in *" apparmor=0 "*) true ;; *) false ;; esac; then
-        # Already on the command line, whether we put it there on an earlier run
-        # or the operator did. Leave the file alone and skip update-grub.
-        skip "apparmor=0 is already on the kernel command line"
     else
-        if [ ! -f "${GRUB_FILE}.opensrthub.bak" ]; then
-            log "backing up ${GRUB_FILE} to ${GRUB_FILE}.opensrthub.bak"
-            $SUDO cp "$GRUB_FILE" "${GRUB_FILE}.opensrthub.bak"
-        fi
+        GRUB_LIVE="$(grub_effective_cmdline "$GRUB_FILE")"
+        GRUB_MISSING="$(grub_missing_params "$GRUB_LIVE")"
 
-        GRUB_TMP="$(mktemp)"
-        awk -v b="$GRUB_BEGIN" -v e="$GRUB_END" '
-            $0 == b { skip = 1; next }
-            $0 == e { skip = 0; next }
-            skip == 0 { print }
-        ' "$GRUB_FILE" > "$GRUB_TMP"
-
-        # Base value from this file alone, with our own block already removed so
-        # repeated runs never compound. Sourcing is how grub reads it too.
-        GRUB_BASE="$(
-            set +eu
-            # shellcheck disable=SC1090
-            . "$GRUB_TMP" >/dev/null 2>&1
-            printf '%s' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
-        )"
-        GRUB_NEW="$(grub_with_apparmor_off "$GRUB_BASE")"
-
-        if [ -n "$GRUB_BASE" ]; then
-            log "existing kernel parameters in ${GRUB_FILE}: ${GRUB_BASE}"
+        if [ -z "$GRUB_MISSING" ]; then
+            # Every managed parameter is already on the command line, whether an
+            # earlier run put it there or the operator did. Touch nothing.
+            skip "kernel parameters already set (${GRUB_PARAMS[*]})"
         else
-            log "no existing kernel parameters in ${GRUB_FILE}"
-        fi
-        log "setting GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_NEW}\""
+            log "kernel parameters to add: ${GRUB_MISSING}"
 
-        {
-            printf '%s\n' "$GRUB_BEGIN"
-            printf '# AppArmor is disabled at the kernel level for this appliance.\n'
-            printf '# Docker reads /sys/module/apparmor/parameters/enabled and skips profile\n'
-            printf '# application when AppArmor is unavailable, so containers still start.\n'
-            printf '#\n'
-            printf '# This assignment intentionally overrides any GRUB_CMDLINE_LINUX_DEFAULT\n'
-            printf '# set earlier in this file: grub-mkconfig sources it as shell, so the last\n'
-            printf '# assignment wins. Any parameters that line had are carried over above.\n'
-            printf '# To revert, delete this whole block and run: sudo update-grub\n'
-            printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$GRUB_NEW"
-            printf '%s\n' "$GRUB_END"
-        } >> "$GRUB_TMP"
+            if [ ! -f "${GRUB_FILE}.opensrthub.bak" ]; then
+                log "backing up ${GRUB_FILE} to ${GRUB_FILE}.opensrthub.bak"
+                $SUDO cp "$GRUB_FILE" "${GRUB_FILE}.opensrthub.bak"
+            fi
 
-        $SUDO cp "$GRUB_TMP" "$GRUB_FILE"
-        $SUDO chmod 644 "$GRUB_FILE"
-        rm -f "$GRUB_TMP"
+            GRUB_TMP="$(mktemp)"
+            awk -v b="$GRUB_BEGIN" -v e="$GRUB_END" '
+                $0 == b { skip = 1; next }
+                $0 == e { skip = 0; next }
+                skip == 0 { print }
+            ' "$GRUB_FILE" > "$GRUB_TMP"
 
-        # Now check whether a drop-in in grub.d overrides what we just wrote.
-        # Remove any stale copy of ours first so the test reflects other files.
-        if [ -f "$GRUB_D_FILE" ]; then
-            $SUDO rm -f "$GRUB_D_FILE"
-        fi
-        GRUB_EFFECTIVE="$(grub_effective_cmdline "$GRUB_FILE")"
-        case " $GRUB_EFFECTIVE " in
-            *" apparmor=0 "*)
+            # Base value from this file alone with our block already removed, so
+            # repeated runs never compound. Sourcing is how grub reads it too.
+            GRUB_BASE="$(
+                set +eu
+                # shellcheck disable=SC1090
+                . "$GRUB_TMP" >/dev/null 2>&1
+                printf '%s' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+            )"
+            GRUB_NEW="$(grub_apply_params "$GRUB_BASE")"
+
+            if [ -n "$GRUB_BASE" ]; then
+                log "existing parameters in ${GRUB_FILE}: ${GRUB_BASE}"
+            else
+                log "no existing parameters in ${GRUB_FILE}"
+            fi
+            log "setting GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_NEW}\""
+
+            {
+                printf '%s\n' "$GRUB_BEGIN"
+                printf '# Kernel parameters required by opensrthub:\n'
+                for _p in "${GRUB_PARAMS[@]}"; do
+                    printf '#   %s\n' "$_p"
+                done
+                printf '#\n'
+                printf '# This assignment intentionally overrides any GRUB_CMDLINE_LINUX_DEFAULT\n'
+                printf '# set earlier in this file: grub-mkconfig sources it as shell, so the last\n'
+                printf '# assignment wins. Any parameters that line had are carried over above.\n'
+                printf '# To revert, delete this whole block and run: sudo update-grub\n'
+                printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$GRUB_NEW"
+                printf '%s\n' "$GRUB_END"
+            } >> "$GRUB_TMP"
+
+            $SUDO cp "$GRUB_TMP" "$GRUB_FILE"
+            $SUDO chmod 644 "$GRUB_FILE"
+            rm -f "$GRUB_TMP"
+
+            # Does a drop-in in grub.d override what we just wrote? Remove any
+            # stale copy of ours first so the test reflects the other files.
+            if [ -f "$GRUB_D_FILE" ]; then
+                $SUDO rm -f "$GRUB_D_FILE"
+            fi
+            GRUB_EFFECTIVE="$(grub_effective_cmdline "$GRUB_FILE")"
+            GRUB_STILL_MISSING="$(grub_missing_params "$GRUB_EFFECTIVE")"
+            if [ -z "$GRUB_STILL_MISSING" ]; then
                 log "no drop-in in ${GRUB_D_DIR} overrides it"
-                ;;
-            *)
+            else
                 warn "a drop-in in ${GRUB_D_DIR} reassigns GRUB_CMDLINE_LINUX_DEFAULT"
-                warn "and would discard apparmor=0 (effective value: \"${GRUB_EFFECTIVE}\")."
-                GRUB_D_NEW="$(grub_with_apparmor_off "$GRUB_EFFECTIVE")"
+                warn "and would discard: ${GRUB_STILL_MISSING}"
+                warn "(its effective value: \"${GRUB_EFFECTIVE}\")"
+                GRUB_D_NEW="$(grub_apply_params "$GRUB_EFFECTIVE")"
                 log "adding ${GRUB_D_FILE} to win the ordering: \"${GRUB_D_NEW}\""
                 $SUDO mkdir -p "$GRUB_D_DIR"
                 $SUDO tee "$GRUB_D_FILE" >/dev/null <<GRUBD
 # Managed by opensrthub install.sh - do not edit.
 #
 # grub-mkconfig sources /etc/default/grub first and then this directory in
-# sorted order, so a lower-numbered drop-in here was overriding the apparmor=0
-# set in /etc/default/grub. This file sorts last and restores it, carrying over
-# the parameters that drop-in set.
+# sorted order, so a lower-numbered drop-in here was overriding the parameters
+# set in /etc/default/grub. This file sorts last and restores them, carrying
+# over the parameters that drop-in set.
 #
 # To revert, delete this file and run: sudo update-grub
 GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_D_NEW}"
 GRUBD
-                ;;
-        esac
-
-        # Regenerate grub.cfg, or the parameter never reaches the kernel.
-        GRUB_REGENERATED=0
-        if command -v update-grub >/dev/null 2>&1; then
-            log "regenerating the boot configuration (update-grub)"
-            if $SUDO update-grub >/dev/null 2>&1; then
-                GRUB_REGENERATED=1
-            else
-                warn "update-grub failed. ${GRUB_FILE} was written, but the boot"
-                warn "configuration was NOT regenerated, so apparmor=0 will not take"
-                warn "effect. Run 'sudo update-grub' by hand to see the error."
             fi
-        elif command -v grub-mkconfig >/dev/null 2>&1; then
-            log "regenerating the boot configuration (grub-mkconfig)"
-            if $SUDO grub-mkconfig -o "$GRUB_CFG" >/dev/null 2>&1; then
-                GRUB_REGENERATED=1
-            else
-                warn "grub-mkconfig failed; apparmor=0 will not take effect."
-                warn "run 'sudo grub-mkconfig -o ${GRUB_CFG}' to see the error."
-            fi
-        else
-            warn "neither update-grub nor grub-mkconfig is available, so the boot"
-            warn "configuration cannot be regenerated and apparmor=0 will not take"
-            warn "effect. ${GRUB_FILE} has still been updated for a later rebuild."
-        fi
 
-        # Authoritative check: the generated boot config is what the kernel is
-        # actually handed, so confirm the parameter is in it rather than assuming
-        # our edits had the intended effect.
-        if [ "$GRUB_REGENERATED" -eq 1 ]; then
-            if [ -f "$GRUB_CFG" ] && $SUDO grep -q 'apparmor=0' "$GRUB_CFG" 2>/dev/null; then
-                ok "apparmor=0 confirmed present in ${GRUB_CFG}"
-                REBOOT_REQUIRED=1
+            # Regenerate grub.cfg, or the parameters never reach the kernel.
+            GRUB_REGENERATED=0
+            if command -v update-grub >/dev/null 2>&1; then
+                log "regenerating the boot configuration (update-grub)"
+                if $SUDO update-grub >/dev/null 2>&1; then
+                    GRUB_REGENERATED=1
+                else
+                    warn "update-grub failed. ${GRUB_FILE} was written, but the boot"
+                    warn "configuration was NOT regenerated, so the parameters will not"
+                    warn "take effect. Run 'sudo update-grub' by hand to see the error."
+                fi
+            elif command -v grub-mkconfig >/dev/null 2>&1; then
+                log "regenerating the boot configuration (grub-mkconfig)"
+                if $SUDO grub-mkconfig -o "$GRUB_CFG" >/dev/null 2>&1; then
+                    GRUB_REGENERATED=1
+                else
+                    warn "grub-mkconfig failed; the parameters will not take effect."
+                    warn "run 'sudo grub-mkconfig -o ${GRUB_CFG}' to see the error."
+                fi
             else
-                warn "${GRUB_CFG} was regenerated but does not contain apparmor=0."
-                warn "something else in the GRUB configuration is overriding it;"
-                warn "check ${GRUB_D_DIR}/ and /etc/grub.d/ before relying on this."
+                warn "neither update-grub nor grub-mkconfig is available, so the boot"
+                warn "configuration cannot be regenerated and the parameters will not"
+                warn "take effect. ${GRUB_FILE} has still been updated for a later rebuild."
+            fi
+
+            # Authoritative check: the generated boot config is what the kernel is
+            # actually handed, so confirm each parameter is in it rather than
+            # assuming our edits had the intended effect.
+            if [ "$GRUB_REGENERATED" -eq 1 ]; then
+                GRUB_CFG_BAD=""
+                for _p in "${GRUB_PARAMS[@]}"; do
+                    if ! $SUDO grep -q -- "$_p" "$GRUB_CFG" 2>/dev/null; then
+                        GRUB_CFG_BAD="${GRUB_CFG_BAD:+$GRUB_CFG_BAD }$_p"
+                    fi
+                done
+                if [ -z "$GRUB_CFG_BAD" ]; then
+                    ok "confirmed in ${GRUB_CFG}: ${GRUB_PARAMS[*]}"
+                    REBOOT_REQUIRED=1
+                else
+                    warn "${GRUB_CFG} was regenerated but is missing: ${GRUB_CFG_BAD}"
+                    warn "something else in the GRUB configuration is overriding them;"
+                    warn "check ${GRUB_D_DIR}/ and /etc/grub.d/ before relying on this."
+                fi
             fi
         fi
     fi
@@ -1009,11 +1061,14 @@ if verify_install; then VERIFY_STATUS=0; else VERIFY_STATUS=1; fi
 if [ "${REBOOT_REQUIRED:-0}" -eq 1 ]; then
     echo
     echo "${C_YELLOW}${C_BOLD}  A reboot is required.${C_RESET}"
-    echo "${C_YELLOW}  apparmor=0 was added to the kernel command line and only takes effect"
-    echo "  on the next boot. Everything else is already active.${C_RESET}"
+    echo "${C_YELLOW}  These kernel parameters were added and only take effect on the next boot:"
+    echo "    ${GRUB_PARAMS[*]}"
+    echo "  Everything else is already active.${C_RESET}"
     echo "${C_YELLOW}  After rebooting, confirm streams still start and check:${C_RESET}"
-    echo "${C_YELLOW}    cat /sys/module/apparmor/parameters/enabled   # expect N${C_RESET}"
-    echo "${C_YELLOW}    sudo docker run --rm hello-world              # expect success${C_RESET}"
+    echo "${C_YELLOW}    cat /proc/cmdline                                   # expect both parameters${C_RESET}"
+    echo "${C_YELLOW}    cat /sys/module/apparmor/parameters/enabled          # expect N${C_RESET}"
+    echo "${C_YELLOW}    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor  # expect performance${C_RESET}"
+    echo "${C_YELLOW}    sudo docker run --rm hello-world                     # expect success${C_RESET}"
 fi
 
 if [ "${GENERATED_PASSWORD:-0}" -eq 1 ]; then

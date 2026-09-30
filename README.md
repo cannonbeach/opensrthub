@@ -43,27 +43,37 @@ The installer treats the machine as a dedicated streaming appliance and adjusts
 the host accordingly. Pass `--skip-tuning` to skip all of it if you manage host
 configuration with Ansible, cloud-init or similar.
 
-- **AppArmor** - disabled at both levels: the service is stopped, disabled and
-  masked with its profiles unloaded, and `apparmor=0` is added to the kernel
-  command line via a managed block in `/etc/default/grub` (backed up once to
-  `/etc/default/grub.opensrthub.bak`), followed by `update-grub`. Your existing
-  kernel parameters are preserved, and an existing `apparmor=` value is replaced
-  rather than duplicated. **The kernel parameter needs a reboot to take effect.**
+- **Kernel parameters** - `apparmor=0` and
+  `cpufreq.default_governor=performance` are added to
+  `GRUB_CMDLINE_LINUX_DEFAULT` in `/etc/default/grub` (backed up once to
+  `/etc/default/grub.opensrthub.bak`), followed by `update-grub`. Each is added
+  only if it is not already on the command line - if both are already there,
+  nothing is written and `update-grub` is not run. Your existing parameters are
+  preserved, and a parameter already present with a different value (say
+  `cpufreq.default_governor=powersave`) is corrected rather than duplicated.
+  **These need a reboot to take effect.**
+
+  To manage another parameter, add it to the `GRUB_PARAMS` list at the top of
+  `install.sh`; everything else follows automatically.
 
   `grub-mkconfig` sources `/etc/default/grub` *before* `/etc/default/grub.d/*.cfg`,
   so a drop-in there overrides it - Ubuntu cloud images ship
   `50-cloudimg-settings.cfg`, which reassigns `GRUB_CMDLINE_LINUX_DEFAULT` and
-  would otherwise silently discard `apparmor=0`. The installer detects this and
+  would otherwise silently discard the parameters. The installer detects this and
   adds `/etc/default/grub.d/99-opensrthub.cfg` to win the ordering, carrying over
-  whatever parameters that drop-in set. It then confirms `apparmor=0` is actually
-  present in the generated `/boot/grub/grub.cfg` rather than assuming the edit
-  worked.
+  whatever that drop-in set. It then confirms each parameter is actually present
+  in the generated `/boot/grub/grub.cfg` rather than assuming the edit worked.
 
-  This is docker-safe: runc calls `apparmor.HostSupports()`, which reads
-  `/sys/module/apparmor/parameters/enabled`, and skips profile application
+- **AppArmor** - the service is also stopped, disabled and masked, and its
+  profiles unloaded, so it is off before the reboot too.
+
+  Disabling AppArmor is docker-safe: runc calls `apparmor.HostSupports()`, which
+  reads `/sys/module/apparmor/parameters/enabled`, and skips profile application
   entirely when AppArmor is unavailable. After rebooting, confirm with
-  `cat /sys/module/apparmor/parameters/enabled` (expect `N`) and check that
-  streams still start.
+  `cat /sys/module/apparmor/parameters/enabled` (expect `N`), check
+  `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor` (expect
+  `performance`), and check that streams still start.
+
 - **Unattended upgrades** - service masked and the apt periodic counters in
   `/etc/apt/apt.conf.d/20auto-upgrades` set to 0. An automatic upgrade that
   restarts docker or node would interrupt live streams.
