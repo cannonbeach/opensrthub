@@ -1,0 +1,27 @@
+# Build output
+*.o
+*.a
+srthub
+docker/srthub
+
+# Third-party sources cloned by install.sh
+/cbsrt/
+/cblibcurl/
+/cbffmpeg/
+
+# Docker artifacts
+*.tar
+
+# Node
+node_modules/
+/package.json
+/package-lock.json
+npm-debug.log*
+
+# Install logs
+opensrthub-install.log
+
+# Editor / backup files
+*~
+*.swp
+.DS_Store

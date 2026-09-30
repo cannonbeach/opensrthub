@@ -39,9 +39,12 @@ const { param, validationResult } = require('express-validator');
 const validator = require('validator');
 const helmet = require('helmet');
 
+// Resolved against __dirname rather than the working directory so the app can
+// be started from anywhere (systemd/pm2 set the cwd, but a manual "node
+// /var/app/server.js" from elsewhere used to fail here).
 var options = {
-    key: fs.readFileSync("cert/server.key"),
-    cert: fs.readFileSync("cert/server.crt")
+    key: fs.readFileSync(path.join(__dirname, 'cert', 'server.key')),
+    cert: fs.readFileSync(path.join(__dirname, 'cert', 'server.crt'))
 };
 
 const app = express();

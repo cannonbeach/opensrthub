@@ -1,0 +1,32 @@
+[Unit]
+Description=opensrthub - SRT hub/gateway web application
+Documentation=https://github.com/cannonbeach/opensrthub
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+# Never give up restarting, even if the service flaps during a docker restart.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The app shells out to "sudo docker run ..." to launch each stream, and reads
+# and writes /opt/srthub, so it runs as root.
+User=root
+Group=root
+
+# server.js resolves cert/server.key relative to its working directory, so this
+# must be set. Do not remove it.
+WorkingDirectory=/var/app
+ExecStart=/usr/bin/node /var/app/server.js
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opensrthub
+
+# Streams can open a lot of sockets at once.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

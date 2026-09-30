@@ -1,16 +1,25 @@
 {
-  "name": "app",
+  "name": "opensrthub",
   "version": "1.0.0",
-  "description": "user interface",
-  "main": "./public/client.js",
+  "private": true,
+  "description": "opensrthub - SRT hub/gateway web application",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
   },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "express": "^4.16.4"
+  "license": "GPL-2.0-or-later",
+  "engines": {
+    "node": ">=20"
   },
-  "devDependencies": {}
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "body-parser": "^2.2.0",
+    "express": "^5.1.0",
+    "express-session": "^1.19.0",
+    "express-validator": "^7.3.2",
+    "helmet": "^8.2.0",
+    "read-last-lines": "^1.8.0",
+    "url-exists": "^1.0.3",
+    "validator": "^13.15.35"
+  }
 }

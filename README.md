@@ -12,23 +12,74 @@ can view thumbnails, bitrates, codecs as well as information about signal loss. 
 
 <img width="1666" height="1035" alt="image" src="https://github.com/user-attachments/assets/bcdc2ea7-7c8c-460c-9fba-30beb078c805" />
 
-### Quickstart Setup Instructions (Ubuntu 24.04 Server Instructions):
+### Quickstart Setup Instructions (Ubuntu 24.04 Server)
 
 ```
-1. Clone the repository (git clone git@github.com:cannonbeach/opensrthub.git)
-2. Execute the setup script (sudo ./setupopensrthub.sh)
-3. Navigate your browser to port 8080
-   - If the web application does not come up, you may need to navigate in the terminal to the /var/app directory and run the following commands:
-   - ************************* PAY ATTENTION: YOU MUST BE IN THE /var/app DIRECTORY FOR THIS TO WORK *****************************
-   - username@server:/var/app:$ sudo pm2 start --name 'opensrthub' server.js --wait-ready
-   - username@server:/var/app:$ sudo pm2 save
-5. The default user login is username: admin, password: password
-   - If you want to change the username and login (or add more users) there is a json formatted text file named /opt/srthub/users.json where you can edit
-6. Select to add "New SRT Receiver" or "New SRT Server"
-7. Save your configuration
+git clone https://github.com/cannonbeach/opensrthub.git
+cd opensrthub
+./install.sh
 ```
 
-If you want to install on a different version of Ubuntu, you will need to update the Dockerfile in the Docker directory to be the same as the version of Ubuntu you are targeting.
+That's it. The installer asks once for a login password, then does everything
+else unattended: system packages, Node.js, the libsrt/libcurl/FFmpeg builds, the
+`srthub` binary, the `dockersrthub` container image, a TLS certificate, and the
+`opensrthub` service registered to start at boot. It finishes by checking its own
+work and printing the URL to open.
+
+Expect 15-30 minutes on first run, almost all of it compiling FFmpeg.
+
+Then browse to **https://your-server:8080** and log in as `admin` with the
+password you chose. Your browser will warn about the certificate because it is
+self-signed; replace `/var/app/cert/server.{key,crt}` with a real certificate to
+remove the warning.
+
+To add or change logins later, edit `/opt/srthub/users.json`.
+
+Next: select **New SRT Receiver** or **New SRT Server**, and save the configuration.
+
+#### Installer options
+
+The installer is idempotent - if a step fails, fix the cause and run it again,
+and everything already completed is skipped.
+
+```
+./install.sh --verify                    Check an existing installation
+./install.sh --skip-deps                 Rebuild after a git pull (no apt phase)
+./install.sh --skip-deps --skip-build    Reinstall the web app only
+./install.sh --service=pm2               Use pm2 instead of systemd
+./install.sh --service=none              Don't register a service at all
+./install.sh --admin-password=PW        Unattended install (no password prompt)
+./install.sh --help                      Full option list
+```
+
+A full log of every run is written to `opensrthub-install.log` in the repository.
+
+#### Managing the service
+
+```
+sudo systemctl status opensrthub      # is it running?
+sudo systemctl restart opensrthub     # restart it
+sudo journalctl -u opensrthub -f      # follow the logs
+```
+
+If you installed with `--service=pm2`, use `sudo pm2 status`,
+`sudo pm2 restart opensrthub` and `sudo pm2 logs opensrthub` instead.
+
+#### Installing on a different Ubuntu release
+
+No edits required. The installer detects the host release and builds the
+container image from a matching base image, which is what keeps the `srthub`
+binary loadable inside the container.
+
+#### After changing the code
+
+```
+./rebuildcontainer.sh
+```
+
+This rebuilds `srthub`, the container image and the web app, and restarts the
+service. Existing stream containers must be restarted from the UI to pick up the
+new binary.
 
 There are four modes of SRT supported in the current version, which essentialy consists of a combination of Listener and Caller bundled with UDP input/output.  The Rendezvous mode has not yet been added.
 
@@ -45,9 +96,32 @@ If something doesn't work or you need some assistance, please feel free to email
 
 Thank you!
 
-### Troubleshooting 
+### Troubleshooting
 
-You can also run the application command line (./srthub) as well as manually through the Docker image (more on this later).  If for some reason you are not able to start it through the web application, this would be the best place to start.
+Start with the installer's own checks - they cover the usual failure modes
+(missing container image, docker not running, service not enabled, port not
+answering) in one pass:
+
+```
+./install.sh --verify
+```
+
+If the web UI does not come up, check the service logs:
+
+```
+sudo systemctl status opensrthub
+sudo journalctl -u opensrthub -n 100 --no-pager
+```
+
+If the UI works but streams refuse to start, the `dockersrthub` container image
+is the thing to check - the web app launches every stream as a container:
+
+```
+sudo docker image inspect dockersrthub >/dev/null && echo "image present"
+./install.sh --skip-deps --skip-build      # rebuilds just the image and web app
+```
+
+You can also run the application from the command line (./srthub) as well as manually through the Docker image (more on this later).  If for some reason you are not able to start it through the web application, this would be the best place to start.
 
 If you want to run through the command line, you can run it as follows, but first you need to identify the configuration which is stored in /opt/srthub/configs.
 
