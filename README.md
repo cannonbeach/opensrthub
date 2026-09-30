@@ -17,7 +17,7 @@ can view thumbnails, bitrates, codecs as well as information about signal loss. 
 ```
 git clone https://github.com/cannonbeach/opensrthub.git
 cd opensrthub
-./install.sh
+./setup.sh
 ```
 
 That's it. The installer asks once for a login password, then does everything
@@ -54,7 +54,7 @@ configuration with Ansible, cloud-init or similar.
   **These need a reboot to take effect.**
 
   To manage another parameter, add it to the `GRUB_PARAMS` list at the top of
-  `install.sh`; everything else follows automatically.
+  `setup.sh`; everything else follows automatically.
 
   `grub-mkconfig` sources `/etc/default/grub` *before* `/etc/default/grub.d/*.cfg`,
   so a drop-in there overrides it - Ubuntu cloud images ship
@@ -122,20 +122,33 @@ does nothing until then. `--verify` reads the live kernel values rather than the
 config files, so it distinguishes "configured" from "actually in force" and marks
 the kernel parameter as `[pend]` until you have rebooted.
 
+#### Why the script is called setup.sh
+
+Not `install.sh`, deliberately. curl's `configure.ac` declares no
+`AC_CONFIG_AUX_DIR`, so autoconf searches for `install-sh`, `install.sh` or
+`shtool` in `.`, then `..`, then `../..` and uses the first directory it finds one
+in. An `install.sh` in the repository root is therefore picked up as the config aux
+directory by the libcurl build cloned beneath it: `libtoolize` writes `ltmain.sh`
+outside the curl tree and `automake` then fails with
+`required file './ltmain.sh' not found`.
+
+The build seeds its own `install-sh` to be immune to this regardless, but the
+script keeps a name that cannot trigger it. Don't rename it back.
+
 #### Installer options
 
 The installer is idempotent - if a step fails, fix the cause and run it again,
 and everything already completed is skipped.
 
 ```
-./install.sh --verify                    Check an existing installation
-./install.sh --skip-deps                 Rebuild after a git pull (no apt phase)
-./install.sh --skip-deps --skip-build    Reinstall the web app only
-./install.sh --skip-tuning               Leave host settings alone
-./install.sh --service=pm2               Use pm2 instead of systemd
-./install.sh --service=none              Don't register a service at all
-./install.sh --admin-password=PW        Unattended install (no password prompt)
-./install.sh --help                      Full option list
+./setup.sh --verify                    Check an existing installation
+./setup.sh --skip-deps                 Rebuild after a git pull (no apt phase)
+./setup.sh --skip-deps --skip-build    Reinstall the web app only
+./setup.sh --skip-tuning               Leave host settings alone
+./setup.sh --service=pm2               Use pm2 instead of systemd
+./setup.sh --service=none              Don't register a service at all
+./setup.sh --admin-password=PW        Unattended install (no password prompt)
+./setup.sh --help                      Full option list
 ```
 
 A full log of every run is written to `opensrthub-install.log` in the repository.
@@ -189,7 +202,7 @@ Start with the installer's own checks - they cover the usual failure modes
 answering) in one pass:
 
 ```
-./install.sh --verify
+./setup.sh --verify
 ```
 
 If the web UI does not come up, check the service logs:
@@ -204,7 +217,7 @@ is the thing to check - the web app launches every stream as a container:
 
 ```
 sudo docker image inspect dockersrthub >/dev/null && echo "image present"
-./install.sh --skip-deps --skip-build      # rebuilds just the image and web app
+./setup.sh --skip-deps --skip-build      # rebuilds just the image and web app
 ```
 
 You can also run the application from the command line (./srthub) as well as manually through the Docker image (more on this later).  If for some reason you are not able to start it through the web application, this would be the best place to start.

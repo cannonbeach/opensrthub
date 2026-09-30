@@ -6,8 +6,8 @@
 # single idempotent installer. Safe to re-run: every phase checks for the work it
 # would do and skips it if it is already done.
 #
-# Usage:  ./install.sh [options]
-# Run    ./install.sh --help    for the option list.
+# Usage:  ./setup.sh [options]
+# Run    ./setup.sh --help    for the option list.
 #
 set -Eeuo pipefail
 
@@ -22,7 +22,7 @@ SRT_REPO="https://github.com/Haivision/srt.git"
 FFMPEG_REPO="https://git.ffmpeg.org/ffmpeg.git"
 
 # Kernel command-line parameters this appliance requires. Add to this list to
-# have install.sh manage another one; each is added to /etc/default/grub only if
+# have setup.sh manage another one; each is added to /etc/default/grub only if
 # it is not already on the command line. A parameter whose key is already present
 # with a different value is corrected rather than duplicated.
 GRUB_PARAMS=(
@@ -57,7 +57,7 @@ usage() {
     cat <<EOF
 opensrthub installer
 
-Usage: ./install.sh [options]
+Usage: ./setup.sh [options]
 
 Options:
   --skip-deps           Skip the apt / Node.js / npm system package phase.
@@ -74,10 +74,10 @@ Options:
   -h, --help            Show this help.
 
 Examples:
-  ./install.sh                          Full install (first time).
-  ./install.sh --skip-deps              Rebuild + reinstall after a git pull.
-  ./install.sh --skip-deps --skip-build Reinstall the web app only.
-  ./install.sh --verify                 Check an existing installation.
+  ./setup.sh                          Full install (first time).
+  ./setup.sh --skip-deps              Rebuild + reinstall after a git pull.
+  ./setup.sh --skip-deps --skip-build Reinstall the web app only.
+  ./setup.sh --verify                 Check an existing installation.
 EOF
 }
 
@@ -319,7 +319,7 @@ fi
 phase "Preflight checks"
 
 [ -f "${REPO_DIR}/Makefile" ] && [ -d "${REPO_DIR}/source" ] \
-    || die "install.sh must be run from inside the opensrthub repository."
+    || die "setup.sh must be run from inside the opensrthub repository."
 
 if [ -r /etc/os-release ]; then
     # shellcheck disable=SC1091
@@ -508,7 +508,7 @@ else
     GRUB_D_DIR="/etc/default/grub.d"
     GRUB_D_FILE="${GRUB_D_DIR}/99-opensrthub.cfg"
     GRUB_CFG="/boot/grub/grub.cfg"
-    GRUB_BEGIN="# BEGIN opensrthub (managed by install.sh - do not edit this block)"
+    GRUB_BEGIN="# BEGIN opensrthub (managed by setup.sh - do not edit this block)"
     GRUB_END="# END opensrthub"
 
     # Set one "key=value" on a command line, replacing any existing token with
@@ -640,7 +640,7 @@ else
                 log "adding ${GRUB_D_FILE} to win the ordering: \"${GRUB_D_NEW}\""
                 $SUDO mkdir -p "$GRUB_D_DIR"
                 $SUDO tee "$GRUB_D_FILE" >/dev/null <<GRUBD
-# Managed by opensrthub install.sh - do not edit.
+# Managed by opensrthub setup.sh - do not edit.
 #
 # grub-mkconfig sources /etc/default/grub first and then this directory in
 # sorted order, so a lower-numbered drop-in here was overriding the parameters
@@ -706,7 +706,7 @@ GRUBD
     disable_unit unattended-upgrades.service
     log "disabling apt periodic update/upgrade counters"
     $SUDO tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'APTCONF'
-// Managed by opensrthub install.sh
+// Managed by opensrthub setup.sh
 // Background package activity is disabled: an unattended upgrade that restarts
 // docker or node would interrupt live streams. Apply updates deliberately.
 APT::Periodic::Update-Package-Lists "0";
@@ -747,7 +747,7 @@ APTCONF
     # instead of appending duplicates. On Ubuntu /etc/sysctl.d/99-sysctl.conf is
     # a symlink to this file, so it is applied last and wins over the drop-ins.
     SYSCTL_FILE="/etc/sysctl.conf"
-    SYSCTL_BEGIN="# BEGIN opensrthub (managed by install.sh - do not edit this block)"
+    SYSCTL_BEGIN="# BEGIN opensrthub (managed by setup.sh - do not edit this block)"
     SYSCTL_END="# END opensrthub"
 
     if [ -f "$SYSCTL_FILE" ] && [ ! -f "${SYSCTL_FILE}.opensrthub.bak" ]; then
@@ -878,6 +878,28 @@ else
             git clone "$CURL_REPO" "${REPO_DIR}/cblibcurl"
         fi
         pushd "${REPO_DIR}/cblibcurl" >/dev/null || die "cannot enter cblibcurl"
+
+        # curl's configure.ac declares no AC_CONFIG_AUX_DIR, so autoconf searches
+        # for install-sh / setup.sh / shtool in '.', then '..', then '../..' and
+        # takes the first hit. Any install.sh sitting in a parent directory
+        # therefore captures the aux dir: libtoolize writes ltmain.sh outside the
+        # tree ("putting auxiliary files in '..'") and automake then dies with
+        # "required file './ltmain.sh' not found". Seeding install-sh here makes
+        # '.' win regardless of what lives above the checkout.
+        if [ ! -f install-sh ]; then
+            AUTOMAKE_LIBDIR="$(automake --print-libdir 2>/dev/null || true)"
+            if [ -n "$AUTOMAKE_LIBDIR" ] && [ -f "${AUTOMAKE_LIBDIR}/install-sh" ]; then
+                log "seeding install-sh so the aux dir resolves to the curl tree"
+                cp "${AUTOMAKE_LIBDIR}/install-sh" ./install-sh
+                chmod +x ./install-sh
+            else
+                warn "could not find automake's install-sh to seed the curl tree."
+                warn "if buildconf fails with \"required file './ltmain.sh' not"
+                warn "found\", an install.sh in a parent directory has captured"
+                warn "curl's config aux directory."
+            fi
+        fi
+
         [ -f configure ] || ./buildconf
         [ -f configure ] || die "curl's configure script was not generated. See ${LOG_FILE}."
         ./configure --prefix=/usr --enable-static --enable-pthreads \
