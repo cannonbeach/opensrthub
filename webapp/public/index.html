@@ -1015,6 +1015,10 @@
               </select>
             </div>
             <div class="form-group">
+              <label class="form-label">SRT Latency (ms)</label>
+              <input type="text" class="form-input" id="srtreceiver_latency" value="120" placeholder="120">
+            </div>
+            <div class="form-group">
               <label class="form-label">Stream ID (Optional)</label>
               <input type="text" class="form-input" id="srtreceiver_streamid" placeholder="#!::u=admin,m=request">
             </div>
@@ -1185,6 +1189,10 @@
                   <option value="push">Listener (Wait for connection)</option>
                   <option value="pull">Caller (Connect to server)</option>
                 </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">SRT Latency (ms)</label>
+                <input type="text" class="form-input" id="edit_latency_receiver" placeholder="120">
               </div>
               <div class="form-group">
                 <label class="form-label">Stream ID (Optional)</label>
@@ -2009,6 +2017,7 @@
           document.getElementById('edit_passphrase_receiver').value = config.passphrase   || '';
           document.getElementById('edit_outputaddress_receiver').value = config.outputaddress || '';
           document.getElementById('edit_outputport_receiver').value    = config.outputport    || '';
+          document.getElementById('edit_latency_receiver').value = config.latency ?? '120';
           setEnumSelect('edit_clienttype', config.clienttype);
           setSelectValue('edit_sourceinterface', config.sourceinterface);
           setSelectValue('edit_outputinterface_receiver', config.outputinterface);
@@ -2068,6 +2077,15 @@
       }
     }
 
+    // srthub parses "latency" with atoi() on a JSON string, so always send a
+    // sane numeric string — a blank field would otherwise become 0ms.
+    function normalizeLatency(value) {
+      const ms = parseInt(value, 10);
+      if (isNaN(ms) || ms < 20) return '120';
+      if (ms > 8000) return '8000';
+      return String(ms);
+    }
+
     function closeEditForm() {
       document.getElementById('editservicepage').classList.remove('active');
       currentEditUid = null;
@@ -2088,6 +2106,7 @@
           sourceport:      document.getElementById('edit_sourceport').value,
           sourceinterface: document.getElementById('edit_sourceinterface').value,
           clienttype:      document.getElementById('edit_clienttype').value,
+          latency:         normalizeLatency(document.getElementById('edit_latency_receiver').value),
           streamid:        document.getElementById('edit_streamid_receiver').value,
           passphrase:      document.getElementById('edit_passphrase_receiver').value,
           outputaddress:   document.getElementById('edit_outputaddress_receiver').value,
@@ -2142,7 +2161,8 @@
         srtreceiver_destinationinterface: document.getElementById('srtreceiver_outputinterface').value,
         srtreceiver_streamid: document.getElementById('srtreceiver_streamid').value,
         srtreceiver_passphrase: document.getElementById('srtreceiver_passphrase').value,
-        srtreceiver_clienttype: document.getElementById('srtreceiver_mode').value
+        srtreceiver_clienttype: document.getElementById('srtreceiver_mode').value,
+        srtreceiver_latency: normalizeLatency(document.getElementById('srtreceiver_latency').value)
       };
 
       try {
