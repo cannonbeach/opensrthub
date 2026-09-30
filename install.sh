@@ -235,14 +235,17 @@ verify_install() {
         check "apt-daily.timer disabled"       bash -c '! systemctl is-enabled apt-daily.timer 2>/dev/null | grep -q "^enabled$"'
         check "unattended-upgrades disabled"   bash -c '! systemctl is-enabled unattended-upgrades.service 2>/dev/null | grep -q "^enabled$"'
         check "apparmor.service disabled"      bash -c '! systemctl is-enabled apparmor.service 2>/dev/null | grep -q "^enabled$"'
-        check "apparmor=0 in /etc/default/grub" grep -q 'apparmor=0' /etc/default/grub
+        # Check the generated boot config, not /etc/default/grub: a drop-in in
+        # /etc/default/grub.d can override that file, so only the generated
+        # config shows what the kernel will actually be handed.
+        check "apparmor=0 in /boot/grub/grub.cfg" bash -c "$SUDO grep -q 'apparmor=0' /boot/grub/grub.cfg"
 
-        # Whether it is actually in force is a separate question from whether it
-        # is configured: the kernel parameter only applies after a reboot.
-        if grep -q '\bapparmor=0\b' /proc/cmdline 2>/dev/null; then
+        # Whether it is in force is a separate question from whether it is
+        # configured: the kernel parameter only applies after a reboot.
+        if grep -qE '(^| )apparmor=0( |$)' /proc/cmdline 2>/dev/null; then
             printf '  %s[ ok ]%s %s\n' "$C_GREEN" "$C_RESET" "apparmor=0 active on the running kernel"
-        elif grep -q 'apparmor=0' /etc/default/grub 2>/dev/null; then
-            printf '  %s[pend]%s %s\n' "$C_YELLOW" "$C_RESET" "apparmor=0 configured but NOT yet active - reboot required"
+        elif $SUDO grep -q 'apparmor=0' /boot/grub/grub.cfg 2>/dev/null; then
+            printf '  %s[pend]%s %s\n' "$C_YELLOW" "$C_RESET" "apparmor=0 in the boot config but NOT yet active - reboot required"
         fi
     fi
 
@@ -440,14 +443,45 @@ else
     fi
 
     # --- AppArmor: kernel command line --------------------------------------
-    # Managed as a delimited block appended to /etc/default/grub. The file is
-    # sourced by grub-mkconfig, so the last assignment wins - which means the
-    # block can override an earlier GRUB_CMDLINE_LINUX_DEFAULT without having to
-    # edit that line in place, and re-running replaces the block rather than
-    # compounding it.
+    # Managed as a delimited block appended to /etc/default/grub.
+    #
+    # Note the ordering trap: grub-mkconfig sources /etc/default/grub FIRST and
+    # then /etc/default/grub.d/*.cfg, so a drop-in overrides this file. Ubuntu
+    # cloud images ship /etc/default/grub.d/50-cloudimg-settings.cfg, which
+    # reassigns GRUB_CMDLINE_LINUX_DEFAULT and would silently discard apparmor=0.
+    # So after writing the block we recompute the value the way grub-mkconfig
+    # does, and if a drop-in wins we add our own higher-numbered drop-in.
     GRUB_FILE="/etc/default/grub"
+    GRUB_D_DIR="/etc/default/grub.d"
+    GRUB_D_FILE="${GRUB_D_DIR}/99-opensrthub.cfg"
+    GRUB_CFG="/boot/grub/grub.cfg"
     GRUB_BEGIN="# BEGIN opensrthub (managed by install.sh - do not edit this block)"
     GRUB_END="# END opensrthub"
+
+    # Strip any apparmor= token from a command line and append apparmor=0, so an
+    # existing apparmor=1 is replaced rather than duplicated.
+    grub_with_apparmor_off() {
+        local cleaned
+        cleaned="$(printf '%s' "$1" \
+            | sed -E 's/(^| )apparmor=[^ ]*/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+        printf '%s' "${cleaned:+${cleaned} }apparmor=0"
+    }
+
+    # Replicate grub-mkconfig's own sourcing order and report the value that
+    # actually reaches the kernel. $1 is the grub file to start from; pass a
+    # second argument to skip our own drop-in.
+    grub_effective_cmdline() {
+        (
+            set +eu
+            [ -f "$1" ] && . "$1" >/dev/null 2>&1
+            for _x in "${GRUB_D_DIR}"/*.cfg; do
+                [ -e "$_x" ] || continue
+                [ -n "${2:-}" ] && [ "$_x" = "$GRUB_D_FILE" ] && continue
+                . "$_x" >/dev/null 2>&1
+            done
+            printf '%s' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+        )
+    }
 
     if [ ! -f "$GRUB_FILE" ]; then
         warn "${GRUB_FILE} does not exist; skipping the apparmor=0 kernel parameter."
@@ -465,24 +499,20 @@ else
             skip == 0 { print }
         ' "$GRUB_FILE" > "$GRUB_TMP"
 
-        # Read the effective value from the file with our block removed, so the
-        # operator's own parameters are preserved and ours are not compounded.
-        # Sourcing is how grub-mkconfig itself reads this file.
-        GRUB_CURRENT="$(
+        # Base value from this file alone, with our own block already removed so
+        # repeated runs never compound. Sourcing is how grub reads it too.
+        GRUB_BASE="$(
             set +eu
             # shellcheck disable=SC1090
             . "$GRUB_TMP" >/dev/null 2>&1
             printf '%s' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
         )"
+        GRUB_NEW="$(grub_with_apparmor_off "$GRUB_BASE")"
 
-        # Drop any pre-existing apparmor= token (including apparmor=1) so we
-        # don't end up with two conflicting values on the command line.
-        GRUB_CLEANED="$(printf '%s' "$GRUB_CURRENT" \
-            | sed -E 's/(^| )apparmor=[^ ]*/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
-        GRUB_NEW="${GRUB_CLEANED:+${GRUB_CLEANED} }apparmor=0"
-
-        if [ -n "$GRUB_CLEANED" ]; then
-            log "preserving existing kernel parameters: ${GRUB_CLEANED}"
+        if [ -n "$GRUB_BASE" ]; then
+            log "existing kernel parameters in ${GRUB_FILE}: ${GRUB_BASE}"
+        else
+            log "no existing kernel parameters in ${GRUB_FILE}"
         fi
         log "setting GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_NEW}\""
 
@@ -504,12 +534,42 @@ else
         $SUDO chmod 644 "$GRUB_FILE"
         rm -f "$GRUB_TMP"
 
+        # Now check whether a drop-in in grub.d overrides what we just wrote.
+        # Remove any stale copy of ours first so the test reflects other files.
+        if [ -f "$GRUB_D_FILE" ]; then
+            $SUDO rm -f "$GRUB_D_FILE"
+        fi
+        GRUB_EFFECTIVE="$(grub_effective_cmdline "$GRUB_FILE")"
+        case " $GRUB_EFFECTIVE " in
+            *" apparmor=0 "*)
+                log "no drop-in in ${GRUB_D_DIR} overrides it"
+                ;;
+            *)
+                warn "a drop-in in ${GRUB_D_DIR} reassigns GRUB_CMDLINE_LINUX_DEFAULT"
+                warn "and would discard apparmor=0 (effective value: \"${GRUB_EFFECTIVE}\")."
+                GRUB_D_NEW="$(grub_with_apparmor_off "$GRUB_EFFECTIVE")"
+                log "adding ${GRUB_D_FILE} to win the ordering: \"${GRUB_D_NEW}\""
+                $SUDO mkdir -p "$GRUB_D_DIR"
+                $SUDO tee "$GRUB_D_FILE" >/dev/null <<GRUBD
+# Managed by opensrthub install.sh - do not edit.
+#
+# grub-mkconfig sources /etc/default/grub first and then this directory in
+# sorted order, so a lower-numbered drop-in here was overriding the apparmor=0
+# set in /etc/default/grub. This file sorts last and restores it, carrying over
+# the parameters that drop-in set.
+#
+# To revert, delete this file and run: sudo update-grub
+GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_D_NEW}"
+GRUBD
+                ;;
+        esac
+
         # Regenerate grub.cfg, or the parameter never reaches the kernel.
+        GRUB_REGENERATED=0
         if command -v update-grub >/dev/null 2>&1; then
             log "regenerating the boot configuration (update-grub)"
             if $SUDO update-grub >/dev/null 2>&1; then
-                ok "boot configuration updated"
-                REBOOT_REQUIRED=1
+                GRUB_REGENERATED=1
             else
                 warn "update-grub failed. ${GRUB_FILE} was written, but the boot"
                 warn "configuration was NOT regenerated, so apparmor=0 will not take"
@@ -517,17 +577,30 @@ else
             fi
         elif command -v grub-mkconfig >/dev/null 2>&1; then
             log "regenerating the boot configuration (grub-mkconfig)"
-            if $SUDO grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then
-                ok "boot configuration updated"
-                REBOOT_REQUIRED=1
+            if $SUDO grub-mkconfig -o "$GRUB_CFG" >/dev/null 2>&1; then
+                GRUB_REGENERATED=1
             else
                 warn "grub-mkconfig failed; apparmor=0 will not take effect."
-                warn "run 'sudo grub-mkconfig -o /boot/grub/grub.cfg' to see the error."
+                warn "run 'sudo grub-mkconfig -o ${GRUB_CFG}' to see the error."
             fi
         else
             warn "neither update-grub nor grub-mkconfig is available, so the boot"
             warn "configuration cannot be regenerated and apparmor=0 will not take"
             warn "effect. ${GRUB_FILE} has still been updated for a later rebuild."
+        fi
+
+        # Authoritative check: the generated boot config is what the kernel is
+        # actually handed, so confirm the parameter is in it rather than assuming
+        # our edits had the intended effect.
+        if [ "$GRUB_REGENERATED" -eq 1 ]; then
+            if [ -f "$GRUB_CFG" ] && $SUDO grep -q 'apparmor=0' "$GRUB_CFG" 2>/dev/null; then
+                ok "apparmor=0 confirmed present in ${GRUB_CFG}"
+                REBOOT_REQUIRED=1
+            else
+                warn "${GRUB_CFG} was regenerated but does not contain apparmor=0."
+                warn "something else in the GRUB configuration is overriding it;"
+                warn "check ${GRUB_D_DIR}/ and /etc/grub.d/ before relying on this."
+            fi
         fi
     fi
 

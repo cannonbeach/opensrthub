@@ -47,8 +47,17 @@ configuration with Ansible, cloud-init or similar.
   masked with its profiles unloaded, and `apparmor=0` is added to the kernel
   command line via a managed block in `/etc/default/grub` (backed up once to
   `/etc/default/grub.opensrthub.bak`), followed by `update-grub`. Your existing
-  kernel parameters are preserved; an existing `apparmor=` value is replaced
+  kernel parameters are preserved, and an existing `apparmor=` value is replaced
   rather than duplicated. **The kernel parameter needs a reboot to take effect.**
+
+  `grub-mkconfig` sources `/etc/default/grub` *before* `/etc/default/grub.d/*.cfg`,
+  so a drop-in there overrides it - Ubuntu cloud images ship
+  `50-cloudimg-settings.cfg`, which reassigns `GRUB_CMDLINE_LINUX_DEFAULT` and
+  would otherwise silently discard `apparmor=0`. The installer detects this and
+  adds `/etc/default/grub.d/99-opensrthub.cfg` to win the ordering, carrying over
+  whatever parameters that drop-in set. It then confirms `apparmor=0` is actually
+  present in the generated `/boot/grub/grub.cfg` rather than assuming the edit
+  worked.
 
   This is docker-safe: runc calls `apparmor.HostSupports()`, which reads
   `/sys/module/apparmor/parameters/enabled`, and skips profile application
