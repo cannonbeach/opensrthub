@@ -30,6 +30,7 @@ const session = require('express-session');
 const readLastLines = require('read-last-lines');
 var bodyParser = require('body-parser');
 const fs = require('fs');
+const crypto = require('crypto');
 var path = require('path');
 var https = require('https');
 var http = require('http');
@@ -49,11 +50,45 @@ var options = {
 
 const app = express();
 
+// The session secret is what stops a client from forging its own signed session
+// cookie, so it cannot be a known constant. Persist a random one to disk on
+// first run: keeping it stable across restarts means a restart doesn't log
+// everyone out, and keeping it off-repo means it isn't the same on every
+// install. SRTHUB_SESSION_SECRET overrides it if you'd rather inject it.
+function loadSessionSecret() {
+    if (process.env.SRTHUB_SESSION_SECRET) {
+        return process.env.SRTHUB_SESSION_SECRET;
+    }
+    var secretFile = '/opt/srthub/session.key';
+    try {
+        var existing = fs.readFileSync(secretFile, 'utf8').trim();
+        if (existing.length > 0) {
+            return existing;
+        }
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            throw err;
+        }
+    }
+    var generated = crypto.randomBytes(32).toString('hex');
+    // mode 0600: readable only by the user the service runs as.
+    fs.writeFileSync(secretFile, generated + '\n', { mode: 0o600 });
+    console.log('Generated a new session secret at ' + secretFile);
+    return generated;
+}
+
 app.use(session({
-    secret:'secret',
-    resave:true,
-    saveUninitialized:true,
-    cooke: { secure: true }
+    secret: loadSessionSecret(),
+    resave: true,
+    saveUninitialized: true,
+    // Was 'cooke', so none of this was ever applied. Port 8080 routes plaintext
+    // connections to a redirect-only server and never to this app, so every
+    // request that reaches here is already over TLS and 'secure' is safe.
+    cookie: {
+        secure: true,
+        httpOnly: true,
+        sameSite: 'lax'
+    }
 }));
 
 /*
