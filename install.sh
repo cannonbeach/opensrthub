@@ -110,6 +110,13 @@ else
     C_RESET=""; C_BOLD=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""
 fi
 
+# hostname -I exits non-zero on some systems and prints nothing when there is no
+# address. With pipefail that would abort the script, so swallow it and let the
+# caller handle an empty result.
+primary_ip() {
+    hostname -I 2>/dev/null | awk '{print $1}' || true
+}
+
 PHASE_NUM=0
 log()   { echo "${C_BLUE}srthub:${C_RESET} $*"; }
 warn()  { echo "${C_YELLOW}srthub: WARNING:${C_RESET} $*" >&2; }
@@ -122,6 +129,11 @@ phase() {
     echo
     echo "${C_BOLD}${C_BLUE}==> [${PHASE_NUM}] $*${C_RESET}"
 }
+# PID of the top-level shell, so die() can tell whether it is running inside a
+# subshell (a command substitution, a pipeline stage) where a plain 'exit' would
+# only leave the subshell and let the script carry on past a fatal error.
+TOP_PID=$$
+
 die() {
     echo >&2
     if [ "${VERIFY_ONLY:-0}" -eq 1 ]; then
@@ -132,8 +144,14 @@ die() {
         echo "${C_RED}srthub:${C_RESET} completed steps will be skipped." >&2
     fi
     echo "${C_RED}srthub:${C_RESET} Full log: ${LOG_FILE}" >&2
+    if [ "${BASHPID:-$$}" != "$TOP_PID" ]; then
+        # Inside a subshell, so 'exit' alone would not stop the script: signal
+        # the main shell to abort as well.
+        kill -s TERM "$TOP_PID" 2>/dev/null || true
+    fi
     exit 1
 }
+
 # Mirror everything to the install log.
 #
 # A FIFO rather than "exec > >(tee ...)": bash does not set $! for a process
@@ -159,6 +177,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'die "unexpected error on line $LINENO (command: $BASH_COMMAND)"' ERR
+trap 'exit 1' TERM
 
 echo "=== opensrthub install started $(date -Is) ==="
 
@@ -200,7 +219,7 @@ fi
 verify_install() {
     local failures=0
     local host_ip
-    host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    host_ip="$(primary_ip)"
     [ -n "$host_ip" ] || host_ip="localhost"
 
     check() {
@@ -320,8 +339,11 @@ fi
 # version is the simplest way to guarantee that.
 log "Container base image will be ubuntu:${UBUNTU_VERSION} (matched to this host)"
 
-AVAIL_KB="$(df -Pk "$REPO_DIR" | awk 'NR==2 {print $4}')"
-if [ "$AVAIL_KB" -lt 10485760 ]; then
+AVAIL_KB="$(df -Pk "$REPO_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
+case "$AVAIL_KB" in
+    ''|*[!0-9]*) AVAIL_KB=0 ;;
+esac
+if [ "$AVAIL_KB" -gt 0 ] && [ "$AVAIL_KB" -lt 10485760 ]; then
     warn "Less than 10 GB free on $(df -Ph "$REPO_DIR" | awk 'NR==2 {print $6}'). The FFmpeg and SRT builds may run out of space."
 fi
 log "Build parallelism: -j${JOBS}"
@@ -386,9 +408,21 @@ else
     fi
 
     # Node.js via NodeSource.
-    CURRENT_NODE_MAJOR="$(node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/')"
-    if [ "${CURRENT_NODE_MAJOR:-0}" -ge "$NODE_MAJOR" ] 2>/dev/null; then
-        skip "Node.js $(node -v) (>= ${NODE_MAJOR}) already installed"
+    #
+    # Check for the binary before running it: on a fresh system 'node' does not
+    # exist, and with pipefail a 127 from the left of the pipe would abort here.
+    if command -v node >/dev/null 2>&1; then
+        CURRENT_NODE_MAJOR="$(node -v | sed 's/^v\([0-9]*\).*/\1/')"
+    else
+        CURRENT_NODE_MAJOR=0
+    fi
+    # Anything non-numeric would make the comparison below an error, not a false.
+    case "$CURRENT_NODE_MAJOR" in
+        ''|*[!0-9]*) CURRENT_NODE_MAJOR=0 ;;
+    esac
+
+    if [ "$CURRENT_NODE_MAJOR" -ge "$NODE_MAJOR" ]; then
+        skip "Node.js v${CURRENT_NODE_MAJOR} (>= ${NODE_MAJOR}) already installed"
     else
         log "installing Node.js ${NODE_MAJOR}.x from NodeSource"
         $SUDO mkdir -p /etc/apt/keyrings
@@ -398,7 +432,11 @@ else
             | $SUDO tee /etc/apt/sources.list.d/nodesource.list >/dev/null
         $SUDO_E apt-get update -y
         $SUDO_E apt-get install -y nodejs
-        ok "installed Node.js $(node -v)"
+        if command -v node >/dev/null 2>&1; then
+            ok "installed Node.js $(node -v)"
+        else
+            die "the nodejs package installed but produced no 'node' binary."
+        fi
     fi
 
     log "ensuring the docker daemon is enabled and running"
@@ -986,7 +1024,14 @@ else
         fi
     fi
     if [ -z "$ADMIN_PASSWORD" ]; then
-        ADMIN_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 20)"
+        # No trailing 'head' in the pipeline: it closes the pipe early, tr takes
+        # SIGPIPE, and pipefail turns that into a fatal error. Trim with a shell
+        # expansion instead.
+        ADMIN_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' || true)"
+        ADMIN_PASSWORD="${ADMIN_PASSWORD:0:20}"
+        if [ -z "$ADMIN_PASSWORD" ]; then
+            die "could not generate a random password from /dev/urandom."
+        fi
         GENERATED_PASSWORD=1
     fi
     log "creating ${DATA_DIR}/users.json"
@@ -999,7 +1044,7 @@ if [ -s "${APP_DIR}/cert/server.crt" ] && [ -s "${APP_DIR}/cert/server.key" ]; t
     skip "TLS certificate (existing certificate preserved)"
 else
     CERT_CN="$(hostname -f 2>/dev/null || hostname)"
-    CERT_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    CERT_IP="$(primary_ip)"
     SAN="DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1"
     [ -n "$CERT_IP" ] && SAN="${SAN},IP:${CERT_IP}"
     log "generating a self-signed certificate for ${CERT_CN}"
