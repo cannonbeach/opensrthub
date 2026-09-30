@@ -21,10 +21,10 @@ cd opensrthub
 ```
 
 That's it. The installer asks once for a login password, then does everything
-else unattended: system packages, Node.js, the libsrt/libcurl/FFmpeg builds, the
-`srthub` binary, the `dockersrthub` container image, a TLS certificate, and the
-`opensrthub` service registered to start at boot. It finishes by checking its own
-work and printing the URL to open.
+else unattended: system packages, Node.js, host tuning, the libsrt/libcurl/FFmpeg
+builds, the `srthub` binary, the `dockersrthub` container image, a TLS
+certificate, and the `opensrthub` service registered to start at boot. It
+finishes by checking its own work and printing the URL to open.
 
 Expect 15-30 minutes on first run, almost all of it compiling FFmpeg.
 
@@ -37,6 +37,49 @@ To add or change logins later, edit `/opt/srthub/users.json`.
 
 Next: select **New SRT Receiver** or **New SRT Server**, and save the configuration.
 
+#### Host tuning
+
+The installer treats the machine as a dedicated streaming appliance and adjusts
+the host accordingly. Pass `--skip-tuning` to skip all of it if you manage host
+configuration with Ansible, cloud-init or similar.
+
+- **AppArmor** - service stopped, disabled and masked, profiles unloaded. The
+  AppArmor *kernel module* is deliberately left enabled, because docker loads its
+  own container profile and disabling AppArmor at the kernel level stops every
+  container from starting.
+- **Unattended upgrades** - service masked and the apt periodic counters in
+  `/etc/apt/apt.conf.d/20auto-upgrades` set to 0. An automatic upgrade that
+  restarts docker or node would interrupt live streams.
+- **apt-daily** - `apt-daily.timer`, `apt-daily.service`,
+  `apt-daily-upgrade.timer` and `apt-daily-upgrade.service` disabled and masked.
+  Both timers are included: masking only the services leaves the timers firing.
+- **MOTD** - the execute bit is removed from `/etc/update-motd.d/*`, motd-news is
+  disabled, and `/etc/motd` is cleared. `/etc/pam.d` is deliberately left alone,
+  since a bad edit there locks you out over SSH.
+- **sysctl** - written as a delimited block in `/etc/sysctl.conf` (backed up once
+  to `/etc/sysctl.conf.opensrthub.bak`), so re-running replaces the block instead
+  of appending duplicates and your own settings are preserved:
+
+```
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.{all,default}.accept_redirects = 0
+net.ipv6.conf.{all,default}.accept_redirects = 0
+net.ipv6.conf.{all,default,lo}.disable_ipv6 = 1
+kernel.randomize_va_space = 2
+kernel.core_uses_pid = 1
+fs.suid_dumpable = 1
+```
+
+`fs.suid_dumpable = 1` is a deliberate loosening of a hardening default: without
+it a crash in a privileged process produces no core file at all, which makes
+stream faults very hard to diagnose. A core from a privileged process can
+contain secrets held in memory, which for opensrthub means SRT stream
+passphrases. Cores are owner-read-only; set it to 0 if you don't need crash
+diagnostics.
+
+Apply a reboot afterwards so all of it takes effect cleanly. `--verify` reads the
+live kernel values, not the config file, so it will tell you what actually stuck.
+
 #### Installer options
 
 The installer is idempotent - if a step fails, fix the cause and run it again,
@@ -46,6 +89,7 @@ and everything already completed is skipped.
 ./install.sh --verify                    Check an existing installation
 ./install.sh --skip-deps                 Rebuild after a git pull (no apt phase)
 ./install.sh --skip-deps --skip-build    Reinstall the web app only
+./install.sh --skip-tuning               Leave host settings alone
 ./install.sh --service=pm2               Use pm2 instead of systemd
 ./install.sh --service=none              Don't register a service at all
 ./install.sh --admin-password=PW        Unattended install (no password prompt)

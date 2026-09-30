@@ -37,6 +37,7 @@ JOBS="$(nproc)"
 SKIP_DEPS=0
 SKIP_BUILD=0
 SKIP_DOCKER=0
+SKIP_TUNING=0
 VERIFY_ONLY=0
 SERVICE_MANAGER="systemd"
 ADMIN_PASSWORD=""
@@ -52,6 +53,9 @@ Options:
   --skip-build          Skip building libsrt, libcurl, FFmpeg and srthub.
                         (Use when only the web app or Docker image changed.)
   --skip-docker         Skip building the '${DOCKER_IMAGE}' container image.
+  --skip-tuning         Skip the host tuning phase (AppArmor, unattended
+                        upgrades, MOTD, apt-daily timers, sysctl settings).
+                        Use this if you manage host configuration elsewhere.
   --service=MANAGER     How to run the web app: systemd (default), pm2, or none.
   --admin-password=PW   Set the initial admin password non-interactively.
                         Only used when ${DATA_DIR}/users.json does not yet exist.
@@ -71,6 +75,7 @@ for arg in "$@"; do
         --skip-deps)          SKIP_DEPS=1 ;;
         --skip-build)         SKIP_BUILD=1 ;;
         --skip-docker)        SKIP_DOCKER=1 ;;
+        --skip-tuning)        SKIP_TUNING=1 ;;
         --verify)             VERIFY_ONLY=1 ;;
         --service=*)          SERVICE_MANAGER="${arg#*=}" ;;
         --admin-password=*)   ADMIN_PASSWORD="${arg#*=}" ;;
@@ -99,6 +104,8 @@ log()   { echo "${C_BLUE}srthub:${C_RESET} $*"; }
 warn()  { echo "${C_YELLOW}srthub: WARNING:${C_RESET} $*" >&2; }
 ok()    { echo "${C_GREEN}srthub: OK:${C_RESET} $*"; }
 skip()  { echo "${C_BLUE}srthub:${C_RESET} $* ${C_BOLD}(already done, skipping)${C_RESET}"; }
+# For work skipped because the user asked, not because it was already done.
+bypass() { echo "${C_BLUE}srthub:${C_RESET} skipping $* ${C_BOLD}(requested)${C_RESET}"; }
 phase() {
     PHASE_NUM=$((PHASE_NUM + 1))
     echo
@@ -212,6 +219,23 @@ verify_install() {
         pm2)     check "pm2 process running            (${SERVICE_NAME})" bash -c "$SUDO pm2 describe ${SERVICE_NAME} >/dev/null" ;;
     esac
 
+    if [ "$SKIP_TUNING" -eq 0 ]; then
+        # Read the live values rather than the config file: a setting that is in
+        # sysctl.conf but was rejected by the kernel is not actually applied.
+        sysctl_is() {
+            [ "$(sysctl -n "$1" 2>/dev/null)" = "$2" ]
+        }
+        check "sysctl tcp_syncookies=1"        sysctl_is net.ipv4.tcp_syncookies 1
+        check "sysctl accept_redirects=0"      sysctl_is net.ipv4.conf.all.accept_redirects 0
+        check "sysctl ipv6 disabled"           sysctl_is net.ipv6.conf.all.disable_ipv6 1
+        check "sysctl randomize_va_space=2"    sysctl_is kernel.randomize_va_space 2
+        check "sysctl core_uses_pid=1"         sysctl_is kernel.core_uses_pid 1
+        check "sysctl suid_dumpable=1"         sysctl_is fs.suid_dumpable 1
+        check "apt-daily.timer disabled"       bash -c '! systemctl is-enabled apt-daily.timer 2>/dev/null | grep -q "^enabled$"'
+        check "unattended-upgrades disabled"   bash -c '! systemctl is-enabled unattended-upgrades.service 2>/dev/null | grep -q "^enabled$"'
+        check "apparmor.service disabled"      bash -c '! systemctl is-enabled apparmor.service 2>/dev/null | grep -q "^enabled$"'
+    fi
+
     # Give the service a moment on a cold start before probing the port.
     local attempt
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -298,7 +322,7 @@ done
 phase "Installing system packages"
 
 if [ "$SKIP_DEPS" -eq 1 ]; then
-    skip "system package phase (--skip-deps)"
+    bypass "the system package phase (--skip-deps)"
 else
     export DEBIAN_FRONTEND=noninteractive
 
@@ -362,6 +386,173 @@ else
 fi
 
 #-----------------------------------------------------------------------------
+# Phase 4: host tuning
+#-----------------------------------------------------------------------------
+# This box is expected to run as a dedicated streaming appliance, so background
+# package activity, login banners and MAC enforcement are turned off, and a few
+# network/kernel settings are pinned. Skip the whole phase with --skip-tuning if
+# you manage host configuration with Ansible/cloud-init/etc.
+phase "Tuning the host"
+
+# disable_unit <unit> - stop, disable and mask a unit if it exists here.
+# Masking matters: disabling alone still lets another unit pull it back in.
+disable_unit() {
+    local unit="$1"
+    if [ -z "$(systemctl list-unit-files "$unit" --no-legend 2>/dev/null)" ]; then
+        log "${unit} is not present on this system"
+        return 0
+    fi
+    $SUDO systemctl disable --now "$unit" >/dev/null 2>&1 || true
+    $SUDO systemctl mask "$unit" >/dev/null 2>&1 || true
+    log "disabled and masked ${unit}"
+}
+
+if [ "$SKIP_TUNING" -eq 1 ]; then
+    bypass "the host tuning phase (--skip-tuning)"
+else
+    # --- AppArmor -----------------------------------------------------------
+    # Stop the service and unload the profile set. Deliberately NOT adding
+    # apparmor=0 to the kernel command line: docker loads its own
+    # 'docker-default' profile when the kernel has AppArmor available, and
+    # killing it at the kernel level makes every container fail to start.
+    # Stopping the service removes the distro profiles without breaking docker.
+    if [ -n "$(systemctl list-unit-files apparmor.service --no-legend 2>/dev/null)" ]; then
+        disable_unit apparmor.service
+        if command -v aa-teardown >/dev/null 2>&1; then
+            log "unloading AppArmor profiles (aa-teardown)"
+            $SUDO aa-teardown >/dev/null 2>&1 || warn "aa-teardown reported an error"
+        fi
+        log "note: the AppArmor kernel module is left enabled so docker can"
+        log "      still load its own container profile"
+    else
+        log "AppArmor is not installed on this system"
+    fi
+
+    # --- unattended upgrades ------------------------------------------------
+    # An automatic upgrade that restarts docker or node mid-stream is not
+    # acceptable on an appliance, so both the service and the apt periodic
+    # counters are turned off.
+    disable_unit unattended-upgrades.service
+    log "disabling apt periodic update/upgrade counters"
+    $SUDO tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'APTCONF'
+// Managed by opensrthub install.sh
+// Background package activity is disabled: an unattended upgrade that restarts
+// docker or node would interrupt live streams. Apply updates deliberately.
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Download-Upgradeable-Packages "0";
+APT::Periodic::Unattended-Upgrade "0";
+APT::Periodic::AutocleanInterval "0";
+APTCONF
+
+    # --- apt-daily timers ---------------------------------------------------
+    # The timers are what actually fire; the services are masked too so nothing
+    # can trigger them by hand or by dependency.
+    disable_unit apt-daily.timer
+    disable_unit apt-daily.service
+    disable_unit apt-daily-upgrade.timer
+    disable_unit apt-daily-upgrade.service
+
+    # --- MOTD ---------------------------------------------------------------
+    # Removing the execute bit is enough: pam_motd runs the scripts in this
+    # directory and prints nothing when none of them are executable. Left
+    # /etc/pam.d alone on purpose - a bad edit there locks you out over SSH.
+    if [ -d /etc/update-motd.d ]; then
+        log "disabling the dynamic MOTD scripts in /etc/update-motd.d"
+        $SUDO find /etc/update-motd.d -type f -exec chmod -x {} + 2>/dev/null || true
+    fi
+    if [ -f /etc/default/motd-news ]; then
+        log "disabling motd-news"
+        $SUDO sed -i 's/^ENABLED=.*/ENABLED=0/' /etc/default/motd-news
+    fi
+    disable_unit motd-news.timer
+    disable_unit motd-news.service
+    if [ -f /etc/motd ] && [ -s /etc/motd ]; then
+        log "clearing the static /etc/motd"
+        $SUDO truncate -s 0 /etc/motd
+    fi
+
+    # --- sysctl -------------------------------------------------------------
+    # Written as a delimited block in /etc/sysctl.conf so re-running replaces it
+    # instead of appending duplicates. On Ubuntu /etc/sysctl.d/99-sysctl.conf is
+    # a symlink to this file, so it is applied last and wins over the drop-ins.
+    SYSCTL_FILE="/etc/sysctl.conf"
+    SYSCTL_BEGIN="# BEGIN opensrthub (managed by install.sh - do not edit this block)"
+    SYSCTL_END="# END opensrthub"
+
+    if [ -f "$SYSCTL_FILE" ] && [ ! -f "${SYSCTL_FILE}.opensrthub.bak" ]; then
+        log "backing up ${SYSCTL_FILE} to ${SYSCTL_FILE}.opensrthub.bak"
+        $SUDO cp "$SYSCTL_FILE" "${SYSCTL_FILE}.opensrthub.bak"
+    fi
+
+    SYSCTL_TMP="$(mktemp)"
+    # Strip any previously managed block, keep everything else verbatim.
+    if [ -f "$SYSCTL_FILE" ]; then
+        awk -v b="$SYSCTL_BEGIN" -v e="$SYSCTL_END" '
+            $0 == b { skip = 1; next }
+            $0 == e { skip = 0; next }
+            skip == 0 { print }
+        ' "$SYSCTL_FILE" > "$SYSCTL_TMP"
+    fi
+
+    log "writing the opensrthub sysctl block to ${SYSCTL_FILE}"
+    {
+        printf '%s\n' "$SYSCTL_BEGIN"
+        cat <<'SYSCTLBLOCK'
+# --- network ---
+# Survive SYN floods without dropping legitimate connection attempts.
+net.ipv4.tcp_syncookies = 1
+
+# Ignore ICMP redirects: on a box that routes stream traffic between
+# interfaces, an accepted redirect is an unauthenticated route change.
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# IPv6 is not used for SRT/UDP routing here; disabling it removes a second
+# address family from the attack surface and from interface configuration.
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+
+# --- kernel ---
+# Full address space randomisation (stack, mmap, brk).
+kernel.randomize_va_space = 2
+
+# Append .PID to core file names so concurrent stream crashes don't overwrite
+# each other's cores.
+kernel.core_uses_pid = 1
+
+# Allow core dumps from privileged/setuid processes. srthub runs as root inside
+# its container, and without this a crash produces no core at all, which makes
+# stream faults very hard to diagnose.
+#
+# NOTE: this is a deliberate loosening of a hardening default. A core from a
+# privileged process can contain secrets held in memory - for opensrthub that
+# means SRT stream passphrases. Cores are owner-read-only, but if you do not
+# need crash diagnostics, set this to 0.
+fs.suid_dumpable = 1
+SYSCTLBLOCK
+        printf '%s\n' "$SYSCTL_END"
+    } >> "$SYSCTL_TMP"
+
+    $SUDO cp "$SYSCTL_TMP" "$SYSCTL_FILE"
+    $SUDO chmod 644 "$SYSCTL_FILE"
+    rm -f "$SYSCTL_TMP"
+
+    # Non-fatal: the net.ipv6.* keys do not exist if the ipv6 module was never
+    # loaded, and sysctl exits non-zero for any key it cannot set.
+    if $SUDO sysctl -q --system 2>/dev/null; then
+        ok "sysctl settings applied"
+    else
+        warn "sysctl --system reported an error; re-run 'sudo sysctl --system' to see which key failed."
+        warn "this is expected if IPv6 was already disabled at the kernel level."
+    fi
+
+    ok "host tuning applied (a reboot makes all of it take effect cleanly)"
+fi
+
+#-----------------------------------------------------------------------------
 # Phase 4: third-party libraries
 #-----------------------------------------------------------------------------
 phase "Building third-party libraries"
@@ -388,7 +579,7 @@ clone_at() {
 }
 
 if [ "$SKIP_BUILD" -eq 1 ]; then
-    skip "third-party library build (--skip-build)"
+    bypass "the third-party library build (--skip-build)"
 else
     # --- libsrt -------------------------------------------------------------
     if [ -f "${REPO_DIR}/cbsrt/libsrt.a" ]; then
@@ -451,7 +642,7 @@ fi
 phase "Building srthub"
 
 if [ "$SKIP_BUILD" -eq 1 ] && [ -x "${REPO_DIR}/srthub" ]; then
-    skip "srthub binary (--skip-build)"
+    bypass "the srthub build (--skip-build)"
 else
     pushd "$REPO_DIR" >/dev/null
     make -j"${JOBS}"
@@ -470,7 +661,7 @@ fi
 phase "Building the ${DOCKER_IMAGE} container image"
 
 if [ "$SKIP_DOCKER" -eq 1 ]; then
-    skip "container image build (--skip-docker)"
+    bypass "the container image build (--skip-docker)"
 else
     $SUDO docker info >/dev/null 2>&1 || die "the docker daemon is not running. Try: sudo systemctl start docker"
     log "copying srthub binary into the build context"
@@ -615,7 +806,7 @@ case "$SERVICE_MANAGER" in
         ok "pm2 process '${SERVICE_NAME}' started, saved, and enabled at boot"
         ;;
     none)
-        skip "service registration (--service=none)"
+        bypass "service registration (--service=none)"
         log "to run the app manually: cd ${APP_DIR} && sudo node server.js"
         ;;
 esac
