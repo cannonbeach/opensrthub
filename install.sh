@@ -486,6 +486,10 @@ else
     if [ ! -f "$GRUB_FILE" ]; then
         warn "${GRUB_FILE} does not exist; skipping the apparmor=0 kernel parameter."
         warn "this is normal on a system that does not boot via GRUB."
+    elif case " $(grub_effective_cmdline "$GRUB_FILE") " in *" apparmor=0 "*) true ;; *) false ;; esac; then
+        # Already on the command line, whether we put it there on an earlier run
+        # or the operator did. Leave the file alone and skip update-grub.
+        skip "apparmor=0 is already on the kernel command line"
     else
         if [ ! -f "${GRUB_FILE}.opensrthub.bak" ]; then
             log "backing up ${GRUB_FILE} to ${GRUB_FILE}.opensrthub.bak"
