@@ -43,10 +43,18 @@ The installer treats the machine as a dedicated streaming appliance and adjusts
 the host accordingly. Pass `--skip-tuning` to skip all of it if you manage host
 configuration with Ansible, cloud-init or similar.
 
-- **AppArmor** - service stopped, disabled and masked, profiles unloaded. The
-  AppArmor *kernel module* is deliberately left enabled, because docker loads its
-  own container profile and disabling AppArmor at the kernel level stops every
-  container from starting.
+- **AppArmor** - disabled at both levels: the service is stopped, disabled and
+  masked with its profiles unloaded, and `apparmor=0` is added to the kernel
+  command line via a managed block in `/etc/default/grub` (backed up once to
+  `/etc/default/grub.opensrthub.bak`), followed by `update-grub`. Your existing
+  kernel parameters are preserved; an existing `apparmor=` value is replaced
+  rather than duplicated. **The kernel parameter needs a reboot to take effect.**
+
+  This is docker-safe: runc calls `apparmor.HostSupports()`, which reads
+  `/sys/module/apparmor/parameters/enabled`, and skips profile application
+  entirely when AppArmor is unavailable. After rebooting, confirm with
+  `cat /sys/module/apparmor/parameters/enabled` (expect `N`) and check that
+  streams still start.
 - **Unattended upgrades** - service masked and the apt periodic counters in
   `/etc/apt/apt.conf.d/20auto-upgrades` set to 0. An automatic upgrade that
   restarts docker or node would interrupt live streams.
@@ -77,8 +85,10 @@ contain secrets held in memory, which for opensrthub means SRT stream
 passphrases. Cores are owner-read-only; set it to 0 if you don't need crash
 diagnostics.
 
-Apply a reboot afterwards so all of it takes effect cleanly. `--verify` reads the
-live kernel values, not the config file, so it will tell you what actually stuck.
+Reboot afterwards so all of it takes effect cleanly - `apparmor=0` in particular
+does nothing until then. `--verify` reads the live kernel values rather than the
+config files, so it distinguishes "configured" from "actually in force" and marks
+the kernel parameter as `[pend]` until you have rebooted.
 
 #### Installer options
 

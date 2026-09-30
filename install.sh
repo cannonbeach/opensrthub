@@ -39,6 +39,7 @@ SKIP_BUILD=0
 SKIP_DOCKER=0
 SKIP_TUNING=0
 VERIFY_ONLY=0
+REBOOT_REQUIRED=0
 SERVICE_MANAGER="systemd"
 ADMIN_PASSWORD=""
 
@@ -234,6 +235,15 @@ verify_install() {
         check "apt-daily.timer disabled"       bash -c '! systemctl is-enabled apt-daily.timer 2>/dev/null | grep -q "^enabled$"'
         check "unattended-upgrades disabled"   bash -c '! systemctl is-enabled unattended-upgrades.service 2>/dev/null | grep -q "^enabled$"'
         check "apparmor.service disabled"      bash -c '! systemctl is-enabled apparmor.service 2>/dev/null | grep -q "^enabled$"'
+        check "apparmor=0 in /etc/default/grub" grep -q 'apparmor=0' /etc/default/grub
+
+        # Whether it is actually in force is a separate question from whether it
+        # is configured: the kernel parameter only applies after a reboot.
+        if grep -q '\bapparmor=0\b' /proc/cmdline 2>/dev/null; then
+            printf '  %s[ ok ]%s %s\n' "$C_GREEN" "$C_RESET" "apparmor=0 active on the running kernel"
+        elif grep -q 'apparmor=0' /etc/default/grub 2>/dev/null; then
+            printf '  %s[pend]%s %s\n' "$C_YELLOW" "$C_RESET" "apparmor=0 configured but NOT yet active - reboot required"
+        fi
     fi
 
     # Give the service a moment on a cold start before probing the port.
@@ -411,21 +421,114 @@ if [ "$SKIP_TUNING" -eq 1 ]; then
     bypass "the host tuning phase (--skip-tuning)"
 else
     # --- AppArmor -----------------------------------------------------------
-    # Stop the service and unload the profile set. Deliberately NOT adding
-    # apparmor=0 to the kernel command line: docker loads its own
-    # 'docker-default' profile when the kernel has AppArmor available, and
-    # killing it at the kernel level makes every container fail to start.
-    # Stopping the service removes the distro profiles without breaking docker.
+    # Disabled at both levels: the service (removes the distro profile set now)
+    # and the kernel command line (keeps it off for good, after a reboot).
+    #
+    # This is docker-safe. runc calls apparmor.HostSupports(), which reads
+    # /sys/module/apparmor/parameters/enabled, and skips profile application
+    # entirely when AppArmor is unavailable - it does not fail the container.
+    # The failure mode to watch for is the opposite one: AppArmor enabled in the
+    # kernel but apparmor_parser missing, so 'docker-default' cannot load.
     if [ -n "$(systemctl list-unit-files apparmor.service --no-legend 2>/dev/null)" ]; then
         disable_unit apparmor.service
         if command -v aa-teardown >/dev/null 2>&1; then
             log "unloading AppArmor profiles (aa-teardown)"
             $SUDO aa-teardown >/dev/null 2>&1 || warn "aa-teardown reported an error"
         fi
-        log "note: the AppArmor kernel module is left enabled so docker can"
-        log "      still load its own container profile"
     else
-        log "AppArmor is not installed on this system"
+        log "the AppArmor service is not installed on this system"
+    fi
+
+    # --- AppArmor: kernel command line --------------------------------------
+    # Managed as a delimited block appended to /etc/default/grub. The file is
+    # sourced by grub-mkconfig, so the last assignment wins - which means the
+    # block can override an earlier GRUB_CMDLINE_LINUX_DEFAULT without having to
+    # edit that line in place, and re-running replaces the block rather than
+    # compounding it.
+    GRUB_FILE="/etc/default/grub"
+    GRUB_BEGIN="# BEGIN opensrthub (managed by install.sh - do not edit this block)"
+    GRUB_END="# END opensrthub"
+
+    if [ ! -f "$GRUB_FILE" ]; then
+        warn "${GRUB_FILE} does not exist; skipping the apparmor=0 kernel parameter."
+        warn "this is normal on a system that does not boot via GRUB."
+    else
+        if [ ! -f "${GRUB_FILE}.opensrthub.bak" ]; then
+            log "backing up ${GRUB_FILE} to ${GRUB_FILE}.opensrthub.bak"
+            $SUDO cp "$GRUB_FILE" "${GRUB_FILE}.opensrthub.bak"
+        fi
+
+        GRUB_TMP="$(mktemp)"
+        awk -v b="$GRUB_BEGIN" -v e="$GRUB_END" '
+            $0 == b { skip = 1; next }
+            $0 == e { skip = 0; next }
+            skip == 0 { print }
+        ' "$GRUB_FILE" > "$GRUB_TMP"
+
+        # Read the effective value from the file with our block removed, so the
+        # operator's own parameters are preserved and ours are not compounded.
+        # Sourcing is how grub-mkconfig itself reads this file.
+        GRUB_CURRENT="$(
+            set +eu
+            # shellcheck disable=SC1090
+            . "$GRUB_TMP" >/dev/null 2>&1
+            printf '%s' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+        )"
+
+        # Drop any pre-existing apparmor= token (including apparmor=1) so we
+        # don't end up with two conflicting values on the command line.
+        GRUB_CLEANED="$(printf '%s' "$GRUB_CURRENT" \
+            | sed -E 's/(^| )apparmor=[^ ]*/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+        GRUB_NEW="${GRUB_CLEANED:+${GRUB_CLEANED} }apparmor=0"
+
+        if [ -n "$GRUB_CLEANED" ]; then
+            log "preserving existing kernel parameters: ${GRUB_CLEANED}"
+        fi
+        log "setting GRUB_CMDLINE_LINUX_DEFAULT=\"${GRUB_NEW}\""
+
+        {
+            printf '%s\n' "$GRUB_BEGIN"
+            printf '# AppArmor is disabled at the kernel level for this appliance.\n'
+            printf '# Docker reads /sys/module/apparmor/parameters/enabled and skips profile\n'
+            printf '# application when AppArmor is unavailable, so containers still start.\n'
+            printf '#\n'
+            printf '# This assignment intentionally overrides any GRUB_CMDLINE_LINUX_DEFAULT\n'
+            printf '# set earlier in this file: grub-mkconfig sources it as shell, so the last\n'
+            printf '# assignment wins. Any parameters that line had are carried over above.\n'
+            printf '# To revert, delete this whole block and run: sudo update-grub\n'
+            printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$GRUB_NEW"
+            printf '%s\n' "$GRUB_END"
+        } >> "$GRUB_TMP"
+
+        $SUDO cp "$GRUB_TMP" "$GRUB_FILE"
+        $SUDO chmod 644 "$GRUB_FILE"
+        rm -f "$GRUB_TMP"
+
+        # Regenerate grub.cfg, or the parameter never reaches the kernel.
+        if command -v update-grub >/dev/null 2>&1; then
+            log "regenerating the boot configuration (update-grub)"
+            if $SUDO update-grub >/dev/null 2>&1; then
+                ok "boot configuration updated"
+                REBOOT_REQUIRED=1
+            else
+                warn "update-grub failed. ${GRUB_FILE} was written, but the boot"
+                warn "configuration was NOT regenerated, so apparmor=0 will not take"
+                warn "effect. Run 'sudo update-grub' by hand to see the error."
+            fi
+        elif command -v grub-mkconfig >/dev/null 2>&1; then
+            log "regenerating the boot configuration (grub-mkconfig)"
+            if $SUDO grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then
+                ok "boot configuration updated"
+                REBOOT_REQUIRED=1
+            else
+                warn "grub-mkconfig failed; apparmor=0 will not take effect."
+                warn "run 'sudo grub-mkconfig -o /boot/grub/grub.cfg' to see the error."
+            fi
+        else
+            warn "neither update-grub nor grub-mkconfig is available, so the boot"
+            warn "configuration cannot be regenerated and apparmor=0 will not take"
+            warn "effect. ${GRUB_FILE} has still been updated for a later rebuild."
+        fi
     fi
 
     # --- unattended upgrades ------------------------------------------------
@@ -825,6 +928,16 @@ if [ -n "$INVOKING_USER" ] && [ "$INVOKING_USER" != "root" ]; then
 fi
 
 if verify_install; then VERIFY_STATUS=0; else VERIFY_STATUS=1; fi
+
+if [ "${REBOOT_REQUIRED:-0}" -eq 1 ]; then
+    echo
+    echo "${C_YELLOW}${C_BOLD}  A reboot is required.${C_RESET}"
+    echo "${C_YELLOW}  apparmor=0 was added to the kernel command line and only takes effect"
+    echo "  on the next boot. Everything else is already active.${C_RESET}"
+    echo "${C_YELLOW}  After rebooting, confirm streams still start and check:${C_RESET}"
+    echo "${C_YELLOW}    cat /sys/module/apparmor/parameters/enabled   # expect N${C_RESET}"
+    echo "${C_YELLOW}    sudo docker run --rm hello-world              # expect success${C_RESET}"
+fi
 
 if [ "${GENERATED_PASSWORD:-0}" -eq 1 ]; then
     echo
