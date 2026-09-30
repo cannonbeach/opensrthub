@@ -43,8 +43,8 @@ The installer treats the machine as a dedicated streaming appliance and adjusts
 the host accordingly. Pass `--skip-tuning` to skip all of it if you manage host
 configuration with Ansible, cloud-init or similar.
 
-- **Kernel parameters** - `apparmor=0` and
-  `cpufreq.default_governor=performance` are added to
+- **Kernel parameters** - `apparmor=0`,
+  `cpufreq.default_governor=performance` and `mitigations=off` are added to
   `GRUB_CMDLINE_LINUX_DEFAULT` in `/etc/default/grub` (backed up once to
   `/etc/default/grub.opensrthub.bak`), followed by `update-grub`. Each is added
   only if it is not already on the command line - if both are already there,
@@ -64,6 +64,18 @@ configuration with Ansible, cloud-init or similar.
   whatever that drop-in set. It then confirms each parameter is actually present
   in the generated `/boot/grub/grub.cfg` rather than assuming the edit worked.
 
+  `mitigations=off` disables the CPU speculative-execution mitigations (Spectre,
+  Meltdown/PTI, MDS, L1TF, Retbleed, SRSO, Downfall). It is here because those
+  mitigations cost most on syscall- and context-switch-heavy code, and a UDP/SRT
+  packet mover doing a `recvmsg`/`sendmsg` per packet is close to a worst case for
+  that overhead. **This is a deliberate security tradeoff**: you give up
+  cross-privilege and cross-process speculative isolation, so it is appropriate
+  for a dedicated appliance on a network you control and *not* for a shared or
+  multi-tenant host. Note that running streams in containers does not offset this
+  - containers share the kernel and are not a speculative-execution boundary.
+  It also re-enables SMT if a mitigation had disabled it. Remove it from
+  `GRUB_PARAMS` if your threat model does not allow it.
+
 - **AppArmor** - the service is also stopped, disabled and masked, and its
   profiles unloaded, so it is off before the reboot too.
 
@@ -72,7 +84,8 @@ configuration with Ansible, cloud-init or similar.
   entirely when AppArmor is unavailable. After rebooting, confirm with
   `cat /sys/module/apparmor/parameters/enabled` (expect `N`), check
   `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor` (expect
-  `performance`), and check that streams still start.
+  `performance`), check `grep . /sys/devices/system/cpu/vulnerabilities/*` (expect
+  `Vulnerable`), and check that streams still start.
 
 - **Unattended upgrades** - service masked and the apt periodic counters in
   `/etc/apt/apt.conf.d/20auto-upgrades` set to 0. An automatic upgrade that

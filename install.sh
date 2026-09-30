@@ -28,6 +28,7 @@ FFMPEG_REPO="https://git.ffmpeg.org/ffmpeg.git"
 GRUB_PARAMS=(
     "apparmor=0"                            # AppArmor off at the kernel level
     "cpufreq.default_governor=performance"  # no on-demand scaling under stream load
+    "mitigations=off"                       # see the README before changing this
 )
 
 APP_DIR="/var/app"
@@ -1068,6 +1069,7 @@ if [ "${REBOOT_REQUIRED:-0}" -eq 1 ]; then
     echo "${C_YELLOW}    cat /proc/cmdline                                   # expect both parameters${C_RESET}"
     echo "${C_YELLOW}    cat /sys/module/apparmor/parameters/enabled          # expect N${C_RESET}"
     echo "${C_YELLOW}    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor  # expect performance${C_RESET}"
+    echo "${C_YELLOW}    grep . /sys/devices/system/cpu/vulnerabilities/*      # expect Vulnerable${C_RESET}"
     echo "${C_YELLOW}    sudo docker run --rm hello-world                     # expect success${C_RESET}"
 fi
 
