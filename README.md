@@ -28,6 +28,11 @@ finishes by checking its own work and printing the URL to open.
 
 Expect 15-30 minutes on first run, almost all of it compiling FFmpeg.
 
+The libcurl build suppresses autoconf's obsolete-macro warnings
+(`WARNINGS=no-obsolete`). autoconf 2.70 turned `-Wobsolete` on by default and this
+curl fork predates the `AC_HELP_STRING` rename, so leaving them on produces around
+660 lines of harmless noise. Genuine syntax and portability warnings still show.
+
 Then browse to **https://your-server:8080** and log in as `admin` with the
 password you chose. Your browser will warn about the certificate because it is
 self-signed; replace `/var/app/cert/server.{key,crt}` with a real certificate to
@@ -125,15 +130,21 @@ the kernel parameter as `[pend]` until you have rebooted.
 #### Why the script is called setup.sh
 
 Not `install.sh`, deliberately. curl's `configure.ac` declares no
-`AC_CONFIG_AUX_DIR`, so autoconf searches for `install-sh`, `install.sh` or
-`shtool` in `.`, then `..`, then `../..` and uses the first directory it finds one
-in. An `install.sh` in the repository root is therefore picked up as the config aux
-directory by the libcurl build cloned beneath it: `libtoolize` writes `ltmain.sh`
-outside the curl tree and `automake` then fails with
-`required file './ltmain.sh' not found`.
+`AC_CONFIG_AUX_DIR`, so autoconf and `libtoolize` fall back to searching for
+`install-sh`, `install.sh` or `shtool` in `.`, then `..`, then `../..`, using the
+first directory that has one. An `install.sh` in the repository root is therefore
+picked up as the config aux directory by the libcurl build cloned beneath it:
+`libtoolize` writes `ltmain.sh` outside the curl tree and `automake` then fails
+with `required file './ltmain.sh' not found`.
 
-The build seeds its own `install-sh` to be immune to this regardless, but the
-script keeps a name that cannot trigger it. Don't rename it back.
+The libcurl build declares `AC_CONFIG_AUX_DIR([.])` in the cloned tree before
+running `buildconf`, which makes it immune to this no matter what sits above the
+checkout - including an `install.sh` of your own in a parent directory. The script
+still keeps a name that cannot trigger it. Don't rename it back.
+
+(Seeding an `install-sh` into the curl tree does *not* work, for the record:
+`install-sh` is on `buildconf`'s own cleanup list, so it is deleted before
+`libtoolize` runs.)
 
 #### Installer options
 

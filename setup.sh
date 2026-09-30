@@ -879,28 +879,39 @@ else
         fi
         pushd "${REPO_DIR}/cblibcurl" >/dev/null || die "cannot enter cblibcurl"
 
-        # curl's configure.ac declares no AC_CONFIG_AUX_DIR, so autoconf searches
-        # for install-sh / setup.sh / shtool in '.', then '..', then '../..' and
-        # takes the first hit. Any install.sh sitting in a parent directory
-        # therefore captures the aux dir: libtoolize writes ltmain.sh outside the
-        # tree ("putting auxiliary files in '..'") and automake then dies with
-        # "required file './ltmain.sh' not found". Seeding install-sh here makes
-        # '.' win regardless of what lives above the checkout.
-        if [ ! -f install-sh ]; then
-            AUTOMAKE_LIBDIR="$(automake --print-libdir 2>/dev/null || true)"
-            if [ -n "$AUTOMAKE_LIBDIR" ] && [ -f "${AUTOMAKE_LIBDIR}/install-sh" ]; then
-                log "seeding install-sh so the aux dir resolves to the curl tree"
-                cp "${AUTOMAKE_LIBDIR}/install-sh" ./install-sh
-                chmod +x ./install-sh
-            else
-                warn "could not find automake's install-sh to seed the curl tree."
-                warn "if buildconf fails with \"required file './ltmain.sh' not"
-                warn "found\", an install.sh in a parent directory has captured"
-                warn "curl's config aux directory."
-            fi
+        # curl's configure.ac declares no AC_CONFIG_AUX_DIR, so autoconf and
+        # libtoolize fall back to searching for install-sh / install.sh / shtool
+        # in '.', then '..', then '../..', using the first directory that has
+        # one. Any install.sh above the checkout therefore captures curl's config
+        # aux directory: libtoolize writes ltmain.sh outside the curl tree and
+        # automake then dies with "required file './ltmain.sh' not found".
+        #
+        # Seeding install-sh into the tree does NOT fix this - install-sh is on
+        # buildconf's own cleanup list, so it is deleted before libtoolize runs.
+        # Declaring the aux directory explicitly does; libtoolize then reports it
+        # is honouring AC_CONFIG_AUX_DIR and the build is immune to whatever sits
+        # above the checkout.
+        if ! grep -q '^AC_CONFIG_AUX_DIR' configure.ac; then
+            log "declaring AC_CONFIG_AUX_DIR in curl's configure.ac"
+            awk '{print} /^AC_INIT/ && !d {print "AC_CONFIG_AUX_DIR([.])"; d=1}' \
+                configure.ac > configure.ac.opensrthub
+            mv configure.ac.opensrthub configure.ac
+            grep -q '^AC_CONFIG_AUX_DIR' configure.ac \
+                || die "could not declare AC_CONFIG_AUX_DIR in curl's configure.ac."
         fi
 
-        [ -f configure ] || ./buildconf
+        if [ ! -f configure ]; then
+            log "generating curl's configure script (buildconf)"
+            # autoconf 2.70+ enables -Wobsolete by default (2.69 did not), and
+            # this curl fork predates the AC_HELP_STRING -> AS_HELP_STRING rename
+            # and still uses AC_TRY_*, AC_HEADER_TIME and AC_TYPE_SIGNAL. On
+            # Ubuntu 24.04's autoconf 2.71 that means several hundred lines of
+            # "macro is obsolete" warnings out of buildconf. The macros still
+            # work, so suppress just that category - genuine syntax and
+            # portability warnings still come through. autoconf, aclocal and
+            # automake all honour $WARNINGS.
+            WARNINGS=no-obsolete ./buildconf
+        fi
         [ -f configure ] || die "curl's configure script was not generated. See ${LOG_FILE}."
         ./configure --prefix=/usr --enable-static --enable-pthreads \
                     --without-ssl --without-librtmp --without-libidn2 \
