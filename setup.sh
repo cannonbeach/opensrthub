@@ -314,7 +314,7 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
 fi
 
 #-----------------------------------------------------------------------------
-# Phase 1: preflight
+# preflight
 #-----------------------------------------------------------------------------
 phase "Preflight checks"
 
@@ -349,7 +349,7 @@ fi
 log "Build parallelism: -j${JOBS}"
 
 #-----------------------------------------------------------------------------
-# Phase 2: directory layout
+# directory layout
 #-----------------------------------------------------------------------------
 phase "Creating directory layout"
 
@@ -365,7 +365,7 @@ for d in "${DATA_DIR}" "${DATA_DIR}/configs" "${DATA_DIR}/status" \
 done
 
 #-----------------------------------------------------------------------------
-# Phase 3: system packages
+# system packages
 #-----------------------------------------------------------------------------
 phase "Installing system packages"
 
@@ -450,7 +450,275 @@ else
 fi
 
 #-----------------------------------------------------------------------------
-# Phase 4: host tuning
+# third-party libraries
+#-----------------------------------------------------------------------------
+phase "Building third-party libraries"
+
+# clone_at <repo-url> <target-dir> <git-ref> <branch-name>
+clone_at() {
+    local repo="$1" dir="$2" ref="$3" branch="$4"
+    if [ -d "${dir}/.git" ]; then
+        log "${dir} already cloned"
+    else
+        log "cloning ${repo} into ${dir}"
+        rm -rf "$dir"
+        git clone "$repo" "$dir"
+    fi
+    pushd "$dir" >/dev/null || die "cannot enter ${dir}"
+    # Re-running 'checkout -b' on an existing branch is an error, so only create
+    # the branch if it isn't there yet.
+    if git rev-parse --verify --quiet "$branch" >/dev/null; then
+        git checkout "$branch"
+    else
+        git checkout -b "$branch" "$ref"
+    fi
+    popd >/dev/null
+}
+
+if [ "$SKIP_BUILD" -eq 1 ]; then
+    bypass "the third-party library build (--skip-build)"
+else
+    # --- libsrt -------------------------------------------------------------
+    if [ -f "${REPO_DIR}/cbsrt/libsrt.a" ]; then
+        skip "libsrt (cbsrt/libsrt.a exists)"
+    else
+        log "building libsrt ${SRT_TAG}"
+        clone_at "$SRT_REPO" "${REPO_DIR}/cbsrt" "tags/${SRT_TAG}" "${SRT_TAG}"
+        pushd "${REPO_DIR}/cbsrt" >/dev/null || die "cannot enter cbsrt"
+        ./configure --prefix=/usr
+        make -j"${JOBS}"
+        popd >/dev/null
+        [ -f "${REPO_DIR}/cbsrt/libsrt.a" ] || die "libsrt.a was not produced. See ${LOG_FILE}."
+        ok "libsrt built"
+    fi
+
+    # --- libcurl ------------------------------------------------------------
+    if [ -f "${REPO_DIR}/cblibcurl/lib/.libs/libcurl.a" ]; then
+        skip "libcurl (cblibcurl/lib/.libs/libcurl.a exists)"
+    else
+        log "building libcurl"
+        if [ -d "${REPO_DIR}/cblibcurl/.git" ]; then
+            log "cblibcurl already cloned"
+        else
+            rm -rf "${REPO_DIR}/cblibcurl"
+            git clone "$CURL_REPO" "${REPO_DIR}/cblibcurl"
+        fi
+        pushd "${REPO_DIR}/cblibcurl" >/dev/null || die "cannot enter cblibcurl"
+
+        # curl's configure.ac declares no AC_CONFIG_AUX_DIR, so autoconf and
+        # libtoolize fall back to searching for install-sh / install.sh / shtool
+        # in '.', then '..', then '../..', using the first directory that has
+        # one. Any install.sh above the checkout therefore captures curl's config
+        # aux directory: libtoolize writes ltmain.sh outside the curl tree and
+        # automake then dies with "required file './ltmain.sh' not found".
+        #
+        # Seeding install-sh into the tree does NOT fix this - install-sh is on
+        # buildconf's own cleanup list, so it is deleted before libtoolize runs.
+        # Declaring the aux directory explicitly does; libtoolize then reports it
+        # is honouring AC_CONFIG_AUX_DIR and the build is immune to whatever sits
+        # above the checkout.
+        if ! grep -q '^AC_CONFIG_AUX_DIR' configure.ac; then
+            log "declaring AC_CONFIG_AUX_DIR in curl's configure.ac"
+            awk '{print} /^AC_INIT/ && !d {print "AC_CONFIG_AUX_DIR([.])"; d=1}' \
+                configure.ac > configure.ac.opensrthub
+            mv configure.ac.opensrthub configure.ac
+            grep -q '^AC_CONFIG_AUX_DIR' configure.ac \
+                || die "could not declare AC_CONFIG_AUX_DIR in curl's configure.ac."
+        fi
+
+        if [ ! -f configure ]; then
+            log "generating curl's configure script (buildconf)"
+            # autoconf 2.70+ enables -Wobsolete by default (2.69 did not), and
+            # this curl fork predates the AC_HELP_STRING -> AS_HELP_STRING rename
+            # and still uses AC_TRY_*, AC_HEADER_TIME and AC_TYPE_SIGNAL. On
+            # Ubuntu 24.04's autoconf 2.71 that means several hundred lines of
+            # "macro is obsolete" warnings out of buildconf. The macros still
+            # work, so suppress just that category - genuine syntax and
+            # portability warnings still come through. autoconf, aclocal and
+            # automake all honour $WARNINGS.
+            WARNINGS=no-obsolete ./buildconf
+        fi
+        [ -f configure ] || die "curl's configure script was not generated. See ${LOG_FILE}."
+        ./configure --prefix=/usr --enable-static --enable-pthreads \
+                    --without-ssl --without-librtmp --without-libidn2 \
+                    --without-nghttp2 --without-brotli
+        make -j"${JOBS}"
+        popd >/dev/null
+        [ -f "${REPO_DIR}/cblibcurl/lib/.libs/libcurl.a" ] || die "libcurl.a was not produced. See ${LOG_FILE}."
+        ok "libcurl built"
+    fi
+
+    # --- FFmpeg -------------------------------------------------------------
+    if [ -f "${REPO_DIR}/cbffmpeg/libavcodec/libavcodec.a" ]; then
+        skip "FFmpeg (cbffmpeg/libavcodec/libavcodec.a exists)"
+    else
+        log "building FFmpeg ${FFMPEG_BRANCH} (this is the slowest step, typically 5-15 minutes)"
+        clone_at "$FFMPEG_REPO" "${REPO_DIR}/cbffmpeg" "remotes/origin/${FFMPEG_BRANCH}" "release6.1"
+        pushd "${REPO_DIR}/cbffmpeg" >/dev/null || die "cannot enter cbffmpeg"
+        ./configure --prefix=/usr --disable-encoders --disable-iconv \
+                    --disable-v4l2-m2m --disable-muxers --disable-vaapi \
+                    --disable-vdpau --disable-videotoolbox --disable-avdevice \
+                    --enable-encoder=mjpeg
+        make -j"${JOBS}"
+        popd >/dev/null
+        [ -f "${REPO_DIR}/cbffmpeg/libavcodec/libavcodec.a" ] || die "libavcodec.a was not produced. See ${LOG_FILE}."
+        ok "FFmpeg built"
+    fi
+fi
+
+#-----------------------------------------------------------------------------
+# build srthub
+#-----------------------------------------------------------------------------
+phase "Building srthub"
+
+if [ "$SKIP_BUILD" -eq 1 ] && [ -x "${REPO_DIR}/srthub" ]; then
+    bypass "the srthub build (--skip-build)"
+else
+    pushd "$REPO_DIR" >/dev/null
+    make -j"${JOBS}"
+    popd >/dev/null
+    [ -x "${REPO_DIR}/srthub" ] || die "the srthub binary was not produced. See ${LOG_FILE}."
+    ok "srthub built"
+fi
+
+#-----------------------------------------------------------------------------
+# container image
+#-----------------------------------------------------------------------------
+# The web app launches every stream as a container:
+#   docker run ... dockersrthub /usr/bin/srthub <id>
+# so this image is mandatory, not optional. The old setup script never built it,
+# which meant a fresh install could start the UI but not start a stream.
+phase "Building the ${DOCKER_IMAGE} container image"
+
+if [ "$SKIP_DOCKER" -eq 1 ]; then
+    bypass "the container image build (--skip-docker)"
+else
+    $SUDO docker info >/dev/null 2>&1 || die "the docker daemon is not running. Try: sudo systemctl start docker"
+    log "copying srthub binary into the build context"
+    $SUDO cp "${REPO_DIR}/srthub" "${REPO_DIR}/docker/srthub"
+    pushd "${REPO_DIR}/docker" >/dev/null
+    log "docker build (base image ubuntu:${UBUNTU_VERSION})"
+    $SUDO docker build --build-arg "UBUNTU_VERSION=${UBUNTU_VERSION}" -t "$DOCKER_IMAGE" .
+    popd >/dev/null
+    $SUDO docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1 \
+        || die "the ${DOCKER_IMAGE} image was not created. See ${LOG_FILE}."
+
+    # Confirm the binary's shared libraries actually resolve under the
+    # container's glibc. A silent mismatch here is the difference between
+    # "the UI works" and "streams refuse to start". Checking the loader rather
+    # than running srthub avoids blocking on a process that expects a config.
+    log "checking that srthub's libraries resolve inside the container"
+    if $SUDO docker run --rm --entrypoint /bin/sh "$DOCKER_IMAGE" \
+           -c 'ldd /usr/bin/srthub 2>&1' | grep -q 'not found'; then
+        die "srthub cannot load inside the ${DOCKER_IMAGE} image (missing shared libraries).
+       The container base image (ubuntu:${UBUNTU_VERSION}) is older than this host's glibc."
+    fi
+    ok "container image built and srthub loads correctly inside it"
+fi
+
+#-----------------------------------------------------------------------------
+# install the web application
+#-----------------------------------------------------------------------------
+phase "Installing the web application"
+
+install_file() {
+    local src="$1" dest="$2"
+    [ -f "$src" ] || die "expected file not found: ${src}"
+    log "installing $(basename "$src") -> ${dest}"
+    $SUDO cp "$src" "$dest"
+}
+
+install_file "${REPO_DIR}/webapp/server.js"          "${APP_DIR}/"
+install_file "${REPO_DIR}/webapp/authenticate.html"  "${APP_DIR}/"
+install_file "${REPO_DIR}/webapp/package.json"       "${APP_DIR}/"
+install_file "${REPO_DIR}/webapp/public/index.html"  "${APP_DIR}/public/"
+if [ -f "${REPO_DIR}/webapp/package-lock.json" ]; then
+    install_file "${REPO_DIR}/webapp/package-lock.json" "${APP_DIR}/"
+fi
+if [ -f "${REPO_DIR}/webapp/public/client.js" ]; then
+    install_file "${REPO_DIR}/webapp/public/client.js" "${APP_DIR}/public/"
+fi
+
+# Node modules are installed locally from a lockfile rather than globally with a
+# symlink into /usr/lib/node_modules, so the versions are reproducible.
+if [ -L "${APP_DIR}/node_modules" ]; then
+    log "removing the legacy /usr/lib/node_modules symlink"
+    $SUDO rm -f "${APP_DIR}/node_modules"
+fi
+
+log "installing web app dependencies"
+pushd "$APP_DIR" >/dev/null
+if [ -f package-lock.json ]; then
+    $SUDO npm ci --omit=dev
+else
+    $SUDO npm install --omit=dev
+fi
+popd >/dev/null
+[ -d "${APP_DIR}/node_modules/express" ] || die "npm did not install the web app dependencies. See ${LOG_FILE}."
+ok "web app dependencies installed"
+
+#-----------------------------------------------------------------------------
+# credentials and TLS certificate
+#-----------------------------------------------------------------------------
+phase "Configuring credentials and TLS"
+
+if [ -s "${DATA_DIR}/users.json" ]; then
+    skip "users.json (existing credentials preserved)"
+else
+    if [ -z "$ADMIN_PASSWORD" ] && [ -t 0 ] && [ -e /dev/tty ]; then
+        # Prompt on /dev/tty rather than stdout: stdout is piped through tee for
+        # the install log, which can hold a newline-less prompt in a buffer.
+        {
+            printf '\n%sSet the initial web login password for user '"'"'admin'"'"'.%s\n' "$C_BOLD" "$C_RESET"
+            printf 'Leave blank to have one generated for you.\n'
+        } > /dev/tty
+        printf 'Password: ' > /dev/tty
+        IFS= read -rs ADMIN_PASSWORD < /dev/tty || true
+        printf '\n' > /dev/tty
+        if [ -n "$ADMIN_PASSWORD" ]; then
+            printf 'Confirm:  ' > /dev/tty
+            IFS= read -rs ADMIN_PASSWORD_CONFIRM < /dev/tty || true
+            printf '\n' > /dev/tty
+            [ "$ADMIN_PASSWORD" = "$ADMIN_PASSWORD_CONFIRM" ] || die "passwords did not match."
+        fi
+    fi
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        # No trailing 'head' in the pipeline: it closes the pipe early, tr takes
+        # SIGPIPE, and pipefail turns that into a fatal error. Trim with a shell
+        # expansion instead.
+        ADMIN_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' || true)"
+        ADMIN_PASSWORD="${ADMIN_PASSWORD:0:20}"
+        if [ -z "$ADMIN_PASSWORD" ]; then
+            die "could not generate a random password from /dev/urandom."
+        fi
+        GENERATED_PASSWORD=1
+    fi
+    log "creating ${DATA_DIR}/users.json"
+    printf '[{"username":"admin","password":"%s"}]\n' "$ADMIN_PASSWORD" \
+        | $SUDO tee "${DATA_DIR}/users.json" >/dev/null
+    $SUDO chmod 600 "${DATA_DIR}/users.json"
+fi
+
+if [ -s "${APP_DIR}/cert/server.crt" ] && [ -s "${APP_DIR}/cert/server.key" ]; then
+    skip "TLS certificate (existing certificate preserved)"
+else
+    CERT_CN="$(hostname -f 2>/dev/null || hostname)"
+    CERT_IP="$(primary_ip)"
+    SAN="DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1"
+    [ -n "$CERT_IP" ] && SAN="${SAN},IP:${CERT_IP}"
+    log "generating a self-signed certificate for ${CERT_CN}"
+    # -subj and -addext keep this non-interactive; the old script stopped here
+    # and waited for a country code.
+    $SUDO openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -subj "/CN=${CERT_CN}" -addext "subjectAltName=${SAN}" \
+        -keyout "${APP_DIR}/cert/server.key" \
+        -out "${APP_DIR}/cert/server.crt"
+    $SUDO chmod 600 "${APP_DIR}/cert/server.key"
+    ok "certificate generated (self-signed, valid 10 years)"
+fi
+
+#-----------------------------------------------------------------------------
+# host tuning
 #-----------------------------------------------------------------------------
 # This box is expected to run as a dedicated streaming appliance, so background
 # package activity, login banners and MAC enforcement are turned off, and a few
@@ -485,10 +753,18 @@ else
     # kernel but apparmor_parser missing, so 'docker-default' cannot load.
     if [ -n "$(systemctl list-unit-files apparmor.service --no-legend 2>/dev/null)" ]; then
         disable_unit apparmor.service
-        if command -v aa-teardown >/dev/null 2>&1; then
-            log "unloading AppArmor profiles (aa-teardown)"
-            $SUDO aa-teardown >/dev/null 2>&1 || warn "aa-teardown reported an error"
-        fi
+        # Deliberately NOT running aa-teardown. Ubuntu's apparmor.service sets
+        # ExecStop=/bin/true precisely so that stopping the service does not
+        # unload the profile set, because unloading it on a running system breaks
+        # anything that expects a profile to be there. aa-teardown bypasses that:
+        # it unloads docker-default while the AppArmor LSM is still active, and
+        # every subsequent "docker run"/"docker build" then fails with
+        #   apparmor failed to apply profile: ... no such file or directory
+        # Disabling and masking the unit keeps AppArmor off from the next boot,
+        # and apparmor=0 on the kernel command line turns it off for real. The
+        # loaded profiles stay in place until that reboot, which is what keeps
+        # docker working for the rest of this install.
+        log "profiles stay loaded until the reboot (so docker keeps working)"
     else
         log "the AppArmor service is not installed on this system"
     fi
@@ -824,275 +1100,7 @@ SYSCTLBLOCK
 fi
 
 #-----------------------------------------------------------------------------
-# Phase 4: third-party libraries
-#-----------------------------------------------------------------------------
-phase "Building third-party libraries"
-
-# clone_at <repo-url> <target-dir> <git-ref> <branch-name>
-clone_at() {
-    local repo="$1" dir="$2" ref="$3" branch="$4"
-    if [ -d "${dir}/.git" ]; then
-        log "${dir} already cloned"
-    else
-        log "cloning ${repo} into ${dir}"
-        rm -rf "$dir"
-        git clone "$repo" "$dir"
-    fi
-    pushd "$dir" >/dev/null || die "cannot enter ${dir}"
-    # Re-running 'checkout -b' on an existing branch is an error, so only create
-    # the branch if it isn't there yet.
-    if git rev-parse --verify --quiet "$branch" >/dev/null; then
-        git checkout "$branch"
-    else
-        git checkout -b "$branch" "$ref"
-    fi
-    popd >/dev/null
-}
-
-if [ "$SKIP_BUILD" -eq 1 ]; then
-    bypass "the third-party library build (--skip-build)"
-else
-    # --- libsrt -------------------------------------------------------------
-    if [ -f "${REPO_DIR}/cbsrt/libsrt.a" ]; then
-        skip "libsrt (cbsrt/libsrt.a exists)"
-    else
-        log "building libsrt ${SRT_TAG}"
-        clone_at "$SRT_REPO" "${REPO_DIR}/cbsrt" "tags/${SRT_TAG}" "${SRT_TAG}"
-        pushd "${REPO_DIR}/cbsrt" >/dev/null || die "cannot enter cbsrt"
-        ./configure --prefix=/usr
-        make -j"${JOBS}"
-        popd >/dev/null
-        [ -f "${REPO_DIR}/cbsrt/libsrt.a" ] || die "libsrt.a was not produced. See ${LOG_FILE}."
-        ok "libsrt built"
-    fi
-
-    # --- libcurl ------------------------------------------------------------
-    if [ -f "${REPO_DIR}/cblibcurl/lib/.libs/libcurl.a" ]; then
-        skip "libcurl (cblibcurl/lib/.libs/libcurl.a exists)"
-    else
-        log "building libcurl"
-        if [ -d "${REPO_DIR}/cblibcurl/.git" ]; then
-            log "cblibcurl already cloned"
-        else
-            rm -rf "${REPO_DIR}/cblibcurl"
-            git clone "$CURL_REPO" "${REPO_DIR}/cblibcurl"
-        fi
-        pushd "${REPO_DIR}/cblibcurl" >/dev/null || die "cannot enter cblibcurl"
-
-        # curl's configure.ac declares no AC_CONFIG_AUX_DIR, so autoconf and
-        # libtoolize fall back to searching for install-sh / install.sh / shtool
-        # in '.', then '..', then '../..', using the first directory that has
-        # one. Any install.sh above the checkout therefore captures curl's config
-        # aux directory: libtoolize writes ltmain.sh outside the curl tree and
-        # automake then dies with "required file './ltmain.sh' not found".
-        #
-        # Seeding install-sh into the tree does NOT fix this - install-sh is on
-        # buildconf's own cleanup list, so it is deleted before libtoolize runs.
-        # Declaring the aux directory explicitly does; libtoolize then reports it
-        # is honouring AC_CONFIG_AUX_DIR and the build is immune to whatever sits
-        # above the checkout.
-        if ! grep -q '^AC_CONFIG_AUX_DIR' configure.ac; then
-            log "declaring AC_CONFIG_AUX_DIR in curl's configure.ac"
-            awk '{print} /^AC_INIT/ && !d {print "AC_CONFIG_AUX_DIR([.])"; d=1}' \
-                configure.ac > configure.ac.opensrthub
-            mv configure.ac.opensrthub configure.ac
-            grep -q '^AC_CONFIG_AUX_DIR' configure.ac \
-                || die "could not declare AC_CONFIG_AUX_DIR in curl's configure.ac."
-        fi
-
-        if [ ! -f configure ]; then
-            log "generating curl's configure script (buildconf)"
-            # autoconf 2.70+ enables -Wobsolete by default (2.69 did not), and
-            # this curl fork predates the AC_HELP_STRING -> AS_HELP_STRING rename
-            # and still uses AC_TRY_*, AC_HEADER_TIME and AC_TYPE_SIGNAL. On
-            # Ubuntu 24.04's autoconf 2.71 that means several hundred lines of
-            # "macro is obsolete" warnings out of buildconf. The macros still
-            # work, so suppress just that category - genuine syntax and
-            # portability warnings still come through. autoconf, aclocal and
-            # automake all honour $WARNINGS.
-            WARNINGS=no-obsolete ./buildconf
-        fi
-        [ -f configure ] || die "curl's configure script was not generated. See ${LOG_FILE}."
-        ./configure --prefix=/usr --enable-static --enable-pthreads \
-                    --without-ssl --without-librtmp --without-libidn2 \
-                    --without-nghttp2 --without-brotli
-        make -j"${JOBS}"
-        popd >/dev/null
-        [ -f "${REPO_DIR}/cblibcurl/lib/.libs/libcurl.a" ] || die "libcurl.a was not produced. See ${LOG_FILE}."
-        ok "libcurl built"
-    fi
-
-    # --- FFmpeg -------------------------------------------------------------
-    if [ -f "${REPO_DIR}/cbffmpeg/libavcodec/libavcodec.a" ]; then
-        skip "FFmpeg (cbffmpeg/libavcodec/libavcodec.a exists)"
-    else
-        log "building FFmpeg ${FFMPEG_BRANCH} (this is the slowest step, typically 5-15 minutes)"
-        clone_at "$FFMPEG_REPO" "${REPO_DIR}/cbffmpeg" "remotes/origin/${FFMPEG_BRANCH}" "release6.1"
-        pushd "${REPO_DIR}/cbffmpeg" >/dev/null || die "cannot enter cbffmpeg"
-        ./configure --prefix=/usr --disable-encoders --disable-iconv \
-                    --disable-v4l2-m2m --disable-muxers --disable-vaapi \
-                    --disable-vdpau --disable-videotoolbox --disable-avdevice \
-                    --enable-encoder=mjpeg
-        make -j"${JOBS}"
-        popd >/dev/null
-        [ -f "${REPO_DIR}/cbffmpeg/libavcodec/libavcodec.a" ] || die "libavcodec.a was not produced. See ${LOG_FILE}."
-        ok "FFmpeg built"
-    fi
-fi
-
-#-----------------------------------------------------------------------------
-# Phase 5: build srthub
-#-----------------------------------------------------------------------------
-phase "Building srthub"
-
-if [ "$SKIP_BUILD" -eq 1 ] && [ -x "${REPO_DIR}/srthub" ]; then
-    bypass "the srthub build (--skip-build)"
-else
-    pushd "$REPO_DIR" >/dev/null
-    make -j"${JOBS}"
-    popd >/dev/null
-    [ -x "${REPO_DIR}/srthub" ] || die "the srthub binary was not produced. See ${LOG_FILE}."
-    ok "srthub built"
-fi
-
-#-----------------------------------------------------------------------------
-# Phase 6: container image
-#-----------------------------------------------------------------------------
-# The web app launches every stream as a container:
-#   docker run ... dockersrthub /usr/bin/srthub <id>
-# so this image is mandatory, not optional. The old setup script never built it,
-# which meant a fresh install could start the UI but not start a stream.
-phase "Building the ${DOCKER_IMAGE} container image"
-
-if [ "$SKIP_DOCKER" -eq 1 ]; then
-    bypass "the container image build (--skip-docker)"
-else
-    $SUDO docker info >/dev/null 2>&1 || die "the docker daemon is not running. Try: sudo systemctl start docker"
-    log "copying srthub binary into the build context"
-    $SUDO cp "${REPO_DIR}/srthub" "${REPO_DIR}/docker/srthub"
-    pushd "${REPO_DIR}/docker" >/dev/null
-    log "docker build (base image ubuntu:${UBUNTU_VERSION})"
-    $SUDO docker build --build-arg "UBUNTU_VERSION=${UBUNTU_VERSION}" -t "$DOCKER_IMAGE" .
-    popd >/dev/null
-    $SUDO docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1 \
-        || die "the ${DOCKER_IMAGE} image was not created. See ${LOG_FILE}."
-
-    # Confirm the binary's shared libraries actually resolve under the
-    # container's glibc. A silent mismatch here is the difference between
-    # "the UI works" and "streams refuse to start". Checking the loader rather
-    # than running srthub avoids blocking on a process that expects a config.
-    log "checking that srthub's libraries resolve inside the container"
-    if $SUDO docker run --rm --entrypoint /bin/sh "$DOCKER_IMAGE" \
-           -c 'ldd /usr/bin/srthub 2>&1' | grep -q 'not found'; then
-        die "srthub cannot load inside the ${DOCKER_IMAGE} image (missing shared libraries).
-       The container base image (ubuntu:${UBUNTU_VERSION}) is older than this host's glibc."
-    fi
-    ok "container image built and srthub loads correctly inside it"
-fi
-
-#-----------------------------------------------------------------------------
-# Phase 7: install the web application
-#-----------------------------------------------------------------------------
-phase "Installing the web application"
-
-install_file() {
-    local src="$1" dest="$2"
-    [ -f "$src" ] || die "expected file not found: ${src}"
-    log "installing $(basename "$src") -> ${dest}"
-    $SUDO cp "$src" "$dest"
-}
-
-install_file "${REPO_DIR}/webapp/server.js"          "${APP_DIR}/"
-install_file "${REPO_DIR}/webapp/authenticate.html"  "${APP_DIR}/"
-install_file "${REPO_DIR}/webapp/package.json"       "${APP_DIR}/"
-install_file "${REPO_DIR}/webapp/public/index.html"  "${APP_DIR}/public/"
-if [ -f "${REPO_DIR}/webapp/package-lock.json" ]; then
-    install_file "${REPO_DIR}/webapp/package-lock.json" "${APP_DIR}/"
-fi
-if [ -f "${REPO_DIR}/webapp/public/client.js" ]; then
-    install_file "${REPO_DIR}/webapp/public/client.js" "${APP_DIR}/public/"
-fi
-
-# Node modules are installed locally from a lockfile rather than globally with a
-# symlink into /usr/lib/node_modules, so the versions are reproducible.
-if [ -L "${APP_DIR}/node_modules" ]; then
-    log "removing the legacy /usr/lib/node_modules symlink"
-    $SUDO rm -f "${APP_DIR}/node_modules"
-fi
-
-log "installing web app dependencies"
-pushd "$APP_DIR" >/dev/null
-if [ -f package-lock.json ]; then
-    $SUDO npm ci --omit=dev
-else
-    $SUDO npm install --omit=dev
-fi
-popd >/dev/null
-[ -d "${APP_DIR}/node_modules/express" ] || die "npm did not install the web app dependencies. See ${LOG_FILE}."
-ok "web app dependencies installed"
-
-#-----------------------------------------------------------------------------
-# Phase 8: credentials and TLS certificate
-#-----------------------------------------------------------------------------
-phase "Configuring credentials and TLS"
-
-if [ -s "${DATA_DIR}/users.json" ]; then
-    skip "users.json (existing credentials preserved)"
-else
-    if [ -z "$ADMIN_PASSWORD" ] && [ -t 0 ] && [ -e /dev/tty ]; then
-        # Prompt on /dev/tty rather than stdout: stdout is piped through tee for
-        # the install log, which can hold a newline-less prompt in a buffer.
-        {
-            printf '\n%sSet the initial web login password for user '"'"'admin'"'"'.%s\n' "$C_BOLD" "$C_RESET"
-            printf 'Leave blank to have one generated for you.\n'
-        } > /dev/tty
-        printf 'Password: ' > /dev/tty
-        IFS= read -rs ADMIN_PASSWORD < /dev/tty || true
-        printf '\n' > /dev/tty
-        if [ -n "$ADMIN_PASSWORD" ]; then
-            printf 'Confirm:  ' > /dev/tty
-            IFS= read -rs ADMIN_PASSWORD_CONFIRM < /dev/tty || true
-            printf '\n' > /dev/tty
-            [ "$ADMIN_PASSWORD" = "$ADMIN_PASSWORD_CONFIRM" ] || die "passwords did not match."
-        fi
-    fi
-    if [ -z "$ADMIN_PASSWORD" ]; then
-        # No trailing 'head' in the pipeline: it closes the pipe early, tr takes
-        # SIGPIPE, and pipefail turns that into a fatal error. Trim with a shell
-        # expansion instead.
-        ADMIN_PASSWORD="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' || true)"
-        ADMIN_PASSWORD="${ADMIN_PASSWORD:0:20}"
-        if [ -z "$ADMIN_PASSWORD" ]; then
-            die "could not generate a random password from /dev/urandom."
-        fi
-        GENERATED_PASSWORD=1
-    fi
-    log "creating ${DATA_DIR}/users.json"
-    printf '[{"username":"admin","password":"%s"}]\n' "$ADMIN_PASSWORD" \
-        | $SUDO tee "${DATA_DIR}/users.json" >/dev/null
-    $SUDO chmod 600 "${DATA_DIR}/users.json"
-fi
-
-if [ -s "${APP_DIR}/cert/server.crt" ] && [ -s "${APP_DIR}/cert/server.key" ]; then
-    skip "TLS certificate (existing certificate preserved)"
-else
-    CERT_CN="$(hostname -f 2>/dev/null || hostname)"
-    CERT_IP="$(primary_ip)"
-    SAN="DNS:${CERT_CN},DNS:localhost,IP:127.0.0.1"
-    [ -n "$CERT_IP" ] && SAN="${SAN},IP:${CERT_IP}"
-    log "generating a self-signed certificate for ${CERT_CN}"
-    # -subj and -addext keep this non-interactive; the old script stopped here
-    # and waited for a country code.
-    $SUDO openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -subj "/CN=${CERT_CN}" -addext "subjectAltName=${SAN}" \
-        -keyout "${APP_DIR}/cert/server.key" \
-        -out "${APP_DIR}/cert/server.crt"
-    $SUDO chmod 600 "${APP_DIR}/cert/server.key"
-    ok "certificate generated (self-signed, valid 10 years)"
-fi
-
-#-----------------------------------------------------------------------------
-# Phase 9: service registration
+# service registration
 #-----------------------------------------------------------------------------
 phase "Registering the ${SERVICE_NAME} service (${SERVICE_MANAGER})"
 
@@ -1123,7 +1131,7 @@ case "$SERVICE_MANAGER" in
 esac
 
 #-----------------------------------------------------------------------------
-# Phase 10: ownership cleanup and verification
+# ownership cleanup and verification
 #-----------------------------------------------------------------------------
 phase "Finishing up"
 

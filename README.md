@@ -48,6 +48,9 @@ The installer treats the machine as a dedicated streaming appliance and adjusts
 the host accordingly. Pass `--skip-tuning` to skip all of it if you manage host
 configuration with Ansible, cloud-init or similar.
 
+This phase runs *after* everything is built and installed, so nothing it changes
+can affect the compile or the container image build.
+
 - **Kernel parameters** - `apparmor=0`,
   `cpufreq.default_governor=performance` and `mitigations=off` are added to
   `GRUB_CMDLINE_LINUX_DEFAULT` in `/etc/default/grub` (backed up once to
@@ -81,8 +84,14 @@ configuration with Ansible, cloud-init or similar.
   It also re-enables SMT if a mitigation had disabled it. Remove it from
   `GRUB_PARAMS` if your threat model does not allow it.
 
-- **AppArmor** - the service is also stopped, disabled and masked, and its
-  profiles unloaded, so it is off before the reboot too.
+- **AppArmor** - the service is also disabled and masked so it does not come back
+  at the next boot. The loaded profiles are deliberately left in place until you
+  reboot: Ubuntu's `apparmor.service` sets `ExecStop=/bin/true` precisely so that
+  stopping it does not unload the profile set, because unloading it on a running
+  system leaves the AppArmor LSM active with no `docker-default` profile to apply,
+  and every `docker run` and `docker build` then fails with
+  `apparmor failed to apply profile: ... no such file or directory`. The kernel
+  parameter is what actually turns AppArmor off, at the next boot.
 
   Disabling AppArmor is docker-safe: runc calls `apparmor.HostSupports()`, which
   reads `/sys/module/apparmor/parameters/enabled`, and skips profile application
