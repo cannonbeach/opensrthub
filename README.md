@@ -118,10 +118,25 @@ can affect the compile or the container image build.
   just the services - they are activators, so masking only the services would
   leave something able to start them again.
 
-  `kernel.core_pattern` is reset to `core` in the sysctl block, because apport
-  replaces it with a pipe to its own handler. Disabling apport without resetting it
-  would hand every core to a program that is no longer running, silently producing
-  no core at all and quietly defeating `fs.suid_dumpable = 1`.
+  `kernel.core_pattern` is repointed at `/opt/srthub/cores/core.%e.%p.%t` in the
+  sysctl block, because apport replaces it with a pipe to its own handler.
+  Disabling apport without resetting it would hand every core to a program that is
+  no longer running, silently producing no core at all and quietly defeating
+  `fs.suid_dumpable = 1`.
+
+  That path matters for containers: `core_pattern` is resolved in the crashing
+  process's own mount namespace, and `server.js` bind-mounts `/opt/srthub` into
+  every stream container at the same path - so a core from srthub inside a
+  container lands on the host and survives the container being removed. The
+  directory is `1777` because the kernel writes each core as the crashing
+  process's own uid; the cores themselves are `0600` and the sticky bit stops one
+  user clearing another's, the same arrangement Ubuntu uses for `/var/crash`.
+
+  Cores from a video application are large, so
+  `/etc/tmpfiles.d/opensrthub-cores.conf` expires them after 14 days - otherwise an
+  appliance that crashloops fills its own disk and takes the service down.
+  `systemd-tmpfiles-clean.timer` is active by default and runs daily, so no cron
+  job is needed. Adjust the `14d` there to keep them longer.
 
   Pass `--purge-apport` to apt-purge the packages rather than only disabling them.
   That is meant for server installs - on a desktop install, purging apport can drag
@@ -143,7 +158,7 @@ net.ipv6.conf.{all,default}.accept_redirects = 0
 net.ipv6.conf.{all,default,lo}.disable_ipv6 = 1
 kernel.randomize_va_space = 2
 kernel.core_uses_pid = 1
-kernel.core_pattern = core
+kernel.core_pattern = /opt/srthub/cores/core.%e.%p.%t
 fs.suid_dumpable = 1
 ```
 

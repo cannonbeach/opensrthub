@@ -271,6 +271,8 @@ verify_install() {
         check "apport disabled"                bash -c '! systemctl is-enabled apport.service 2>/dev/null | grep -q "^enabled$"'
         check "whoopsie (crash upload) off"    bash -c '! systemctl is-enabled whoopsie.service 2>/dev/null | grep -q "^enabled$"'
         check "core_pattern is not apport"     bash -c '! grep -q apport /proc/sys/kernel/core_pattern'
+        check "core_pattern -> ${DATA_DIR}/cores" bash -c "grep -q '^${DATA_DIR}/cores/' /proc/sys/kernel/core_pattern"
+        check "core dump dir writable"         test -w "${DATA_DIR}/cores"
         check "unattended-upgrades disabled"   bash -c '! systemctl is-enabled unattended-upgrades.service 2>/dev/null | grep -q "^enabled$"'
         check "apparmor.service disabled"      bash -c '! systemctl is-enabled apparmor.service 2>/dev/null | grep -q "^enabled$"'
         # Check the generated boot config, not /etc/default/grub: a drop-in in
@@ -363,7 +365,7 @@ log "Build parallelism: -j${JOBS}"
 phase "Creating directory layout"
 
 for d in "${DATA_DIR}" "${DATA_DIR}/configs" "${DATA_DIR}/status" \
-         "${DATA_DIR}/thumbnail" "${DATA_DIR}/scan" \
+         "${DATA_DIR}/thumbnail" "${DATA_DIR}/scan" "${DATA_DIR}/cores" \
          "${APP_DIR}" "${APP_DIR}/public" "${APP_DIR}/cert"; do
     if [ -d "$d" ]; then
         skip "directory $d"
@@ -372,6 +374,12 @@ for d in "${DATA_DIR}" "${DATA_DIR}/configs" "${DATA_DIR}/status" \
         $SUDO mkdir -p "$d"
     fi
 done
+
+# Core dumps are written by the kernel as the crashing process's own uid, so this
+# directory must be writable by anything that might crash. The cores themselves
+# land as 0600 and the sticky bit stops one user clearing another's - the same
+# arrangement Ubuntu uses for /var/crash.
+$SUDO chmod 1777 "${DATA_DIR}/cores"
 
 #-----------------------------------------------------------------------------
 # system packages
@@ -1076,6 +1084,19 @@ APTCONF
         log "packages left in place (pass --purge-apport to remove them)"
     fi
 
+    # --- core dump retention -------------------------------------------------
+    # A core from a video application is large, and an appliance that crashloops
+    # would otherwise fill its own disk and take the service down with it.
+    # systemd-tmpfiles-clean.timer is active by default and runs daily, so a
+    # tmpfiles rule ages them out without adding a cron job.
+    log "expiring core dumps in ${DATA_DIR}/cores after 14 days"
+    $SUDO tee /etc/tmpfiles.d/opensrthub-cores.conf >/dev/null <<TMPFILES
+# Managed by opensrthub setup.sh
+# Keep the directory; delete cores untouched for 14 days.
+# Cleaned by systemd-tmpfiles-clean.timer (daily).
+d ${DATA_DIR}/cores 1777 root root 14d
+TMPFILES
+
     # --- sysctl -------------------------------------------------------------
     # Written as a delimited block in /etc/sysctl.conf so re-running replaces it
     # instead of appending duplicates. On Ubuntu /etc/sysctl.d/99-sysctl.conf is
@@ -1128,16 +1149,25 @@ kernel.randomize_va_space = 2
 # each other's cores.
 kernel.core_uses_pid = 1
 
-# Write core dumps as plain files again. apport replaces this with a pipe to its
-# own handler ("|/usr/share/apport/apport ..."), so with apport disabled and this
-# left alone every core would be handed to a program that is no longer running -
-# silently producing no core at all, and quietly defeating fs.suid_dumpable below.
-# Cores land in the crashing process's working directory as core.PID. For srthub
-# that is inside its container, which persists until the container is removed
-# (docker cp retrieves them). Point this at an absolute path under /opt/srthub if
-# you would rather they collect on the host - that directory is bind-mounted into
-# every stream container.
-kernel.core_pattern = core
+SYSCTLBLOCK
+        # Emitted separately so the path stays in step with DATA_DIR.
+        #
+        # Cores go to a fixed directory rather than the crashing process's working
+        # directory. apport otherwise owns this setting (it installs
+        # "|/usr/share/apport/apport ..." here), so with apport disabled and this
+        # left alone every core would be handed to a program that is no longer
+        # running - producing no core at all and quietly defeating fs.suid_dumpable.
+        #
+        # The path is resolved in the crashing process's own mount namespace, and
+        # server.js bind-mounts DATA_DIR into every stream container at the same
+        # path, so a core from srthub inside a container lands here on the host and
+        # survives the container being removed.
+        #
+        # %e executable name, %p pid, %t dump time - unique even when a restarted
+        # container reuses a pid. %p makes kernel.core_uses_pid redundant, harmlessly.
+        printf '\n# --- core dumps ---\n'
+        printf 'kernel.core_pattern = %s/cores/core.%%e.%%p.%%t\n' "$DATA_DIR"
+        cat <<'SYSCTLBLOCK2'
 
 # Allow core dumps from privileged/setuid processes. srthub runs as root inside
 # its container, and without this a crash produces no core at all, which makes
@@ -1148,7 +1178,7 @@ kernel.core_pattern = core
 # means SRT stream passphrases. Cores are owner-read-only, but if you do not
 # need crash diagnostics, set this to 0.
 fs.suid_dumpable = 1
-SYSCTLBLOCK
+SYSCTLBLOCK2
         printf '%s\n' "$SYSCTL_END"
     } >> "$SYSCTL_TMP"
 
