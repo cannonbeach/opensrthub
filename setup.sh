@@ -48,7 +48,7 @@ SKIP_DEPS=0
 SKIP_BUILD=0
 SKIP_DOCKER=0
 SKIP_TUNING=0
-PURGE_APPORT=0
+PURGE_TELEMETRY=0
 VERIFY_ONLY=0
 REBOOT_REQUIRED=0
 SERVICE_MANAGER="systemd"
@@ -65,10 +65,12 @@ Options:
   --skip-build          Skip building libsrt, libcurl, FFmpeg and srthub.
                         (Use when only the web app or Docker image changed.)
   --skip-docker         Skip building the '${DOCKER_IMAGE}' container image.
-  --purge-apport        Also apt-purge the crash reporters instead of only
-                        disabling them (apport, whoopsie, kerneloops). Intended
+  --purge-telemetry     Also apt-purge the crash reporters and phone-home
+                        packages instead of only disabling them (apport, whoopsie,
+                        kerneloops, ubuntu-report, popularity-contest). Intended
                         for server installs; on a desktop install purging apport
                         can drag the desktop metapackage with it.
+                        --purge-apport is accepted as an older name for this.
   --skip-tuning         Skip the host tuning phase (AppArmor, unattended
                         upgrades, MOTD, apt-daily timers, sysctl settings).
                         Use this if you manage host configuration elsewhere.
@@ -92,7 +94,8 @@ for arg in "$@"; do
         --skip-build)         SKIP_BUILD=1 ;;
         --skip-docker)        SKIP_DOCKER=1 ;;
         --skip-tuning)        SKIP_TUNING=1 ;;
-        --purge-apport)       PURGE_APPORT=1 ;;
+        --purge-telemetry)    PURGE_TELEMETRY=1 ;;
+        --purge-apport)       PURGE_TELEMETRY=1 ;;   # earlier name, still accepted
         --verify)             VERIFY_ONLY=1 ;;
         --service=*)          SERVICE_MANAGER="${arg#*=}" ;;
         --admin-password=*)   ADMIN_PASSWORD="${arg#*=}" ;;
@@ -270,6 +273,9 @@ verify_install() {
         check "apt-daily.timer disabled"       bash -c '! systemctl is-enabled apt-daily.timer 2>/dev/null | grep -q "^enabled$"'
         check "apport disabled"                bash -c '! systemctl is-enabled apport.service 2>/dev/null | grep -q "^enabled$"'
         check "whoopsie (crash upload) off"    bash -c '! systemctl is-enabled whoopsie.service 2>/dev/null | grep -q "^enabled$"'
+        check "popularity-contest not sending" bash -c '! grep -q "PARTICIPATE=\"yes\"" /etc/popularity-contest.conf 2>/dev/null'
+        check "popcon cron job inert"          bash -c '! test -x /etc/cron.daily/popularity-contest'
+        check "ubuntu-report cannot run"       bash -c '! test -x /usr/bin/ubuntu-report'
         check "core_pattern is not apport"     bash -c '! grep -q apport /proc/sys/kernel/core_pattern'
         check "core_pattern -> ${DATA_DIR}/cores" bash -c "grep -q '^${DATA_DIR}/cores/' /proc/sys/kernel/core_pattern"
         check "core dump dir writable"         test -w "${DATA_DIR}/cores"
@@ -1063,11 +1069,12 @@ APTCONF
         fi
     fi
 
-    if [ "$PURGE_APPORT" -eq 1 ]; then
+    if [ "$PURGE_TELEMETRY" -eq 1 ]; then
         # Only name packages that are actually installed; apt-get purge fails on
         # ones it has never heard of.
         APPORT_PKGS=""
-        for pkg in apport apport-symptoms apport-gtk whoopsie whoopsie-preferences kerneloops; do
+        for pkg in apport apport-symptoms apport-gtk whoopsie whoopsie-preferences \
+                   kerneloops ubuntu-report popularity-contest; do
             if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
                 APPORT_PKGS="${APPORT_PKGS:+$APPORT_PKGS }$pkg"
             fi
@@ -1081,7 +1088,45 @@ APTCONF
             log "no crash reporting packages are installed"
         fi
     else
-        log "packages left in place (pass --purge-apport to remove them)"
+        log "packages left in place (pass --purge-telemetry to remove them)"
+    fi
+
+    # --- outbound telemetry ---------------------------------------------------
+    # popularity-contest submits the installed package list to Canonical weekly;
+    # ubuntu-report submits a hardware and install survey. Both are described as
+    # anonymous, but an appliance should not be originating traffic to third
+    # parties at all, and a package list is itself a disclosure about what the
+    # machine is and how it is configured.
+    log "disabling outbound telemetry"
+
+    # popularity-contest: units where they exist, plus the config and the
+    # cron.daily script that actually does the submitting.
+    for unit in popularity-contest.service popularity-contest.timer; do
+        disable_unit "$unit"
+    done
+    if [ -f /etc/popularity-contest.conf ]; then
+        if grep -qE '^[[:space:]]*PARTICIPATE=' /etc/popularity-contest.conf; then
+            $SUDO sed -i 's/^[[:space:]]*PARTICIPATE=.*/PARTICIPATE="no"/' /etc/popularity-contest.conf
+        else
+            echo 'PARTICIPATE="no"' | $SUDO tee -a /etc/popularity-contest.conf >/dev/null
+        fi
+        log "set PARTICIPATE=\"no\" in /etc/popularity-contest.conf"
+    fi
+    if [ -x /etc/cron.daily/popularity-contest ]; then
+        # run-parts skips anything without the execute bit, so this stops the
+        # submission without deleting a packaged file.
+        $SUDO chmod -x /etc/cron.daily/popularity-contest
+        log "removed the execute bit from /etc/cron.daily/popularity-contest"
+    fi
+
+    # ubuntu-report ships no service and no config file - it is a CLI invoked by
+    # the installer and by initial-setup - so there is nothing to mask. Dropping
+    # the execute bit is the only reversible way to stop it running. Note that a
+    # package upgrade restores it; --purge-telemetry removes it outright instead.
+    if [ -x /usr/bin/ubuntu-report ]; then
+        $SUDO chmod -x /usr/bin/ubuntu-report
+        log "removed the execute bit from /usr/bin/ubuntu-report"
+        log "note: a package upgrade will restore it - use --purge-telemetry to remove it"
     fi
 
     # --- core dump retention -------------------------------------------------

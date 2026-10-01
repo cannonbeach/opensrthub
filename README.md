@@ -138,11 +138,31 @@ can affect the compile or the container image build.
   `systemd-tmpfiles-clean.timer` is active by default and runs daily, so no cron
   job is needed. Adjust the `14d` there to keep them longer.
 
-  Pass `--purge-apport` to apt-purge the packages rather than only disabling them.
-  That is meant for server installs - on a desktop install, purging apport can drag
-  the desktop metapackage out with it. (Ubuntu's other opt-out telemetry,
-  `ubuntu-report` and `popularity-contest`, is left alone; neither handles crash
-  data.)
+  Pass `--purge-telemetry` to apt-purge the packages rather than only disabling
+  them. That is meant for server installs - on a desktop install, purging apport can
+  drag the desktop metapackage out with it. (`--purge-apport` is still accepted as
+  an older name for the same flag.)
+
+- **Outbound telemetry** - `popularity-contest` submits the installed package list
+  to Canonical weekly and `ubuntu-report` submits a hardware and install survey.
+  Both are described as anonymous, but an appliance should not be originating
+  traffic to third parties at all, and a package list is itself a disclosure about
+  what the machine is and how it is configured.
+
+  `PARTICIPATE="no"` is set in `/etc/popularity-contest.conf`, any
+  `popularity-contest` service or timer is masked, and the execute bit is removed
+  from `/etc/cron.daily/popularity-contest` - which is what actually does the
+  submitting, and which `run-parts` skips when it is not executable.
+
+  `ubuntu-report` ships no service and no config file; it is a CLI invoked by the
+  installer and by initial-setup. There is nothing to mask, so the execute bit is
+  removed from `/usr/bin/ubuntu-report` instead. **A package upgrade restores it** -
+  use `--purge-telemetry` if you want it gone for good.
+
+  Not covered: `ubuntu-advantage-tools` / `ubuntu-pro-client` also contacts
+  Canonical (`ua-timer.timer`, `esm-cache.service`, and the apt ESM hooks that
+  produce "apt news"). Say so and it can be added; it is left alone for now because
+  disabling it also silences genuine security-update notices.
 
 - **MOTD** - the execute bit is removed from `/etc/update-motd.d/*`, motd-news is
   disabled, and `/etc/motd` is cleared. `/etc/pam.d` is deliberately left alone,
@@ -203,7 +223,8 @@ and everything already completed is skipped.
 ./setup.sh --skip-deps                 Rebuild after a git pull (no apt phase)
 ./setup.sh --skip-deps --skip-build    Reinstall the web app only
 ./setup.sh --skip-tuning               Leave host settings alone
-./setup.sh --purge-apport              Remove the crash reporters, not just disable
+./setup.sh --purge-telemetry           Remove the crash reporters and phone-home
+                                       packages, not just disable them
 ./setup.sh --service=pm2               Use pm2 instead of systemd
 ./setup.sh --service=none              Don't register a service at all
 ./setup.sh --admin-password=PW        Unattended install (no password prompt)
