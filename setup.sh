@@ -48,6 +48,7 @@ SKIP_DEPS=0
 SKIP_BUILD=0
 SKIP_DOCKER=0
 SKIP_TUNING=0
+PURGE_APPORT=0
 VERIFY_ONLY=0
 REBOOT_REQUIRED=0
 SERVICE_MANAGER="systemd"
@@ -64,6 +65,10 @@ Options:
   --skip-build          Skip building libsrt, libcurl, FFmpeg and srthub.
                         (Use when only the web app or Docker image changed.)
   --skip-docker         Skip building the '${DOCKER_IMAGE}' container image.
+  --purge-apport        Also apt-purge the crash reporters instead of only
+                        disabling them (apport, whoopsie, kerneloops). Intended
+                        for server installs; on a desktop install purging apport
+                        can drag the desktop metapackage with it.
   --skip-tuning         Skip the host tuning phase (AppArmor, unattended
                         upgrades, MOTD, apt-daily timers, sysctl settings).
                         Use this if you manage host configuration elsewhere.
@@ -87,6 +92,7 @@ for arg in "$@"; do
         --skip-build)         SKIP_BUILD=1 ;;
         --skip-docker)        SKIP_DOCKER=1 ;;
         --skip-tuning)        SKIP_TUNING=1 ;;
+        --purge-apport)       PURGE_APPORT=1 ;;
         --verify)             VERIFY_ONLY=1 ;;
         --service=*)          SERVICE_MANAGER="${arg#*=}" ;;
         --admin-password=*)   ADMIN_PASSWORD="${arg#*=}" ;;
@@ -262,6 +268,9 @@ verify_install() {
         check "sysctl core_uses_pid=1"         sysctl_is kernel.core_uses_pid 1
         check "sysctl suid_dumpable=1"         sysctl_is fs.suid_dumpable 1
         check "apt-daily.timer disabled"       bash -c '! systemctl is-enabled apt-daily.timer 2>/dev/null | grep -q "^enabled$"'
+        check "apport disabled"                bash -c '! systemctl is-enabled apport.service 2>/dev/null | grep -q "^enabled$"'
+        check "whoopsie (crash upload) off"    bash -c '! systemctl is-enabled whoopsie.service 2>/dev/null | grep -q "^enabled$"'
+        check "core_pattern is not apport"     bash -c '! grep -q apport /proc/sys/kernel/core_pattern'
         check "unattended-upgrades disabled"   bash -c '! systemctl is-enabled unattended-upgrades.service 2>/dev/null | grep -q "^enabled$"'
         check "apparmor.service disabled"      bash -c '! systemctl is-enabled apparmor.service 2>/dev/null | grep -q "^enabled$"'
         # Check the generated boot config, not /etc/default/grub: a drop-in in
@@ -1018,6 +1027,55 @@ APTCONF
         $SUDO truncate -s 0 /etc/motd
     fi
 
+    # --- crash reporting ----------------------------------------------------
+    # apport collects crash dumps and whoopsie uploads them to Canonical's error
+    # tracker; kerneloops does the same for kernel oopses. A core dump from this
+    # box can contain whatever was in memory at the time, which for opensrthub
+    # includes SRT stream passphrases - so nothing here should be leaving the
+    # machine on its own.
+    #
+    # Note the .path and .socket units: they are activators, so masking only the
+    # services would leave something able to start them again.
+    log "disabling crash reporting and crash upload"
+    for unit in apport.service \
+                apport-autoreport.service \
+                apport-autoreport.path \
+                apport-forward.socket \
+                whoopsie.service \
+                kerneloops.service; do
+        disable_unit "$unit"
+    done
+
+    if [ -f /etc/default/apport ]; then
+        log "setting enabled=0 in /etc/default/apport"
+        if grep -qE '^[[:space:]]*enabled=' /etc/default/apport; then
+            $SUDO sed -i 's/^[[:space:]]*enabled=.*/enabled=0/' /etc/default/apport
+        else
+            echo 'enabled=0' | $SUDO tee -a /etc/default/apport >/dev/null
+        fi
+    fi
+
+    if [ "$PURGE_APPORT" -eq 1 ]; then
+        # Only name packages that are actually installed; apt-get purge fails on
+        # ones it has never heard of.
+        APPORT_PKGS=""
+        for pkg in apport apport-symptoms apport-gtk whoopsie whoopsie-preferences kerneloops; do
+            if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
+                APPORT_PKGS="${APPORT_PKGS:+$APPORT_PKGS }$pkg"
+            fi
+        done
+        if [ -n "$APPORT_PKGS" ]; then
+            log "purging: ${APPORT_PKGS}"
+            # shellcheck disable=SC2086
+            $SUDO_E apt-get purge -y $APPORT_PKGS \
+                || warn "purge failed; the units above are still masked, so crash reporting stays off."
+        else
+            log "no crash reporting packages are installed"
+        fi
+    else
+        log "packages left in place (pass --purge-apport to remove them)"
+    fi
+
     # --- sysctl -------------------------------------------------------------
     # Written as a delimited block in /etc/sysctl.conf so re-running replaces it
     # instead of appending duplicates. On Ubuntu /etc/sysctl.d/99-sysctl.conf is
@@ -1069,6 +1127,17 @@ kernel.randomize_va_space = 2
 # Append .PID to core file names so concurrent stream crashes don't overwrite
 # each other's cores.
 kernel.core_uses_pid = 1
+
+# Write core dumps as plain files again. apport replaces this with a pipe to its
+# own handler ("|/usr/share/apport/apport ..."), so with apport disabled and this
+# left alone every core would be handed to a program that is no longer running -
+# silently producing no core at all, and quietly defeating fs.suid_dumpable below.
+# Cores land in the crashing process's working directory as core.PID. For srthub
+# that is inside its container, which persists until the container is removed
+# (docker cp retrieves them). Point this at an absolute path under /opt/srthub if
+# you would rather they collect on the host - that directory is bind-mounted into
+# every stream container.
+kernel.core_pattern = core
 
 # Allow core dumps from privileged/setuid processes. srthub runs as root inside
 # its container, and without this a crash produces no core at all, which makes

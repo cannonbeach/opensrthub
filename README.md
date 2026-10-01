@@ -107,6 +107,28 @@ can affect the compile or the container image build.
 - **apt-daily** - `apt-daily.timer`, `apt-daily.service`,
   `apt-daily-upgrade.timer` and `apt-daily-upgrade.service` disabled and masked.
   Both timers are included: masking only the services leaves the timers firing.
+- **Crash reporting** - apport, whoopsie and kerneloops are disabled and masked,
+  and `enabled=0` is set in `/etc/default/apport`. A core dump from this box can
+  contain whatever was in memory at the time, which for opensrthub includes SRT
+  stream passphrases, so nothing should be shipping crash data off the machine on
+  its own. whoopsie is the piece that actually uploads to Canonical's error
+  tracker; kerneloops does the same for kernel oopses.
+
+  The `apport-autoreport.path` and `apport-forward.socket` units are included, not
+  just the services - they are activators, so masking only the services would
+  leave something able to start them again.
+
+  `kernel.core_pattern` is reset to `core` in the sysctl block, because apport
+  replaces it with a pipe to its own handler. Disabling apport without resetting it
+  would hand every core to a program that is no longer running, silently producing
+  no core at all and quietly defeating `fs.suid_dumpable = 1`.
+
+  Pass `--purge-apport` to apt-purge the packages rather than only disabling them.
+  That is meant for server installs - on a desktop install, purging apport can drag
+  the desktop metapackage out with it. (Ubuntu's other opt-out telemetry,
+  `ubuntu-report` and `popularity-contest`, is left alone; neither handles crash
+  data.)
+
 - **MOTD** - the execute bit is removed from `/etc/update-motd.d/*`, motd-news is
   disabled, and `/etc/motd` is cleared. `/etc/pam.d` is deliberately left alone,
   since a bad edit there locks you out over SSH.
@@ -121,6 +143,7 @@ net.ipv6.conf.{all,default}.accept_redirects = 0
 net.ipv6.conf.{all,default,lo}.disable_ipv6 = 1
 kernel.randomize_va_space = 2
 kernel.core_uses_pid = 1
+kernel.core_pattern = core
 fs.suid_dumpable = 1
 ```
 
@@ -165,6 +188,7 @@ and everything already completed is skipped.
 ./setup.sh --skip-deps                 Rebuild after a git pull (no apt phase)
 ./setup.sh --skip-deps --skip-build    Reinstall the web app only
 ./setup.sh --skip-tuning               Leave host settings alone
+./setup.sh --purge-apport              Remove the crash reporters, not just disable
 ./setup.sh --service=pm2               Use pm2 instead of systemd
 ./setup.sh --service=none              Don't register a service at all
 ./setup.sh --admin-password=PW        Unattended install (no password prompt)
