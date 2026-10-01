@@ -1250,6 +1250,20 @@ phase "Registering the ${SERVICE_NAME} service (${SERVICE_MANAGER})"
 
 case "$SERVICE_MANAGER" in
     systemd)
+        # The old instructions ran this under pm2. If that is still in place it
+        # holds port 8080, so the unit below would crashloop on EADDRINUSE - and
+        # pm2's boot hook would bring its copy back after a reboot as well. Hand
+        # over before installing the unit.
+        if command -v pm2 >/dev/null 2>&1 && \
+           $SUDO pm2 describe "$SERVICE_NAME" >/dev/null 2>&1; then
+            log "taking over from pm2: removing its '${SERVICE_NAME}' process"
+            $SUDO pm2 delete "$SERVICE_NAME" >/dev/null 2>&1 || true
+            # Re-save so pm2's boot hook no longer replays it. Leaving the hook
+            # itself alone: it may be running other apps.
+            $SUDO pm2 save --force >/dev/null 2>&1 || true
+            log "if opensrthub was the only thing pm2 managed, you can also run:"
+            log "  sudo pm2 unstartup systemd"
+        fi
         install_file "${REPO_DIR}/packaging/${SERVICE_NAME}.service" "/etc/systemd/system/"
         $SUDO systemctl daemon-reload
         $SUDO systemctl enable "${SERVICE_NAME}.service"
@@ -1257,6 +1271,12 @@ case "$SERVICE_MANAGER" in
         ok "${SERVICE_NAME}.service enabled and started"
         ;;
     pm2)
+        # Mirror image of the above: if the systemd unit is in place it holds the
+        # port, so stand it down before handing the app to pm2.
+        if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
+            log "taking over from systemd: stopping and disabling ${SERVICE_NAME}.service"
+            $SUDO systemctl disable --now "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+        fi
         install_file "${REPO_DIR}/packaging/ecosystem.config.js" "${APP_DIR}/"
         # 'cwd' in the ecosystem file is what makes this work from any
         # directory; the old instructions required you to be in /var/app.

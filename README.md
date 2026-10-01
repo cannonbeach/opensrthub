@@ -235,14 +235,30 @@ A full log of every run is written to `opensrthub-install.log` in the repository
 
 #### Managing the service
 
+**This changed**: the app now runs under systemd by default, not pm2. pm2 is no
+longer installed unless you ask for it with `--service=pm2`.
+
 ```
 sudo systemctl status opensrthub      # is it running?
 sudo systemctl restart opensrthub     # restart it
 sudo journalctl -u opensrthub -f      # follow the logs
 ```
 
-If you installed with `--service=pm2`, use `sudo pm2 status`,
-`sudo pm2 restart opensrthub` and `sudo pm2 logs opensrthub` instead.
+The old pm2 equivalents were `sudo pm2 status`, `sudo pm2 restart opensrthub` and
+`sudo pm2 logs opensrthub`. Those still apply if you install with `--service=pm2`.
+
+Why: pm2 needed `pm2 save` *and* `pm2 startup` to survive a reboot (missing the
+second is why installs used to come back dead), it required the app to be started
+from `/var/app`, and it is an extra global npm dependency. A systemd unit covers
+restart-on-failure, boot persistence, working directory and journald logging with
+nothing extra installed.
+
+**Upgrading from a pm2 install**: the installer hands over for you. It removes
+pm2's `opensrthub` process and re-saves pm2's list before installing the unit, so
+the two do not fight over port 8080. pm2's boot hook is left in place in case it
+manages other apps - if opensrthub was the only one, `sudo pm2 unstartup systemd`
+removes it. Switching back with `--service=pm2` stands the systemd unit down the
+same way.
 
 #### Installing on a different Ubuntu release
 
