@@ -279,6 +279,13 @@ verify_install() {
 
         # sshd -T prints the configuration sshd has actually resolved, so this
         # catches a drop-in that was written but never read.
+        # Read the governor the kernel is actually using, not what was configured:
+        # the whole point is that the configured value used to be overridden.
+        if [ -e /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
+            check "cpu governor is performance"  bash -c "! grep -L performance /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | grep -q ."
+            check "ondemand.service disabled"    bash -c '! systemctl is-enabled ondemand.service 2>/dev/null | grep -q "^enabled$"'
+        fi
+
         check "sshd config valid"              bash -c "$SUDO sshd -t"
         check "sshd: no CBC ciphers"           bash -c "! $SUDO sshd -T 2>/dev/null | grep -i '^ciphers ' | grep -q cbc"
         check "sshd: no SHA1/MD5 MACs"         bash -c "! $SUDO sshd -T 2>/dev/null | grep -i '^macs ' | grep -qE 'md5|sha1'"
@@ -1138,6 +1145,67 @@ APTCONF
         $SUDO chmod -x /usr/bin/ubuntu-report
         log "removed the execute bit from /usr/bin/ubuntu-report"
         log "note: a package upgrade will restore it - use --purge-telemetry to remove it"
+    fi
+
+    # --- CPU frequency governor -----------------------------------------------
+    # cpufreq.default_governor=performance on the kernel command line only sets
+    # the governor each cpufreq policy *starts* with. Two things in userspace then
+    # overwrite it late in boot, and the last writer wins:
+    #
+    #   ondemand.service  shipped by systemd itself (/lib/systemd/system), runs
+    #                     /lib/systemd/set-cpufreq, which picks "interactive" if
+    #                     available and otherwise "ondemand", for every CPU.
+    #                     Type=idle, so it runs well after the kernel default is
+    #                     applied. It has ConditionVirtualization=no, so it is not
+    #                     a factor on a VM.
+    #
+    #   cpufrequtils      its init script carries GOVERNOR="ondemand" as a built-in
+    #                     default and only sources /etc/default/cpufrequtils if
+    #                     that file exists. We install this package, so with no
+    #                     such file it was actively setting ondemand.
+    #
+    # Masking the first and configuring the second makes the result deterministic
+    # instead of depending on the kernel default going unchallenged.
+    disable_unit ondemand.service
+
+    log "setting GOVERNOR=performance in /etc/default/cpufrequtils"
+    $SUDO tee /etc/default/cpufrequtils >/dev/null <<'CPUFREQCONF'
+# Managed by opensrthub setup.sh
+#
+# Without this file the cpufrequtils init script falls back to its built-in
+# GOVERNOR="ondemand", which overrides cpufreq.default_governor=performance from
+# the kernel command line. 0 for the speed limits means "do not constrain".
+ENABLE="true"
+GOVERNOR="performance"
+MAX_SPEED="0"
+MIN_SPEED="0"
+CPUFREQCONF
+
+    # Apply now as well, so it does not wait for the reboot.
+    if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
+        GOV_AVAIL="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null || true)"
+        case " $GOV_AVAIL " in
+            *" performance "*)
+                GOV_SET=0
+                for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+                    [ -e "$gov_file" ] || continue
+                    if echo performance | $SUDO tee "$gov_file" >/dev/null 2>&1; then
+                        GOV_SET=$((GOV_SET + 1))
+                    fi
+                done
+                if [ "$GOV_SET" -gt 0 ]; then
+                    ok "governor set to performance on ${GOV_SET} CPU(s)"
+                else
+                    warn "could not write scaling_governor; the setting will apply at the next boot."
+                fi
+                ;;
+            *)
+                warn "the performance governor is not offered by this cpufreq driver."
+                warn "available: ${GOV_AVAIL:-none}"
+                ;;
+        esac
+    else
+        log "no cpufreq sysfs interface here (virtualised host?); nothing to apply now"
     fi
 
     # --- sshd hardening -------------------------------------------------------

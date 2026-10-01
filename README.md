@@ -72,6 +72,18 @@ can affect the compile or the container image build.
   whatever that drop-in set. It then confirms each parameter is actually present
   in the generated `/boot/grub/grub.cfg` rather than assuming the edit worked.
 
+  `cpufreq.default_governor=performance` only sets the governor each cpufreq policy
+  *starts* with - it is not sufficient on its own, because two things in userspace
+  overwrite it late in boot and the last writer wins. `ondemand.service`, shipped by
+  systemd itself, runs `/lib/systemd/set-cpufreq` which forces `ondemand` on every
+  CPU; and the `cpufrequtils` init script carries `GOVERNOR="ondemand"` as a
+  built-in default, only reading `/etc/default/cpufrequtils` if that file exists. So
+  the tuning phase masks `ondemand.service`, writes
+  `/etc/default/cpufrequtils` with `GOVERNOR="performance"`, and applies the
+  governor immediately rather than waiting for the reboot. `--verify` reads
+  `scaling_governor` from every CPU, not the config, since the configured value is
+  exactly what used to be overridden.
+
   `mitigations=off` disables the CPU speculative-execution mitigations (Spectre,
   Meltdown/PTI, MDS, L1TF, Retbleed, SRSO, Downfall). It is here because those
   mitigations cost most on syscall- and context-switch-heavy code, and a UDP/SRT
