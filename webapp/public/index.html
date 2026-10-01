@@ -1010,8 +1010,8 @@
             <div class="form-group">
               <label class="form-label">SRT Mode</label>
               <select class="form-select" id="srtreceiver_mode">
-                <option value="listener">Listener (Wait for connection)</option>
-                <option value="caller">Caller (Connect to server)</option>
+                <option value="push">Listener (Wait for connection)</option>
+                <option value="pull">Caller (Connect to server)</option>
               </select>
             </div>
             <div class="form-group">
@@ -1639,7 +1639,7 @@
       const statusText = isRunning ? `Running · ${formatUptime(service.uptime)}` : 'Stopped';
       
       // Determine service type for badge
-      const isReceiver = service.sourcemode === 'srt';
+      const isReceiver = (service.sourcemode || '').startsWith('srt');
       const badgeClass = isReceiver ? 'receiver' : 'server';
       const badgeText = isReceiver ? 'SRT Receiver' : 'SRT Server';
 
@@ -1996,7 +1996,7 @@
         const config = await response.json();
 
         currentEditUid = fileprefix;
-        currentEditType = config.sourcemode === 'srt' ? 'receiver' : 'server';
+        currentEditType = (config.sourcemode || '').startsWith('srt') ? 'receiver' : 'server';
 
         // Show/hide the correct section
         document.getElementById('edit-receiver-section').style.display =

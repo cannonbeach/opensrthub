@@ -245,9 +245,87 @@ try {
     bitrateHistory = {};
 }
 
+// ---------------------------------------------------------------------------
+// SRT mode strings
+//
+// srthub matches the SRT direction on the mode string itself (source/srthub.c):
+//
+//   sourcemode "srtpull" -> caller   : we dial out and pull the stream
+//   sourcemode "srtpush" -> listener : the far end connects and pushes to us
+//   outputmode "srtpull" -> listener : the far end connects and pulls from us
+//   outputmode "srtpush" -> caller   : we dial out and push the stream
+//
+// A bare "srt" matches neither, so a service saved that way never starts. The
+// UI carries the direction separately - clienttype for receivers, servertype for
+// servers - and both are normalised to 'pull' or 'push' here.
+// ---------------------------------------------------------------------------
+
+function isSrtMode(mode) {
+    return typeof mode === 'string' && mode.indexOf('srt') === 0;
+}
+
+function srtModeFor(direction) {
+    return direction === 'push' ? 'srtpush' : 'srtpull';
+}
+
+// Receiver (the SRT side is the source): caller means we pull, listener means
+// the far end pushes to us. Older builds of the create form submitted
+// caller/listener here instead of pull/push, so both spellings are accepted.
+function receiverDirection(value) {
+    switch (String(value || '').toLowerCase()) {
+        case 'push':
+        case 'listener':
+            return 'push';
+        case 'pull':
+        case 'caller':
+            return 'pull';
+        default:
+            return 'pull';
+    }
+}
+
+// Server (the SRT side is the output): listener means the far end pulls from us,
+// caller means we push to it - the opposite pairing to a receiver.
+function serverDirection(value) {
+    switch (String(value || '').toLowerCase()) {
+        case 'push':
+        case 'caller':
+            return 'push';
+        case 'pull':
+        case 'listener':
+            return 'pull';
+        default:
+            return 'pull';
+    }
+}
+
+// Bring a config's SRT mode strings in step with its direction fields. Returns
+// true if anything changed, so callers can persist the correction. This doubles
+// as the migration for configs written with a bare "srt".
+function normalizeConfigModes(config) {
+    var changed = false;
+    if (isSrtMode(config.sourcemode)) {
+        config.clienttype = receiverDirection(config.clienttype);
+        var wantSource = srtModeFor(config.clienttype);
+        if (config.sourcemode !== wantSource) {
+            config.sourcemode = wantSource;
+            changed = true;
+        }
+    }
+    if (isSrtMode(config.outputmode)) {
+        config.servertype = serverDirection(config.servertype);
+        var wantOutput = srtModeFor(config.servertype);
+        if (config.outputmode !== wantOutput) {
+            config.outputmode = wantOutput;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 function readServiceBitrate(fileprefix, sourcemode) {
     try {
-        if (sourcemode === 'srt') {
+        if (isSrtMode(sourcemode)) {
             var srtFile = statusFolder + '/srt_receiver_' + fileprefix + '.json';
             if (fs.existsSync(srtFile)) {
                 var srt = JSON.parse(fs.readFileSync(srtFile, 'utf8'));
@@ -573,7 +651,7 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                 }
 
                 // Get SRT receiver stats if applicable
-                if (config.sourcemode === 'srt') {
+                if (isSrtMode(config.sourcemode)) {
                     var srtReceiverFile = statusFolder + '/srt_receiver_' + fileprefix + '.json';
                     if (fs.existsSync(srtReceiverFile)) {
                         try {
@@ -641,7 +719,7 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                 }
 
                 // Get SRT server stats if applicable (output mode)
-                if (config.outputmode === 'srt') {
+                if (isSrtMode(config.outputmode)) {
                     service.srtServer = { connections: [] };
                     for (var i = 0; i < 16; i++) {
                         var srtServerFile = statusFolder + '/srt_server_thread_' + i + '_' + fileprefix + '.json';
@@ -966,7 +1044,9 @@ app.post('/api/v1/new_srt_receiver', auth, (req, res) => {
     var config = new Object();
 
     config.sourcename = words.srtreceiver_sourcename;
-    config.sourcemode = "srt";
+    // srthub needs the direction encoded in the mode string, not a bare "srt".
+    config.clienttype = receiverDirection(words.srtreceiver_clienttype);
+    config.sourcemode = srtModeFor(config.clienttype);
     config.sourceaddress = words.srtreceiver_sourceaddress;
     config.sourceport = words.srtreceiver_sourceport;
     config.sourceinterface = words.srtreceiver_sourceinterface;
@@ -977,7 +1057,6 @@ app.post('/api/v1/new_srt_receiver', auth, (req, res) => {
     config.passphrase = words.srtreceiver_passphrase;
     config.streamid = words.srtreceiver_streamid;
     config.managementserverip = words.srtreceiver_managementserverip;
-    config.clienttype = words.srtreceiver_clienttype;
     config.latency = words.srtreceiver_latency;
     //config.keysize = words.srtreceiver_keysize;
 
@@ -1021,13 +1100,14 @@ app.post('/api/v1/new_srt_server', auth, (req, res) => {
     config.sourceaddress = words.srtserver_sourceaddress;
     config.sourceport = words.srtserver_sourceport;
     config.sourceinterface = words.srtserver_sourceinterface;
-    config.outputmode = "srt";
+    // srthub needs the direction encoded in the mode string, not a bare "srt".
+    config.servertype = serverDirection(words.srtserver_servertype);
+    config.outputmode = srtModeFor(config.servertype);
     config.outputaddress = words.srtserver_address;
     config.outputport = words.srtserver_port;
     config.outputinterface = words.srtserver_interface;
     config.streamid = words.srtserver_streamid;
     config.passphrase = words.srtserver_passphrase;
-    config.servertype = words.srtserver_servertype;
     config.connectionqueue = words.srtserver_connectionqueue;
     config.whitelist = words.srtserver_whitelist;
     config.managementserverip = words.srtserver_managementserverip;
@@ -1236,15 +1316,18 @@ app.post('/api/v1/start_service/:uid', auth, (req, res) => {
                 fs.closeSync(fs.openSync(touchfile, 'w'));
 
                 var sessionid = fileprefix;
-                var sourcemode = words.sourcemode;
-                var outputmode = words.outputmode;
-                if (sourcemode == 'srt') {
-                    sourcemode = sourcemode + words.clienttype;
+
+                // srthub reads the config file, so a config still carrying a bare
+                // "srt" (or a mode that disagrees with clienttype/servertype) has
+                // to be corrected on disk before the container starts. Computing
+                // it into a local variable here, as this used to, had no effect -
+                // the mode is never passed on the command line.
+                if (normalizeConfigModes(words)) {
+                    fs.writeFileSync(fullfile, JSON.stringify(words));
+                    console.log('migrated SRT mode in '+fullfile+
+                                ': sourcemode='+words.sourcemode+
+                                ', outputmode='+words.outputmode);
                 }
-                if (outputmode == 'srt') {
-                    outputmode = outputmode + words.servertype;
-                }
-                console.log('debug: updated: sourcemode='+sourcemode+', outputmode='+outputmode);
 
                 var start_cmd = 'sudo docker run -itd --net=host --name srthub'+fileprefix+' --restart=unless-stopped --log-opt max-size=25m -v /opt/srthub:/opt/srthub -v '+configFolder+':'+configFolder+' -v '+statusFolder+':'+statusFolder+' -v '+apacheFolder+':'+apacheFolder+' dockersrthub /usr/bin/srthub '+sessionid;
                 //sourcemode+' '+words.sourceaddress+' '+words.sourceport+' '+words.sourceinterface+' '+outputmode+' '+words.outputaddress+' '+words.outputport+' '+words.outputinterface+' '+sessionid;
@@ -1567,6 +1650,11 @@ app.post('/api/v1/update_config/:uid', auth, (req, res) => {
 
                     var newconfig = Object.assign({}, existingconfig, updates);
 
+                    // The edit form submits clienttype/servertype but not the
+                    // mode string, so recompute it here - otherwise changing the
+                    // direction in the UI would leave srthub starting the old one.
+                    normalizeConfigModes(newconfig);
+
                     fs.writeFileSync(fullfile, JSON.stringify(newconfig));
                     console.log('Config updated: ', fullfile);
 
@@ -1803,7 +1891,7 @@ app.get('/api/v1/get_service_status/:uid', auth, (req, res) => {
                             }
 
                             // source mode status checking
-                            if (sourcemode == "srt") {
+                            if (isSrtMode(sourcemode)) {
                                 var fullfileSRTReceiverStatus = statusFolder+'/srt_receiver_'+fileprefix+'.json';
                                 if (fs.existsSync(fullfileSRTReceiverStatus)) {
                                     var srtreceiverdata = fs.readFileSync(fullfileSRTReceiverStatus, 'utf8');
@@ -1846,7 +1934,7 @@ app.get('/api/v1/get_service_status/:uid', auth, (req, res) => {
                             }
 
                             // output mode status checking
-                            if (outputmode == "srt") {
+                            if (isSrtMode(outputmode)) {
                                 for (i = 0; i < 8; i++) {
                                     var fullfileSRTServerStatus = statusFolder+'/srt_server_thread_'+i+'_'+fileprefix+'.json';
                                     if (fs.existsSync(fullfileSRTServerStatus)) {
