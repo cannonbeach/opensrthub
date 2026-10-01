@@ -276,6 +276,17 @@ verify_install() {
         check "popularity-contest not sending" bash -c '! grep -q "PARTICIPATE=\"yes\"" /etc/popularity-contest.conf 2>/dev/null'
         check "popcon cron job inert"          bash -c '! test -x /etc/cron.daily/popularity-contest'
         check "ubuntu-report cannot run"       bash -c '! test -x /usr/bin/ubuntu-report'
+
+        # sshd -T prints the configuration sshd has actually resolved, so this
+        # catches a drop-in that was written but never read.
+        check "sshd config valid"              bash -c "$SUDO sshd -t"
+        check "sshd: no CBC ciphers"           bash -c "! $SUDO sshd -T 2>/dev/null | grep -i '^ciphers ' | grep -q cbc"
+        check "sshd: no SHA1/MD5 MACs"         bash -c "! $SUDO sshd -T 2>/dev/null | grep -i '^macs ' | grep -qE 'md5|sha1'"
+        check "sshd: no weak kex"              bash -c "! $SUDO sshd -T 2>/dev/null | grep -i '^kexalgorithms ' | grep -qE 'group1-|group14-sha1|gss-'"
+        check "sshd: PermitRootLogin no"       bash -c "$SUDO sshd -T 2>/dev/null | grep -qi '^permitrootlogin no'"
+        check "sshd: MaxAuthTries 4"           bash -c "$SUDO sshd -T 2>/dev/null | grep -qi '^maxauthtries 4'"
+        check "sshd: LoginGraceTime 60"        bash -c "$SUDO sshd -T 2>/dev/null | grep -qi '^logingracetime 60'"
+
         check "core_pattern is not apport"     bash -c '! grep -q apport /proc/sys/kernel/core_pattern'
         check "core_pattern -> ${DATA_DIR}/cores" bash -c "grep -q '^${DATA_DIR}/cores/' /proc/sys/kernel/core_pattern"
         check "core dump dir writable"         test -w "${DATA_DIR}/cores"
@@ -1127,6 +1138,116 @@ APTCONF
         $SUDO chmod -x /usr/bin/ubuntu-report
         log "removed the execute bit from /usr/bin/ubuntu-report"
         log "note: a package upgrade will restore it - use --purge-telemetry to remove it"
+    fi
+
+    # --- sshd hardening -------------------------------------------------------
+    # sshd_config takes the FIRST value seen for each keyword, and the main file
+    # Includes /etc/ssh/sshd_config.d/*.conf near its top, so a drop-in there wins
+    # over anything below the Include. The 10- prefix also puts this ahead of other
+    # drop-ins (a cloud image's 50-cloud-init.conf, say) for any keyword both set.
+    # This is the opposite precedence to /etc/default/grub, which is sourced as
+    # shell and so takes the last assignment.
+    SSHD_CONFIG="/etc/ssh/sshd_config"
+    SSHD_DROPIN_DIR="/etc/ssh/sshd_config.d"
+    SSHD_DROPIN="${SSHD_DROPIN_DIR}/10-opensrthub-hardening.conf"
+    SSHD_BIN="$(command -v sshd || echo /usr/sbin/sshd)"
+
+    if [ ! -f "$SSHD_CONFIG" ]; then
+        warn "${SSHD_CONFIG} does not exist; skipping sshd hardening."
+    else
+        # PermitRootLogin no locks out anyone whose only access is as root.
+        if [ -n "${SSH_CONNECTION:-}" ] && [ "$(id -un)" = "root" ] && [ -z "${SUDO_USER:-}" ]; then
+            warn "you are connected over SSH as root, and this sets PermitRootLogin no."
+            warn "make sure a non-root account with sudo can log in before you"
+            warn "disconnect, or you will be locked out of this machine."
+        fi
+
+        $SUDO mkdir -p "$SSHD_DROPIN_DIR"
+
+        # A drop-in is only read if the Include is actually there. Without this
+        # check the hardening would silently do nothing on a config that predates
+        # the drop-in directory.
+        if ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$SSHD_CONFIG"; then
+            log "adding the sshd_config.d Include to ${SSHD_CONFIG}"
+            [ -f "${SSHD_CONFIG}.opensrthub.bak" ] || $SUDO cp "$SSHD_CONFIG" "${SSHD_CONFIG}.opensrthub.bak"
+            # At the top, because the first value for a keyword wins.
+            SSHD_TMP="$(mktemp)"
+            {
+                printf 'Include %s/*.conf\n' "$SSHD_DROPIN_DIR"
+                cat "$SSHD_CONFIG"
+            } > "$SSHD_TMP"
+            $SUDO cp "$SSHD_TMP" "$SSHD_CONFIG"
+            rm -f "$SSHD_TMP"
+        fi
+
+        log "writing ${SSHD_DROPIN}"
+        # Keep any previous copy so a bad config can be put back.
+        if [ -f "$SSHD_DROPIN" ]; then
+            $SUDO cp "$SSHD_DROPIN" "${SSHD_DROPIN}.prev"
+        fi
+        $SUDO tee "$SSHD_DROPIN" >/dev/null <<'SSHDCONF'
+# Managed by opensrthub setup.sh - do not edit.
+#
+# sshd_config uses the FIRST value found for each keyword, and the main config
+# Includes this directory near its top, so these win over the settings below it.
+#
+# To revert: delete this file, then
+#   sudo sshd -t && sudo systemctl reload ssh
+
+# AEAD and CTR only. No CBC.
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+
+# No SHA1 exchanges, no diffie-hellman-group1/group14-sha1.
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256
+
+# Encrypt-then-MAC first. No MD5, no SHA1, no truncated -96 variants.
+# Note these apply only to the CTR ciphers above: the AEAD ciphers
+# (chacha20-poly1305, *-gcm) carry their own integrity and ignore MACs.
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+
+PermitRootLogin no
+PermitEmptyPasswords no
+IgnoreRhosts yes
+HostbasedAuthentication no
+LoginGraceTime 60
+ClientAliveInterval 300
+ClientAliveCountMax 3
+MaxAuthTries 4
+SSHDCONF
+        $SUDO chmod 644 "$SSHD_DROPIN"
+
+        # Validate before anything reloads. A config that sshd rejects would, on
+        # the next restart, leave the machine with no sshd at all - so on failure
+        # put back what was there and stop.
+        # -f names the file explicitly: sshd -t would otherwise default to
+        # /etc/ssh/sshd_config regardless of what we just edited.
+        if $SUDO "$SSHD_BIN" -t -f "$SSHD_CONFIG" 2>/tmp/opensrthub-sshd-test.$$; then
+            ok "sshd configuration validates"
+            rm -f "${SSHD_DROPIN}.prev" /tmp/opensrthub-sshd-test.$$
+            # Reload so it applies to new connections. Existing sessions are
+            # unaffected. On a socket-activated sshd there is nothing running to
+            # reload and each new connection reads the config anyway, so a failure
+            # here is not an error.
+            if $SUDO systemctl reload ssh >/dev/null 2>&1 ||
+               $SUDO systemctl reload sshd >/dev/null 2>&1; then
+                log "reloaded sshd (existing sessions are unaffected)"
+            else
+                log "sshd not reloaded (socket-activated or not running); new"
+                log "connections will pick up the configuration regardless"
+            fi
+        else
+            warn "sshd rejected the new configuration:"
+            $SUDO sed 's/^/    /' /tmp/opensrthub-sshd-test.$$ >&2 || true
+            rm -f /tmp/opensrthub-sshd-test.$$
+            if [ -f "${SSHD_DROPIN}.prev" ]; then
+                $SUDO mv "${SSHD_DROPIN}.prev" "$SSHD_DROPIN"
+                warn "restored the previous ${SSHD_DROPIN}"
+            else
+                $SUDO rm -f "$SSHD_DROPIN"
+                warn "removed ${SSHD_DROPIN}"
+            fi
+            die "sshd hardening failed validation and was rolled back; sshd is untouched."
+        fi
     fi
 
     # --- core dump retention -------------------------------------------------

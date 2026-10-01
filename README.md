@@ -167,6 +167,44 @@ can affect the compile or the container image build.
 - **MOTD** - the execute bit is removed from `/etc/update-motd.d/*`, motd-news is
   disabled, and `/etc/motd` is cleared. `/etc/pam.d` is deliberately left alone,
   since a bad edit there locks you out over SSH.
+- **sshd** - `/etc/ssh/sshd_config.d/10-opensrthub-hardening.conf` restricts the
+  crypto and tightens the login policy:
+
+```
+Ciphers       chacha20-poly1305@openssh.com, aes256-gcm@openssh.com,
+              aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr
+KexAlgorithms curve25519-sha256, curve25519-sha256@libssh.org,
+              ecdh-sha2-nistp521/384/256, diffie-hellman-group-exchange-sha256
+MACs          hmac-sha2-512-etm@openssh.com, hmac-sha2-256-etm@openssh.com,
+              hmac-sha2-512, hmac-sha2-256
+PermitRootLogin no        IgnoreRhosts yes            ClientAliveInterval 300
+PermitEmptyPasswords no   HostbasedAuthentication no  ClientAliveCountMax 3
+LoginGraceTime 60         MaxAuthTries 4
+```
+
+  No CBC ciphers, no MD5 or SHA1 MACs, no SHA1 or GSS key exchange, no
+  `diffie-hellman-group1`/`group14-sha1`. Note the MACs apply only to the CTR
+  ciphers - the AEAD ciphers carry their own integrity and ignore the MAC list.
+
+  `sshd_config` uses the **first** value it finds for each keyword, and the main
+  file Includes that directory near its top, so these win over anything below the
+  Include. (That is the opposite of `/etc/default/grub`, which is sourced as shell
+  and takes the *last* assignment.) The `10-` prefix also puts it ahead of other
+  drop-ins such as a cloud image's `50-cloud-init.conf`. If the main config has no
+  `Include` line at all, one is added at the top - otherwise the drop-in would be
+  written and silently never read.
+
+  **The config is validated with `sshd -t` before anything reloads.** If sshd
+  rejects it, the previous drop-in is put back (or the new one deleted), sshd's own
+  error is printed, and the install stops - so a bad config can never leave the
+  machine without a working sshd. The reload applies to new connections only;
+  existing sessions are unaffected.
+
+  **Before you disconnect**, open a second session and confirm you can still log
+  in. Two things to be aware of: `PermitRootLogin no` locks out anyone whose only
+  access is as root (the installer warns if you are running it as root over SSH),
+  and a very old SSH client may not support the restricted algorithm lists.
+
 - **sysctl** - written as a delimited block in `/etc/sysctl.conf` (backed up once
   to `/etc/sysctl.conf.opensrthub.bak`), so re-running replaces the block instead
   of appending duplicates and your own settings are preserved:
