@@ -71,9 +71,19 @@ function loadSessionSecret() {
         }
     }
     var generated = crypto.randomBytes(32).toString('hex');
-    // mode 0600: readable only by the user the service runs as.
-    fs.writeFileSync(secretFile, generated + '\n', { mode: 0o600 });
-    console.log('Generated a new session secret at ' + secretFile);
+    try {
+        // mode 0600: readable only by the user the service runs as.
+        fs.writeFileSync(secretFile, generated + '\n', { mode: 0o600 });
+        console.log('Generated a new session secret at ' + secretFile);
+    } catch (err) {
+        // Not fatal: fall back to a secret that lives only in this process, so
+        // the app still starts. Sessions will not survive a restart, which is a
+        // far better failure than refusing to serve at all.
+        console.error('WARNING: could not write ' + secretFile + ' (' + err.code +
+                      '). Using an in-memory session secret; logins will be ' +
+                      'invalidated on restart. Set SRTHUB_SESSION_SECRET or make ' +
+                      'the directory writable to fix this.');
+    }
     return generated;
 }
 
@@ -116,6 +126,29 @@ var auth = function(req, res, next) {
     } else {
         res.sendFile(path.join(__dirname + '/authenticate.html'));
     }
+};
+
+function isLoopback(address) {
+    if (!address) {
+        return false;
+    }
+    var addr = String(address).replace(/^::ffff:/, '');
+    return addr === '::1' || addr.indexOf('127.') === 0;
+}
+
+// Endpoints srthub itself calls back on. It runs in a container started with
+// --net=host and posts to 127.0.0.1:8080, so these arrive over loopback with no
+// browser session of their own.
+const INTERNAL_API_PATH = /^\/api\/v1\/(signal|status_update)\//;
+
+// Same as auth(), except srthub's own loopback callbacks are let through. They
+// carry no session cookie, so requiring a login here silently dropped every
+// signal - which is what kept log messages from reaching the web UI.
+var localApiAuth = function(req, res, next) {
+    if (isLoopback(req.socket && req.socket.remoteAddress)) {
+        return next();
+    }
+    return auth(req, res, next);
 };
 
 app.get('/', function(req,res) {
@@ -191,8 +224,19 @@ function seconds_since_epoch(){ return Math.floor( Date.now() / 1000 ) }
 
 const httpsServer = https.createServer(options, app);
 const httpServer = http.createServer((req, res) => {
+    // srthub posts its signals over plain HTTP to 127.0.0.1:8080, and the
+    // libcurl it is linked against is built --without-ssl - it cannot follow a
+    // redirect to HTTPS, and does not even ask to (no CURLOPT_FOLLOWLOCATION).
+    // Redirecting these therefore threw away every log message. Serve them
+    // directly instead; loopback only, so nothing off-box skips HTTPS.
+    if (INTERNAL_API_PATH.test(req.url) &&
+        isLoopback(req.socket && req.socket.remoteAddress)) {
+        return app(req, res);
+    }
     const host = req.headers.host.replace(/:\d+$/, ''); // strip any port
-    res.writeHead(301, { Location: `https://${host}:8080/${req.url}` });
+    // req.url already begins with '/', so no separator here (this used to emit
+    // a doubled slash).
+    res.writeHead(301, { Location: `https://${host}:8080${req.url}` });
     res.end();
 });
 
@@ -1141,7 +1185,7 @@ app.post('/api/v1/new_srt_server', auth, (req, res) => {
     res.send(retdata);
 });
 
-app.post('/api/v1/status_update/:uid', auth, (req, res) => {
+app.post('/api/v1/status_update/:uid', localApiAuth, (req, res) => {
     console.log('received status update from: ', req.params.uid);
     //console.log('body is ',req.body);
 
@@ -1158,7 +1202,7 @@ app.post('/api/v1/status_update/:uid', auth, (req, res) => {
     res.send(req.body);
 });
 
-app.post('/api/v1/signal/:uid', auth, (req, res) => {
+app.post('/api/v1/signal/:uid', localApiAuth, (req, res) => {
     console.log('receive event signal from: ', req.params.uid);
     console.log('body is ', req.body);
 
