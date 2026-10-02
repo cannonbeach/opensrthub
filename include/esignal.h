@@ -58,6 +58,7 @@
 #define SIGNAL_SRT_UNABLE_TO_CONNECT 0x1b
 #define SIGNAL_VIDEO_ASPECT_CHANGE   0x1c  // source display aspect ratio changed
 #define SIGNAL_VIDEO_RESOLUTION_CHANGE 0x1d  // source coded resolution changed
+#define SIGNAL_VIDEO_AFD_CHANGE      0x1e  // source active format description changed
 
 #define SIGNAL_DIRECT_ERROR_AVSYNC   0xe0
 #define SIGNAL_DIRECT_ERROR_MSGPOOL  0xe1

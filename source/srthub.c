@@ -2576,6 +2576,29 @@ static int format_change_update(format_change_struct *tracker,
     return 1;
 }
 
+/* active_format values from ETSI TS 101 154 table B.1, which SMPTE 2016-1 and
+ * ATSC A/53 share. Names are kept short enough to sit in a status row; "top"
+ * means the active image is at the top of the coded frame, "centre" that it is
+ * centred, and "protect" names the area a downstream crop should preserve. */
+static const char *afd_name(int afd_code)
+{
+    switch (afd_code & 0x0f) {
+        case 0:  return "undefined";
+        case 2:  return "16:9 top";
+        case 3:  return "14:9 top";
+        case 4:  return ">16:9 centre";
+        case 8:  return "full frame";
+        case 9:  return "4:3 centre";
+        case 10: return "16:9 centre";
+        case 11: return "14:9 centre";
+        case 13: return "4:3 protect 14:9";
+        case 14: return "16:9 protect 14:9";
+        case 15: return "16:9 protect 4:3";
+        default: break;
+    }
+    return "reserved";
+}
+
 /* Reduced sample aspect ratio, "1:1" when the stream does not signal one. */
 static void format_sample_aspect_ratio(char *out, int out_size, AVRational sample_aspect)
 {
@@ -2611,9 +2634,10 @@ void *srthub_thumbnail_thread(void *context)
     enum AVPixelFormat source_format = AV_PIX_FMT_YUV420P;
     enum AVPixelFormat output_format = AV_PIX_FMT_YUV420P;
     struct SwsContext *decode_converter = NULL;
-    /* change trackers for the two source format properties we report on */
+    /* change trackers for the source format properties we report on */
     format_change_struct aspect_tracker;
     format_change_struct resolution_tracker;
+    format_change_struct afd_tracker;
     /* source geometry the scaler was built for, so it can be rebuilt when the
      * source changes */
     int converter_width = 0;
@@ -2644,6 +2668,7 @@ void *srthub_thumbnail_thread(void *context)
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
     memset(&aspect_tracker, 0, sizeof(aspect_tracker));
     memset(&resolution_tracker, 0, sizeof(resolution_tracker));
+    memset(&afd_tracker, 0, sizeof(afd_tracker));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->thumbnailqueue, &srtcore->thumbnail_thread_running);
 
@@ -2732,6 +2757,9 @@ void *srthub_thumbnail_thread(void *context)
                     fprintf(statsfile,"    \"display-aspect-ratio\":\"unknown\",\n");
                     fprintf(statsfile,"    \"display-aspect-ratio-value\":0.0000,\n");
                     fprintf(statsfile,"    \"sample-aspect-ratio\":\"unknown\",\n");
+                    fprintf(statsfile,"    \"afd-present\":0,\n");
+                    fprintf(statsfile,"    \"afd-code\":-1,\n");
+                    fprintf(statsfile,"    \"afd\":\"\",\n");
                     fprintf(statsfile,"    \"video-codec\":\"unknown\",\n");
                     fprintf(statsfile,"    \"source-format\":\"unknown\",\n");
                     fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
@@ -2870,6 +2898,7 @@ void *srthub_thumbnail_thread(void *context)
                             char display_aspect[32];
                             char sample_aspect[32];
                             double display_aspect_value = 0.0;
+                            int afd_code = -1;
 
                             dret = avcodec_receive_frame(decode_avctx, decode_av_frame);
                             if (dret == AVERROR(EAGAIN) || dret == AVERROR_EOF) {
@@ -2907,6 +2936,19 @@ void *srthub_thumbnail_thread(void *context)
                             format_sample_aspect_ratio(sample_aspect, sizeof(sample_aspect),
                                                        frame_sample_aspect);
 
+                            /* The active format description, when the stream
+                             * carries one. Both the MPEG-2 picture user data
+                             * and the AVC/HEVC SEI route it to the same frame
+                             * side data, a single byte holding active_format. */
+                            {
+                                AVFrameSideData *afd_side =
+                                    av_frame_get_side_data(decode_av_frame, AV_FRAME_DATA_AFD);
+
+                                if (afd_side && afd_side->data && afd_side->size >= 1) {
+                                    afd_code = (int)(afd_side->data[0] & 0x0f);
+                                }
+                            }
+
                             /* Report mid-stream changes of the source format.
                              * The aspect ratio and the resolution are tracked
                              * separately because either can change without the
@@ -2933,6 +2975,38 @@ void *srthub_thumbnail_thread(void *context)
                                     fprintf(stderr,"srthub_thumbnail_thread: source resolution changed: %s\n",
                                             change_message);
                                     send_signal(srtcore, SIGNAL_VIDEO_RESOLUTION_CHANGE, change_message);
+                                }
+
+                                /* The AFD code is the value being tracked, so
+                                 * two reserved codes are not treated as the
+                                 * same thing; its meaning and the picture it
+                                 * applies to ride along as context. "none" is
+                                 * fed when the frame carries no AFD, so a
+                                 * stream that stops signalling it is reported
+                                 * - and because a change still has to be
+                                 * confirmed over two frames, a stream that
+                                 * only signals AFD on some pictures does not
+                                 * flap. */
+                                {
+                                    char afd_value[MAX_FORMAT_VALUE_SIZE];
+                                    char afd_context[MAX_FORMAT_VALUE_SIZE];
+
+                                    if (afd_code >= 0) {
+                                        snprintf(afd_value, sizeof(afd_value), "%d", afd_code);
+                                        snprintf(afd_context, sizeof(afd_context), "%s, %s %s",
+                                                 afd_name(afd_code), resolution_text, display_aspect);
+                                    } else {
+                                        snprintf(afd_value, sizeof(afd_value), "%s", "none");
+                                        snprintf(afd_context, sizeof(afd_context), "%s %s",
+                                                 resolution_text, display_aspect);
+                                    }
+
+                                    if (format_change_update(&afd_tracker, afd_value, afd_context,
+                                                             change_message, sizeof(change_message))) {
+                                        fprintf(stderr,"srthub_thumbnail_thread: source AFD changed: %s\n",
+                                                change_message);
+                                        send_signal(srtcore, SIGNAL_VIDEO_AFD_CHANGE, change_message);
+                                    }
                                 }
                             }
 
@@ -3008,6 +3082,10 @@ void *srthub_thumbnail_thread(void *context)
                                     fprintf(statsfile,"    \"display-aspect-ratio\":\"%s\",\n", display_aspect);
                                     fprintf(statsfile,"    \"display-aspect-ratio-value\":%.4f,\n", display_aspect_value);
                                     fprintf(statsfile,"    \"sample-aspect-ratio\":\"%s\",\n", sample_aspect);
+                                    fprintf(statsfile,"    \"afd-present\":%d,\n", afd_code >= 0 ? 1 : 0);
+                                    fprintf(statsfile,"    \"afd-code\":%d,\n", afd_code);
+                                    fprintf(statsfile,"    \"afd\":\"%s\",\n",
+                                            afd_code >= 0 ? afd_name(afd_code) : "");
                                     fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
                                     fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
                                     fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
