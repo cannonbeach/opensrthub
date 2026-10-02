@@ -1764,10 +1764,14 @@
 
       // Add video info if available
       if (service.video && isRunning) {
+        // The aspect ratio is the display ratio, which already accounts for
+        // non-square pixels. It reads "unknown" until a frame has decoded.
+        const aspect = service.video.aspectRatio || '';
+        const aspectText = (aspect && aspect !== 'unknown') ? ` (${escapeHtml(aspect)})` : '';
         detailsHtml += `
           <div class="detail-item">
             <span class="detail-label">Resolution</span>
-            <span class="detail-value">${service.video.width}×${service.video.height}</span>
+            <span class="detail-value">${service.video.width}×${service.video.height}${aspectText}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Video Codec</span>
