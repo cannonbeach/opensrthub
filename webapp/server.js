@@ -669,6 +669,21 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                         service.status = 'running';
                         // Uptime is in milliseconds, convert to seconds
                         service.uptime = sfd["srthub-uptime"] ? sfd["srthub-uptime"] / 1000 : 0;
+
+                        // SCTE-35: pid presence comes from the PMT, the cue
+                        // fields are only present once a cue has been seen.
+                        service.scte35 = {
+                            present: sfd["scte35-present"] === 1,
+                            pid: sfd["scte35-pid"] || 0,
+                            cueCount: sfd["scte35-cue-count"] || 0,
+                            lastCue: sfd["scte35-last-cue"] || '',
+                            lastCueName: sfd["scte35-last-cue-name"] || '',
+                            lastCueImmediate: sfd["scte35-last-cue-immediate"] === 1,
+                            lastCueDuration: sfd["scte35-last-cue-duration"] || 0,
+                            lastCueEventId: sfd["scte35-last-cue-event-id"],
+                            lastCueCancel: sfd["scte35-last-cue-cancel"] === 1,
+                            lastCueTime: sfd["scte35-last-cue-time"] || 0
+                        };
                     } catch (e) {
                         console.log('Error reading status file:', e);
                     }
@@ -1732,23 +1747,47 @@ function input_stream(ip, port, input_interface, bitrate) {
     this.bitrate = bitrate;
 }
 
+// Each log line is one JSON object, with every line after the first prefixed
+// by a comma (the file is appended to as if it were one big array). Parsing
+// line by line means a single truncated or malformed entry is skipped instead
+// of discarding the whole page of log data.
+function parseLogLines(lines) {
+    var entries = [];
+
+    String(lines).split('\n').forEach(line => {
+        var text = line.trim();
+        if (text.charAt(0) == ',') {
+            text = text.substring(1);
+        }
+        if (text.length == 0) {
+            return;
+        }
+        try {
+            entries.push(JSON.parse(text));
+        } catch (e) {
+            console.log('skipping malformed log line: ', text.substring(0, 120));
+        }
+    });
+
+    return entries;
+}
+
+function sendLogData(res, linecount) {
+    readLastLines.read(logfilename, linecount)
+        .then((lines) => {
+            res.set('Expires', new Date().toUTCString());
+            res.json(parseLogLines(lines));
+        })
+        .catch((err) => {
+            console.log('unable to read log data: ', err);
+            res.sendStatus(500);
+        });
+}
+
 app.get('/api/v1/get_log_data', auth, (req, res) => {
     console.log('newest log filename: ', logfilename);
     if (fs.existsSync(logfilename)) {
-        readLastLines.read(logfilename, 6)
-            .then((lines) => {
-                if (lines.charAt(0) == ',') {
-                    lines = lines.substring(1);
-                }
-                updated_lines = '['+lines+']';
-                //console.log(updated_lines);
-                res.writeHead(200, {
-                    'Content-Type': 'text/html',
-                    'Content-Length': updated_lines.length,
-                    'Expires': new Date().toUTCString()
-                });
-                res.end(updated_lines);
-            });
+        sendLogData(res, 6);
     } else {
         res.sendStatus(404);  // logdata was not found
     }
@@ -1757,23 +1796,7 @@ app.get('/api/v1/get_log_data', auth, (req, res) => {
 app.get('/api/v1/get_extended_log_data', auth, (req, res) => {
     console.log('newest log filename: ', logfilename);
     if (fs.existsSync(logfilename)) {
-        readLastLines.read(logfilename, 50)
-            .then((lines) => {
-                if (lines.charAt(0) == ',') {
-                    lines = lines.substring(1);
-                }
-                updated_lines = '['+lines+']';
-
-                var parsed_updated_lines = JSON.parse(updated_lines);
-                var output_log_data = JSON.stringify(parsed_updated_lines);
-
-                res.writeHead(200, {
-                    'Content-Type': 'text/html',
-                    'Content-Length': output_log_data.length,
-                    'Expires': new Date().toUTCString()
-                });
-                res.end(output_log_data);
-            });
+        sendLogData(res, 50);
     } else {
         res.sendStatus(404);  // logdata was not found
     }
