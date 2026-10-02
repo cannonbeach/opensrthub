@@ -69,6 +69,7 @@
 #include "../cbffmpeg/libavcodec/avcodec.h"
 #include "../cbffmpeg/libswscale/swscale.h"
 #include "../cbffmpeg/libavutil/pixfmt.h"
+#include "../cbffmpeg/libavutil/rational.h"
 #include "../cbffmpeg/libavutil/log.h"
 #include "../cbffmpeg/libavutil/opt.h"
 #include "../cbffmpeg/libavutil/imgutils.h"
@@ -2445,6 +2446,74 @@ static int h264_has_recovery_point(const uint8_t *nal, size_t n)
     return 0;
 }
 
+#if defined(ENABLE_THUMBNAIL)
+/* Formats the display aspect ratio implied by a coded frame size and its
+ * sample aspect ratio, e.g. "16:9". A stream that does not signal a sample
+ * aspect ratio is treated as having square pixels, which is what makes
+ * 720x480 with a 8:9 sample ratio come out as 4:3 rather than 3:2.
+ *
+ * The reduced ratio is reported exactly rather than being snapped to the
+ * nearest familiar one, so a stream coded at 1920x1088 reads 30:17 - which,
+ * next to the resolution it is shown with, says what it needs to. */
+static void format_aspect_ratio(char *out, int out_size, int width, int height,
+                                AVRational sample_aspect, double *ratio_value)
+{
+    int ratio_num = 0;
+    int ratio_den = 0;
+
+    if (ratio_value) {
+        *ratio_value = 0.0;
+    }
+    if (!out || out_size <= 0) {
+        return;
+    }
+    snprintf(out, out_size, "%s", "unknown");
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    if (sample_aspect.num <= 0 || sample_aspect.den <= 0) {
+        sample_aspect.num = 1;
+        sample_aspect.den = 1;
+    }
+
+    av_reduce(&ratio_num, &ratio_den,
+              (int64_t)width * (int64_t)sample_aspect.num,
+              (int64_t)height * (int64_t)sample_aspect.den,
+              1024 * 1024);
+    if (ratio_num <= 0 || ratio_den <= 0) {
+        return;
+    }
+
+    snprintf(out, out_size, "%d:%d", ratio_num, ratio_den);
+    if (ratio_value) {
+        *ratio_value = (double)ratio_num / (double)ratio_den;
+    }
+}
+
+/* Reduced sample aspect ratio, "1:1" when the stream does not signal one. */
+static void format_sample_aspect_ratio(char *out, int out_size, AVRational sample_aspect)
+{
+    int ratio_num = 0;
+    int ratio_den = 0;
+
+    if (!out || out_size <= 0) {
+        return;
+    }
+    if (sample_aspect.num <= 0 || sample_aspect.den <= 0) {
+        snprintf(out, out_size, "%s", "1:1");
+        return;
+    }
+    av_reduce(&ratio_num, &ratio_den,
+              (int64_t)sample_aspect.num, (int64_t)sample_aspect.den, 1024 * 1024);
+    if (ratio_num <= 0 || ratio_den <= 0) {
+        snprintf(out, out_size, "%s", "1:1");
+        return;
+    }
+    snprintf(out, out_size, "%d:%d", ratio_num, ratio_den);
+}
+#endif
+
 void *srthub_thumbnail_thread(void *context)
 {
 #if defined(ENABLE_THUMBNAIL)
@@ -2564,6 +2633,9 @@ void *srthub_thumbnail_thread(void *context)
                     fprintf(statsfile,"{\n");
                     fprintf(statsfile,"    \"width\":0,\n");
                     fprintf(statsfile,"    \"height\":0,\n");
+                    fprintf(statsfile,"    \"display-aspect-ratio\":\"unknown\",\n");
+                    fprintf(statsfile,"    \"display-aspect-ratio-value\":0.0000,\n");
+                    fprintf(statsfile,"    \"sample-aspect-ratio\":\"unknown\",\n");
                     fprintf(statsfile,"    \"video-codec\":\"unknown\",\n");
                     fprintf(statsfile,"    \"source-format\":\"unknown\",\n");
                     fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
@@ -2698,6 +2770,10 @@ void *srthub_thumbnail_thread(void *context)
                             int frame_width2;
                             int row;
                             AVFrame *jpeg_frame;
+                            AVRational frame_sample_aspect;
+                            char display_aspect[32];
+                            char sample_aspect[32];
+                            double display_aspect_value = 0.0;
 
                             dret = avcodec_receive_frame(decode_avctx, decode_av_frame);
                             if (dret == AVERROR(EAGAIN) || dret == AVERROR_EOF) {
@@ -2720,6 +2796,20 @@ void *srthub_thumbnail_thread(void *context)
                             source_format = decode_av_frame->format;
                             frame_height = decode_avctx->height;
                             frame_width = decode_avctx->width;
+
+                            /* The frame carries the sample aspect ratio when
+                             * the stream signalled one; fall back to the codec
+                             * context, which keeps the last value the decoder
+                             * saw, before assuming square pixels. */
+                            frame_sample_aspect = decode_av_frame->sample_aspect_ratio;
+                            if (frame_sample_aspect.num <= 0 || frame_sample_aspect.den <= 0) {
+                                frame_sample_aspect = decode_avctx->sample_aspect_ratio;
+                            }
+                            format_aspect_ratio(display_aspect, sizeof(display_aspect),
+                                                frame_width, frame_height,
+                                                frame_sample_aspect, &display_aspect_value);
+                            format_sample_aspect_ratio(sample_aspect, sizeof(sample_aspect),
+                                                       frame_sample_aspect);
 
                             source_data[0] = decode_av_frame->data[0];
                             source_data[1] = decode_av_frame->data[1];
@@ -2755,6 +2845,9 @@ void *srthub_thumbnail_thread(void *context)
                                     fprintf(statsfile,"{\n");
                                     fprintf(statsfile,"    \"width\":%d,\n", frame_width);
                                     fprintf(statsfile,"    \"height\":%d,\n", frame_height);
+                                    fprintf(statsfile,"    \"display-aspect-ratio\":\"%s\",\n", display_aspect);
+                                    fprintf(statsfile,"    \"display-aspect-ratio-value\":%.4f,\n", display_aspect_value);
+                                    fprintf(statsfile,"    \"sample-aspect-ratio\":\"%s\",\n", sample_aspect);
                                     fprintf(statsfile,"    \"video-codec\":\"%s\",\n", codec);
                                     fprintf(statsfile,"    \"source-format\":\"%s\",\n", av_get_pix_fmt_name(source_format));
                                     fprintf(statsfile,"    \"total-streams\":%d,\n", muxstreams);
