@@ -144,6 +144,510 @@ void register_message_callback(int (*cbfn)(int p1,int64_t p2,int64_t p3,int64_t 
     backup_context = context;
 }
 
+/* Returns the PID carrying SCTE-35 for the first decoded program, or 0 when
+ * the PMT has no SCTE-35 stream (or has not been decoded yet). Takes pmt_lock,
+ * so it must not be called from code already holding it. */
+int get_scte35_pid(transport_data_struct *tsdata)
+{
+    int scte35_pid = 0;
+    int pid_loop;
+
+    if (!tsdata) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&pmt_lock);
+    if (tsdata->pmt_pid_count > 0) {
+        pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[0];
+        int stream_count = current_pmt_table->stream_count;
+        if (stream_count > MAX_STREAMS) {
+            stream_count = MAX_STREAMS;
+        }
+        for (pid_loop = 0; pid_loop < stream_count; pid_loop++) {
+            if (current_pmt_table->decoded_stream_type[pid_loop] == STREAM_TYPE_SCTE35) {
+                scte35_pid = current_pmt_table->stream_pid[pid_loop];
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&pmt_lock);
+
+    return scte35_pid;
+}
+
+/* segmentation_type_id names from SCTE-35 table 23. */
+const char *scte35_segmentation_type_name(int segmentation_type_id)
+{
+    switch (segmentation_type_id) {
+        case 0x00: return "Not Indicated";
+        case 0x01: return "Content Identification";
+        case 0x10: return "Program Start";
+        case 0x11: return "Program End";
+        case 0x12: return "Program Early Termination";
+        case 0x13: return "Program Breakaway";
+        case 0x14: return "Program Resumption";
+        case 0x15: return "Program Runover Planned";
+        case 0x16: return "Program Runover Unplanned";
+        case 0x17: return "Program Overlap Start";
+        case 0x18: return "Program Blackout Override";
+        case 0x19: return "Program Join";
+        case 0x20: return "Chapter Start";
+        case 0x21: return "Chapter End";
+        case 0x22: return "Break Start";
+        case 0x23: return "Break End";
+        case 0x24: return "Opening Credit Start";
+        case 0x25: return "Opening Credit End";
+        case 0x26: return "Closing Credit Start";
+        case 0x27: return "Closing Credit End";
+        case 0x30: return "Provider Advertisement Start";
+        case 0x31: return "Provider Advertisement End";
+        case 0x32: return "Distributor Advertisement Start";
+        case 0x33: return "Distributor Advertisement End";
+        case 0x34: return "Provider Placement Opportunity Start";
+        case 0x35: return "Provider Placement Opportunity End";
+        case 0x36: return "Distributor Placement Opportunity Start";
+        case 0x37: return "Distributor Placement Opportunity End";
+        case 0x38: return "Provider Overlay Placement Opportunity Start";
+        case 0x39: return "Provider Overlay Placement Opportunity End";
+        case 0x3a: return "Distributor Overlay Placement Opportunity Start";
+        case 0x3b: return "Distributor Overlay Placement Opportunity End";
+        case 0x3c: return "Provider Promo Announcement Start";
+        case 0x3d: return "Provider Promo Announcement End";
+        case 0x3e: return "Distributor Promo Announcement Start";
+        case 0x3f: return "Distributor Promo Announcement End";
+        case 0x40: return "Unscheduled Event Start";
+        case 0x41: return "Unscheduled Event End";
+        case 0x42: return "Alternate Content Opportunity Start";
+        case 0x43: return "Alternate Content Opportunity End";
+        case 0x44: return "Provider Ad Block Start";
+        case 0x45: return "Provider Ad Block End";
+        case 0x46: return "Distributor Ad Block Start";
+        case 0x47: return "Distributor Ad Block End";
+        case 0x50: return "Network Start";
+        case 0x51: return "Network End";
+        default: break;
+    }
+    return "";
+}
+
+/* Classifies a segmentation_type_id as a cue out or a cue in.
+ *
+ * Break Start/End (0x22/0x23) and the advertisement, placement opportunity,
+ * overlay, promo, unscheduled event, alternate content and ad block ranges
+ * (0x30 through 0x47) all alternate even=start, odd=end, so the low bit gives
+ * the direction. Program and chapter boundaries carry no ad-break meaning and
+ * report SCTE35_CUE_UNKNOWN rather than being misreported as cue out/in. */
+int scte35_segmentation_cue_direction(int segmentation_type_id)
+{
+    if (segmentation_type_id == 0x22) {
+        return SCTE35_CUE_OUT;
+    }
+    if (segmentation_type_id == 0x23) {
+        return SCTE35_CUE_IN;
+    }
+    if (segmentation_type_id >= 0x30 && segmentation_type_id <= 0x47) {
+        if ((segmentation_type_id & 1) == 0) {
+            return SCTE35_CUE_OUT;
+        }
+        return SCTE35_CUE_IN;
+    }
+    return SCTE35_CUE_UNKNOWN;
+}
+
+/* Hands one decoded cue to the registered frame callback. The callback is
+ * expected to copy what it needs; nothing here outlives the call. */
+static void scte35_emit_cue(transport_data_struct *tsdata, scte35_data_struct *scte35_data)
+{
+    if (send_frame_func) {
+        send_frame_func((uint8_t*)scte35_data, sizeof(scte35_data_struct), STREAM_TYPE_SCTE35, 1,
+                        0, // pts
+                        0, // dts
+                        0, // PCR
+                        tsdata->source,
+                        0,
+                        NULL,
+                        0,  // cc errors
+                        0,  // pmt table entries
+                        send_frame_context);
+    }
+}
+
+/* Parses splice_insert() starting at splice. Returns 1 when the whole command
+ * was present within scte_end, 0 when it was truncated - in which case the
+ * fields read before the truncation are still filled in. */
+static int scte35_parse_splice_insert(const uint8_t *splice, const uint8_t *scte_end,
+                                      scte35_data_struct *out)
+{
+    int program_splice_flag;
+    int duration_flag;
+
+    out->splice_command_type = SCTE35_CMD_SPLICE_INSERT;
+
+    /* splice_event_id (4) + cancel_indicator byte (1) */
+    if (splice + 5 > scte_end) {
+        return 0;
+    }
+    out->splice_event_id = ((int64_t)splice[0] << 24) |
+                           ((int64_t)splice[1] << 16) |
+                           ((int64_t)splice[2] << 8) |
+                            (int64_t)splice[3];
+    out->cancel = !!(splice[4] & 0x80);   // bottom 7 bits reserved
+    splice += 5;
+
+    if (out->cancel) {
+        /* A cancellation carries nothing past the event id. */
+        return 1;
+    }
+
+    if (splice + 1 > scte_end) {
+        return 0;
+    }
+    out->out_of_network_indicator = !!(splice[0] & 0x80);
+    program_splice_flag           = !!(splice[0] & 0x40);
+    duration_flag                 = !!(splice[0] & 0x20);
+    out->splice_immediate         = !!(splice[0] & 0x10);
+    // remaining 4 bits are reserved
+    splice++;
+
+    if (program_splice_flag == 1 && out->splice_immediate == 0) {
+        // splice_time()
+        int time_specified_flag;
+
+        if (splice + 1 > scte_end) {
+            return 0;
+        }
+        time_specified_flag = !!(splice[0] & 0x80);
+        if (time_specified_flag) {
+            if (splice + 5 > scte_end) {
+                return 0;
+            }
+            out->pts_time = (((int64_t)(splice[0] & 0x01)) << 32) |
+                             ((int64_t)splice[1] << 24) |
+                             ((int64_t)splice[2] << 16) |
+                             ((int64_t)splice[3] << 8) |
+                              (int64_t)splice[4];
+            splice += 5;
+        } else {
+            // next 7 bits are reserved
+            splice++;
+        }
+    } else if (program_splice_flag == 0) {
+        int component_count;
+        int c;
+
+        if (splice + 1 > scte_end) {
+            return 0;
+        }
+        component_count = splice[0];
+        splice++;
+        for (c = 0; c < component_count; c++) {
+            if (splice + 1 > scte_end) {
+                return 0;
+            }
+            splice++;   // component_tag
+            if (out->splice_immediate == 0) {
+                int time_specified_flag;
+
+                if (splice + 1 > scte_end) {
+                    return 0;
+                }
+                time_specified_flag = !!(splice[0] & 0x80);
+                if (time_specified_flag) {
+                    if (splice + 5 > scte_end) {
+                        return 0;
+                    }
+                    if (c == 0) {
+                        /* report the first component's time as the splice point */
+                        out->pts_time = (((int64_t)(splice[0] & 0x01)) << 32) |
+                                         ((int64_t)splice[1] << 24) |
+                                         ((int64_t)splice[2] << 16) |
+                                         ((int64_t)splice[3] << 8) |
+                                          (int64_t)splice[4];
+                    }
+                    splice += 5;
+                } else {
+                    // next 7 bits are reserved
+                    splice++;
+                }
+            }
+        }
+    }
+
+    if (duration_flag) {
+        // break_duration()
+        if (splice + 5 > scte_end) {
+            return 0;
+        }
+        out->auto_return = !!(splice[0] & 0x80);
+        out->pts_duration = (((int64_t)(splice[0] & 0x01)) << 32) |
+                             ((int64_t)splice[1] << 24) |
+                             ((int64_t)splice[2] << 16) |
+                             ((int64_t)splice[3] << 8) |
+                              (int64_t)splice[4];
+        splice += 5;
+    }
+
+    if (splice + 2 > scte_end) {
+        return 0;
+    }
+    out->program_id = ((int)splice[0] << 8) | (int)splice[1];
+    /* avail_num and avails_expected follow but are not reported */
+
+    return 1;
+}
+
+/* Parses one segmentation_descriptor body (everything after its tag and length
+ * bytes) into cue. Returns 1 when the descriptor was complete, 0 otherwise. */
+static int scte35_parse_segmentation_descriptor(const uint8_t *d, const uint8_t *d_end,
+                                                scte35_data_struct *cue)
+{
+    int program_segmentation_flag;
+    int segmentation_duration_flag;
+    int upid_length;
+
+    /* identifier - only CUEI-tagged descriptors are segmentation descriptors */
+    if (d + 4 > d_end) {
+        return 0;
+    }
+    if (d[0] != 'C' || d[1] != 'U' || d[2] != 'E' || d[3] != 'I') {
+        return 0;
+    }
+    d += 4;
+
+    if (d + 5 > d_end) {
+        return 0;
+    }
+    cue->splice_event_id = ((int64_t)d[0] << 24) |
+                           ((int64_t)d[1] << 16) |
+                           ((int64_t)d[2] << 8) |
+                            (int64_t)d[3];
+    cue->cancel = !!(d[4] & 0x80);   // bottom 7 bits reserved
+    d += 5;
+
+    if (cue->cancel) {
+        snprintf(cue->descriptor_name, MAX_SCTE35_NAME_SIZE, "%s", "Segmentation Event Canceled");
+        return 1;
+    }
+
+    if (d + 1 > d_end) {
+        return 0;
+    }
+    program_segmentation_flag  = !!(d[0] & 0x80);
+    segmentation_duration_flag = !!(d[0] & 0x40);
+    /* bit 0x20 is delivery_not_restricted_flag; the five bits below it are
+     * either the delivery restriction flags or reserved, so either way the
+     * whole group fits in this one byte. */
+    d += 1;
+
+    if (program_segmentation_flag == 0) {
+        int component_count;
+
+        if (d + 1 > d_end) {
+            return 0;
+        }
+        component_count = d[0];
+        d += 1;
+        /* component_tag (1) + reserved and pts_offset (5) for each component */
+        if (component_count > 0) {
+            if ((d_end - d) < (6 * (long)component_count)) {
+                return 0;
+            }
+            d += 6 * component_count;
+        }
+    }
+
+    if (segmentation_duration_flag) {
+        /* segmentation_duration is a full 40-bit 90kHz value */
+        if (d + 5 > d_end) {
+            return 0;
+        }
+        cue->pts_duration = ((int64_t)d[0] << 32) |
+                            ((int64_t)d[1] << 24) |
+                            ((int64_t)d[2] << 16) |
+                            ((int64_t)d[3] << 8) |
+                             (int64_t)d[4];
+        d += 5;
+    }
+
+    if (d + 2 > d_end) {
+        return 0;
+    }
+    cue->segmentation_upid_type = d[0];
+    upid_length = d[1];
+    d += 2;
+    if (d + upid_length > d_end) {
+        return 0;
+    }
+    d += upid_length;   /* the upid itself is not reported */
+
+    if (d + 3 > d_end) {
+        return 0;
+    }
+    cue->segmentation_type_id = d[0];
+    cue->segment_num          = d[1];
+    cue->segments_expected    = d[2];
+
+    cue->cue_direction = scte35_segmentation_cue_direction(cue->segmentation_type_id);
+    cue->out_of_network_indicator = (cue->cue_direction == SCTE35_CUE_OUT) ? 1 : 0;
+    snprintf(cue->descriptor_name, MAX_SCTE35_NAME_SIZE, "%s",
+             scte35_segmentation_type_name(cue->segmentation_type_id));
+
+    return 1;
+}
+
+/* Parses time_signal() at cmd and walks the descriptor loop that follows it,
+ * emitting one cue per segmentation_descriptor. Returns the number emitted. */
+static int scte35_parse_time_signal(transport_data_struct *tsdata,
+                                    const uint8_t *cmd, const uint8_t *scte_end,
+                                    int splice_command_length,
+                                    const scte35_data_struct *base)
+{
+    const uint8_t *p = cmd;
+    const uint8_t *loop;
+    const uint8_t *loop_end;
+    int64_t pts_time = 0;
+    int time_specified_flag;
+    int descriptor_loop_length;
+    int emitted = 0;
+
+    /* time_signal() is a single splice_time(): one byte, or five with a PTS. */
+    if (p + 1 > scte_end) {
+        return 0;
+    }
+    time_specified_flag = !!(p[0] & 0x80);
+    if (time_specified_flag) {
+        if (p + 5 > scte_end) {
+            return 0;
+        }
+        pts_time = (((int64_t)(p[0] & 0x01)) << 32) |
+                    ((int64_t)p[1] << 24) |
+                    ((int64_t)p[2] << 16) |
+                    ((int64_t)p[3] << 8) |
+                     (int64_t)p[4];
+        p += 5;
+    } else {
+        // next 7 bits are reserved
+        p += 1;
+    }
+
+    /* Trust the declared command length when it is a real value. 0x0fff means
+     * the length is unknown, and then the position the parse above reached is
+     * the only thing available. */
+    if (splice_command_length != 0x0fff && (cmd + splice_command_length) <= scte_end) {
+        p = cmd + splice_command_length;
+    }
+
+    if (p + 2 > scte_end) {
+        return 0;
+    }
+    descriptor_loop_length = ((int)p[0] << 8) | (int)p[1];
+    p += 2;
+
+    loop_end = p + descriptor_loop_length;
+    if (loop_end > scte_end) {
+        loop_end = scte_end;     /* truncated loop - take what is present */
+    }
+
+    loop = p;
+    while (loop + 2 <= loop_end) {
+        int descriptor_tag = loop[0];
+        int descriptor_length = loop[1];
+        const uint8_t *d = loop + 2;
+        const uint8_t *d_end = d + descriptor_length;
+
+        if (d_end > loop_end) {
+            break;              /* descriptor runs past the loop */
+        }
+
+        if (descriptor_tag == SCTE35_DESCRIPTOR_SEGMENTATION) {
+            scte35_data_struct cue = *base;
+
+            cue.splice_command_type = SCTE35_CMD_TIME_SIGNAL;
+            cue.pts_time = pts_time;
+            /* a time_signal with no splice_time applies right away */
+            cue.splice_immediate = time_specified_flag ? 0 : 1;
+
+            if (scte35_parse_segmentation_descriptor(d, d_end, &cue)) {
+                cue.parse_complete = 1;
+                scte35_emit_cue(tsdata, &cue);
+                emitted++;
+            }
+        }
+
+        loop = d_end;
+    }
+
+    return emitted;
+}
+
+/* Decodes one SCTE-35 splice_info_section from the start of a transport packet
+ * payload. pdata[0] is the pointer_field, since this is only reached on a
+ * packet with payload_unit_start_indicator set. */
+static void scte35_decode_section(transport_data_struct *tsdata, const uint8_t *pdata,
+                                  int payload_remaining, int current_pid)
+{
+    const uint8_t *scte_end;
+    unsigned short section_size;
+    unsigned char table_id;
+    int splice_command_length;
+    int splice_command_type;
+    int64_t pts_adjustment;
+    scte35_data_struct base;
+
+    /* The fixed 15-byte splice_info header (pointer field through
+     * splice_command_type) must be present before any of it is read. */
+    if (payload_remaining < 15) {
+        return;
+    }
+
+    table_id = pdata[1];
+    if (table_id != 0xfc) {
+        return;     /* not a splice_info_section */
+    }
+
+    section_size = ((pdata[2] << 8) + pdata[3]) & 0x0fff;
+    pts_adjustment = (((int64_t)(pdata[5] & 0x01)) << 32) |
+                      ((int64_t)pdata[6] << 24) |
+                      ((int64_t)pdata[7] << 16) |
+                      ((int64_t)pdata[8] << 8) |
+                       (int64_t)pdata[9];
+    splice_command_length = (((pdata[12] & 0x0f) << 8) + pdata[13]) & 0x0fff;
+    splice_command_type = pdata[14];
+
+    /* Parseable region ends at the smaller of the declared section length and
+     * the bytes actually present in this packet payload. Every read below is
+     * checked against scte_end. */
+    scte_end = pdata + payload_remaining;
+    if ((int)section_size + 4 < payload_remaining) {
+        scte_end = pdata + 4 + (int)section_size;
+    }
+
+    memset(&base, 0, sizeof(base));
+    base.pts_adjustment        = pts_adjustment;
+    base.splice_pid            = current_pid;
+    base.segmentation_type_id  = -1;
+    base.segmentation_upid_type = -1;
+    base.cue_direction         = SCTE35_CUE_UNKNOWN;
+
+    if (splice_command_type == SCTE35_CMD_SPLICE_INSERT) {
+        scte35_data_struct cue = base;
+
+        cue.parse_complete = scte35_parse_splice_insert(pdata + 15, scte_end, &cue);
+        if (cue.cancel) {
+            cue.cue_direction = SCTE35_CUE_UNKNOWN;
+            snprintf(cue.descriptor_name, MAX_SCTE35_NAME_SIZE, "%s", "Splice Event Canceled");
+        } else {
+            cue.cue_direction = cue.out_of_network_indicator ? SCTE35_CUE_OUT : SCTE35_CUE_IN;
+            snprintf(cue.descriptor_name, MAX_SCTE35_NAME_SIZE, "%s",
+                     cue.out_of_network_indicator ? "Splice Insert Out of Network"
+                                                  : "Splice Insert Return to Network");
+        }
+        scte35_emit_cue(tsdata, &cue);
+    } else if (splice_command_type == SCTE35_CMD_TIME_SIGNAL) {
+        scte35_parse_time_signal(tsdata, pdata + 15, scte_end, splice_command_length, &base);
+    }
+}
+
 int64_t get_time_difference(struct timeval *stoptime, struct timeval *starttime)
 {
      int64_t delta_sec;
@@ -225,6 +729,13 @@ static int decode_pmt_table(pat_table_struct *master_pat_table, pmt_table_struct
      current_pmt_table->program_info_length = program_info_length;
      current_pmt_table->pmt_version = pmt_version;
      current_pmt_table->audio_stream_count = 0;
+     current_pmt_table->scte35_stream_count = 0;
+     /* The local stream_count below indexes the per-PMT arrays from 0 on every
+      * decode, so the published count has to restart with it. Without this it
+      * accumulated across PMT version changes, leaving consumers to read stale
+      * entries from the previous version (and eventually past the end of the
+      * arrays once it passed MAX_STREAMS). */
+     current_pmt_table->stream_count = 0;
 
      if (pmt_data_size <= MAX_TABLE_SIZE) {
          memcpy(current_pmt_table->pmt_data, pmt_data, pmt_data_size);
@@ -385,6 +896,7 @@ static int decode_pmt_table(pat_table_struct *master_pat_table, pmt_table_struct
           } else if (current_stream_type == 0x86) { // scte35
               //backup_caller(2000, 812, current_stream_pid, current_pid, 0, 0, backup_context);
               current_pmt_table->decoded_stream_type[stream_count] = STREAM_TYPE_SCTE35;
+              current_pmt_table->scte35_stream_count++;
           } else if (current_stream_type == 0xC0) {
               //backup_caller(2000, 813, current_stream_pid, current_pid, 0, 0, backup_context);
           }
@@ -716,239 +1228,12 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                if (afc & 1) {
                    if (pusi) {
                        int pid_count = 0;
-                       int scte35_pid = 0;
-                       int pid_loop;
+                       int scte35_pid = get_scte35_pid(tsdata);
 
-                       if (tsdata->pmt_pid_count > 0) {
-                           pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[0];
-                           for (pid_loop = 0; pid_loop < current_pmt_table->stream_count; pid_loop++) {
-                               if (current_pmt_table->decoded_stream_type[pid_loop] == STREAM_TYPE_SCTE35) {
-                                   scte35_pid = current_pmt_table->stream_pid[pid_loop];
-                                   break;
-                               }
-                           }
-                           if (current_pid == scte35_pid && scte35_pid != 0) {
-                               int scte_payload_remaining = TS_PAYLOAD_SIZE - (int)(pdata - pdata_initial);
-                               const uint8_t *scte_end;
-
-                               /* The fixed 15-byte SCTE-35 splice_info header
-                                * (pointer field through splice_command_type) must
-                                * be present before any of it is read. */
-                               if (scte_payload_remaining < 15) {
-                                   goto continue_packet_processing;
-                               }
-
-                               int acquired_data_so_far = pdata - pdata_initial;
-                               unsigned short section_size = ((*(pdata+2) << 8) + *(pdata+3)) & 0x0fff;
-                               unsigned char table_id = pdata[1];
-                               int protocol_version = pdata[4];
-
-                               int64_t pts_adjustment = ((int64_t)(pdata[5] & 0x01) << 32) | (int64_t)(pdata[6] << 24) | (int64_t)(pdata[7] << 16) | (int64_t)(pdata[8] << 8) | (int64_t)pdata[9];
-                               int cw_index = pdata[10];
-                               int tier = ((*(pdata+11) << 4) | ((*(pdata+12) & 0xf0) >> 4)) & 0x0fff;
-                               int splice_command_length = (((*(pdata+12) & 0x0f) << 8) + *(pdata+13)) & 0x0fff;
-                               int splice_command_type = pdata[14];
-                               int64_t pts_time = 0;
-                               int64_t pts_duration = 0;
-                               int auto_return = 0;
-                               int splice_immediate_flag = 0;
-                               int unique_program_id = 0;
-                               int cancel_indicator = 0;
-                               int out_of_network_indicator = 0;
-                               int64_t splice_event_id = 0;
-
-                               /* Parseable region ends at the smaller of the
-                                * declared section length and the bytes actually
-                                * present in this packet payload. All subsequent
-                                * splice[] accesses are checked against scte_end. */
-                               scte_end = pdata + scte_payload_remaining;
-                               if ((int)section_size + 4 < scte_payload_remaining) {
-                                   scte_end = pdata + 4 + (int)section_size;
-                               }
-
-                               /*
-                               syslog(LOG_INFO,"SCTE35 TABLE ID: 0x%x  SECTIONSIZE:%d  VERSION:%d CW:%d TIER:%d CMDLEN:%d TYPE:0x%x  PTS-ADJUSTMENT:%ld\n",
-                                      table_id,
-                                      section_size, protocol_version,
-                                      cw_index,
-                                      tier,
-                                      splice_command_length,
-                                      splice_command_type,
-                                      pts_adjustment);
-                               */
-
-                               if (splice_command_type == 0x05) {  // splice insert
-                                   uint8_t *splice = (uint8_t*)pdata+15;
-
-                                   /* splice_event_id (4) + flags byte (1) */
-                                   if (splice + 5 > scte_end) {
-                                       goto scte35_emit;
-                                   }
-                                   splice_event_id = (int64_t)(splice[0] << 24) |
-                                       (int64_t)(splice[1] << 16) |
-                                       (int64_t)(splice[2] << 8) |
-                                       (int64_t)splice[3];
-                                   cancel_indicator = !!(splice[4] & 0x80);       // cancel_indicator- bottom 7-bits reserved
-                                   //syslog(LOG_INFO,"SCTE35: splice_event_id: %ld  0x%x   CANCEL:%d\n",
-                                   //       splice_event_id, splice_event_id, cancel_indicator);
-                                   splice += 5;
-                                   if (!cancel_indicator) {
-                                       int program_splice_flag;
-                                       int duration_flag;
-
-                                       if (splice + 1 > scte_end) {
-                                           goto scte35_emit;
-                                       }
-                                       out_of_network_indicator = !!(splice[0] & 0x80);
-                                       program_splice_flag = !!(splice[0] & 0x40);
-                                       duration_flag = !!(splice[0] & 0x20);
-                                       splice_immediate_flag = !!(splice[0] & 0x10);
-                                       // next 4-bits are reserved
-                                       /*syslog(LOG_INFO,"SCTE35: out_of_network_indicator:%d program_splice_flag:%d duration_flag:%d splice_immediate_flag:%d\n",
-                                              out_of_network_indicator,
-                                              program_splice_flag,
-                                              duration_flag,
-                                              splice_immediate_flag);
-                                       if (out_of_network_indicator) {
-                                           syslog(LOG_INFO,"SCTE35: opportunity to exit from the network feed!\n");
-                                       } else {
-                                           syslog(LOG_INFO,"SCTE35: let's get back to the program - pts_adjustment is the intended point to head back!\n");
-                                       }
-                                       */
-                                       splice++;
-                                       if (program_splice_flag == 1 && splice_immediate_flag == 0) {
-                                           // splice time table
-                                           int time_specified_flag;
-                                           if (splice + 1 > scte_end) {
-                                               goto scte35_emit;
-                                           }
-                                           time_specified_flag = !!(splice[0] & 0x80);
-                                           if (time_specified_flag) {
-                                               if (splice + 5 > scte_end) {
-                                                   goto scte35_emit;
-                                               }
-                                               pts_time = ((int64_t)(splice[0] & 0x01) << 32) +
-                                                   (int64_t)(splice[1] << 24) +
-                                                   (int64_t)(splice[2] << 16) +
-                                                   (int64_t)(splice[3] << 8) +
-                                                   (int64_t)splice[4];
-                                               pts_time = pts_time & 0x1ffffffff;
-                                               //syslog(LOG_INFO,"SCTE35: PTS TIME (1/0): %ld\n", pts_time);
-                                               splice += 5;
-                                           } else {
-                                               // next 7-bits are reserved
-                                               splice++;
-                                           }
-                                       } else if (program_splice_flag == 0) {
-                                           // component_count
-                                           int component_count;
-                                           int c;
-                                           if (splice + 1 > scte_end) {
-                                               goto scte35_emit;
-                                           }
-                                           component_count = splice[0];
-                                           syslog(LOG_INFO,"SCTE35: COMPONENT COUNT: %d\n", component_count);
-                                           splice++;
-                                           for (c = 0; c < component_count; c++) {
-                                               if (splice + 1 > scte_end) {
-                                                   goto scte35_emit;
-                                               }
-                                               splice++;  // component_tag
-                                               if (splice_immediate_flag == 0) {
-                                                   int time_specified_flag;
-                                                   if (splice + 1 > scte_end) {
-                                                       goto scte35_emit;
-                                                   }
-                                                   time_specified_flag = !!(splice[0] & 0x80);
-                                                   if (time_specified_flag) {
-                                                       int64_t comp_pts_time;
-                                                       if (splice + 5 > scte_end) {
-                                                           goto scte35_emit;
-                                                       }
-                                                       comp_pts_time = ((int64_t)(splice[0] & 0x01) << 32) |
-                                                           (int64_t)(splice[1] << 24) |
-                                                           (int64_t)(splice[2] << 16) |
-                                                           (int64_t)(splice[3] << 8) |
-                                                           (int64_t)splice[4];
-                                                       syslog(LOG_INFO,"SCTE35: PTS TIME (0/0): %ld\n", comp_pts_time);
-                                                       splice += 5;
-                                                   } else {
-                                                       // next 7-bits are reserved
-                                                       splice++;
-                                                   }
-                                               }
-                                           }
-                                       }
-                                       if (duration_flag) {
-                                           // break_duration()
-                                           if (splice + 5 > scte_end) {
-                                               goto scte35_emit;
-                                           }
-                                           auto_return = !!(splice[0] & 0x80);
-                                           pts_duration = ((int64_t)(splice[0] & 0x01) << 32) |
-                                               (int64_t)(splice[1] << 24) |
-                                               (int64_t)(splice[2] << 16) |
-                                               (int64_t)(splice[3] << 8) |
-                                               (int64_t)splice[4];
-                                           splice += 5;
-
-                                           // when auto_return is 1- safety mechanism
-                                           /*syslog(LOG_INFO,"SCTE35: auto_return:%d  pts_duration:%ld\n",
-                                                  auto_return,
-                                                  pts_duration);*/
-                                       }
-                                       if (splice + 2 > scte_end) {
-                                           goto scte35_emit;
-                                       }
-                                       unique_program_id = (int)(splice[0] << 8) | (int)(splice[1]);
-                                       /*syslog(LOG_INFO,"SCTE35: unique program id: %d\n", unique_program_id);*/
-                                   }
-
-                                   /*typedef struct _scte35_data_struct_ {
-                                       int splice_command_type;
-                                       int64_t pts_time;
-                                       int64_t pts_duration;
-                                       int64_t pts_adjustment;
-                                       int splice_immediate;
-                                       int program_id;
-                                       int cancel;
-
-                                   }*/
-
-scte35_emit:
-                                   {
-                                   scte35_data_struct *scte35_data;
-                                   scte35_data = (scte35_data_struct*)malloc(sizeof(scte35_data_struct));
-                                   if (scte35_data) {
-                                       scte35_data->splice_command_type = 0x05;
-                                       scte35_data->splice_event_id = splice_event_id;
-                                       scte35_data->pts_time = pts_time;
-                                       scte35_data->pts_duration = pts_duration;
-                                       scte35_data->pts_adjustment = pts_adjustment;
-                                       scte35_data->splice_immediate = splice_immediate_flag;
-                                       scte35_data->program_id = unique_program_id;
-                                       scte35_data->cancel = cancel_indicator;
-                                       scte35_data->out_of_network_indicator = out_of_network_indicator;
-
-                                       if (send_frame_func) {
-                                           send_frame_func((uint8_t*)scte35_data, sizeof(scte35_data_struct), STREAM_TYPE_SCTE35, 1,
-                                                           0, // pts
-                                                           0, // dts
-                                                           0, // PCR
-                                                           tsdata->source,
-                                                           0,
-                                                           NULL,
-                                                           0,  // cc errors
-                                                           0,  // pmt table entries
-                                                           send_frame_context);
-                                       }
-
-                                       free(scte35_data);
-                                       scte35_data = NULL;
-                                   }
-                                   }
-                               } // splice_command_type == 0x05
-                           }
+                       if (scte35_pid != 0 && current_pid == scte35_pid) {
+                           scte35_decode_section(tsdata, pdata,
+                                                 TS_PAYLOAD_SIZE - (int)(pdata - pdata_initial),
+                                                 current_pid);
                        }
 
                        for (pid_count = 0; pid_count < tsdata->pmt_pid_count; pid_count++) {

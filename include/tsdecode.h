@@ -83,6 +83,22 @@
 #define STREAM_DESCRIPTOR_MPEGAUDIO    0x03
 #define STREAM_DESCRIPTOR_AC3_2        0x6a
 
+/* splice_command_type values we decode (SCTE-35 table 7) */
+#define SCTE35_CMD_SPLICE_INSERT   0x05
+#define SCTE35_CMD_TIME_SIGNAL     0x06
+
+/* splice_descriptor_tag for segmentation_descriptor (SCTE-35 table 18) */
+#define SCTE35_DESCRIPTOR_SEGMENTATION 0x02
+
+/* Which way a cue points. A cue that carries no in/out meaning of its own
+ * (a cancellation, or an informational segmentation type such as program or
+ * chapter boundaries) reports SCTE35_CUE_UNKNOWN. */
+#define SCTE35_CUE_UNKNOWN   (-1)
+#define SCTE35_CUE_IN          0
+#define SCTE35_CUE_OUT         1
+
+#define MAX_SCTE35_NAME_SIZE  64
+
 typedef struct _scte35_data_struct_ {
     int             splice_command_type;
     int64_t         splice_event_id;
@@ -93,6 +109,20 @@ typedef struct _scte35_data_struct_ {
     int             program_id;
     int             cancel;
     int             out_of_network_indicator;
+    int             auto_return;
+    int             splice_pid;
+    /* 1 only when every field above was read from a complete section. A
+     * section split across transport packets, or one that runs past the
+     * payload, is reported with parse_complete 0 so consumers can drop it
+     * instead of logging half-parsed values. */
+    int             parse_complete;
+    /* time_signal/segmentation_descriptor only; -1 when not applicable */
+    int             segmentation_type_id;
+    int             segmentation_upid_type;
+    int             segment_num;
+    int             segments_expected;
+    int             cue_direction;      /* SCTE35_CUE_* */
+    char            descriptor_name[MAX_SCTE35_NAME_SIZE];
 } scte35_data_struct;
 
 typedef struct _packet_table_struct_ {
@@ -264,6 +294,12 @@ extern "C" {
     void register_message_callback(int (*cbfn)(int p1,int64_t p2,int64_t p3,int64_t p4, int64_t p5, int source, void* context), void*context);
     int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_data_struct *tsdata, int stream_select);
     int64_t get_time_difference(struct timeval *stoptime, struct timeval *starttime);
+    /* PID carrying SCTE-35 in the first decoded program, or 0 if none */
+    int get_scte35_pid(transport_data_struct *tsdata);
+    /* Human-readable segmentation_type_id, "" when type_id is out of range */
+    const char *scte35_segmentation_type_name(int segmentation_type_id);
+    /* SCTE35_CUE_* classification of a segmentation_type_id */
+    int scte35_segmentation_cue_direction(int segmentation_type_id);
 
 #if defined(__cplusplus)
 }
