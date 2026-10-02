@@ -781,6 +781,12 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                             aspectRatio: thumb["display-aspect-ratio"] || '',
                             aspectRatioValue: thumb["display-aspect-ratio-value"] || 0,
                             sampleAspectRatio: thumb["sample-aspect-ratio"] || '',
+                            // afdReported separates "this srthub reports AFD
+                            // and the source has none" from "this srthub does
+                            // not report AFD at all", which the card needs in
+                            // order to say "none" without guessing.
+                            afdReported: (thumb["afd-present"] !== undefined &&
+                                          thumb["afd-present"] !== null),
                             afdPresent: thumb["afd-present"] === 1,
                             afdCode: (thumb["afd-code"] === undefined ||
                                       thumb["afd-code"] === null) ? -1 : thumb["afd-code"],

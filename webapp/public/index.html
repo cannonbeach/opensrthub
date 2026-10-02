@@ -1778,16 +1778,29 @@
             <span class="detail-value">${escapeHtml(service.video.codec || 'N/A')}${videoPidText}</span>
           </div>
         `;
-        // AFD, only when the source actually signals one
-        if (service.video.afdPresent) {
-          const afdCode = service.video.afdCode;
-          const afdName = service.video.afd || '';
-          detailsHtml += `
-            <div class="detail-item">
-              <span class="detail-label">AFD</span>
-              <span class="detail-value">${afdCode}${afdName ? ' &middot; ' + escapeHtml(afdName) : ''}</span>
-            </div>
-          `;
+        // AFD. A source can carry AFD, stop carrying it, and start again, so
+        // the absence is stated rather than left as a missing row - otherwise
+        // "no AFD in this stream" looks the same as "this build does not
+        // report AFD". Nothing is claimed until a frame has decoded, and an
+        // older srthub that reports no AFD fields at all gets no row.
+        if (service.video.afdReported) {
+          if (service.video.afdPresent) {
+            const afdCode = service.video.afdCode;
+            const afdName = service.video.afd || '';
+            detailsHtml += `
+              <div class="detail-item">
+                <span class="detail-label">AFD</span>
+                <span class="detail-value">${afdCode}${afdName ? ' &middot; ' + escapeHtml(afdName) : ''}</span>
+              </div>
+            `;
+          } else if (service.video.width > 0) {
+            detailsHtml += `
+              <div class="detail-item">
+                <span class="detail-label">AFD</span>
+                <span class="detail-value" style="color: var(--text-muted);">none signalled</span>
+              </div>
+            `;
+          }
         }
         if (service.video.errors > 0) {
           detailsHtml += `
