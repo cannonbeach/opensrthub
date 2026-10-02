@@ -1768,25 +1768,18 @@
         // non-square pixels. It reads "unknown" until a frame has decoded.
         const aspect = service.video.aspectRatio || '';
         const aspectText = (aspect && aspect !== 'unknown') ? ` (${escapeHtml(aspect)})` : '';
+        const rate = service.video.frameRate || '';
+        const rateText = (rate && rate !== 'unknown') ? ` @ ${escapeHtml(rate)} fps` : '';
         detailsHtml += `
           <div class="detail-item">
             <span class="detail-label">Resolution</span>
-            <span class="detail-value">${service.video.width}×${service.video.height}${aspectText}</span>
+            <span class="detail-value">${service.video.width}×${service.video.height}${rateText}${aspectText}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Video Codec</span>
             <span class="detail-value">${escapeHtml(service.video.codec || 'N/A')}${videoPidText}</span>
           </div>
         `;
-        // Frame rate, once the decoder has reported one
-        if (service.video.frameRate && service.video.frameRate !== 'unknown') {
-          detailsHtml += `
-            <div class="detail-item">
-              <span class="detail-label">Frame Rate</span>
-              <span class="detail-value">${escapeHtml(service.video.frameRate)} fps</span>
-            </div>
-          `;
-        }
 
         // AFD. A source can carry AFD, stop carrying it, and start again, so
         // the absence is stated rather than left as a missing row - otherwise
