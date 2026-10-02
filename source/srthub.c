@@ -408,6 +408,61 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     return 0;
 }
 
+/* Copies the PMT's elementary stream PIDs into the core struct for the main
+ * loop's status writer to publish. */
+static void publish_pid_summary(srthub_core_struct *srtcore, transport_data_struct *decode)
+{
+    pid_summary_struct summary;
+    int i;
+
+    if (get_pid_summary(decode, &summary) < 0) {
+        return;
+    }
+
+    srtcore->pcr_pid = summary.pcr_pid;
+    srtcore->video_pid = summary.video_pid;
+    srtcore->video_stream_type = summary.video_stream_type;
+    srtcore->scte35_pid = summary.scte35_pid;
+
+    srtcore->audio_pid_count = summary.audio_pid_count;
+    if (srtcore->audio_pid_count > MAX_SRTHUB_AUDIO_PIDS) {
+        srtcore->audio_pid_count = MAX_SRTHUB_AUDIO_PIDS;
+    }
+
+    for (i = 0; i < MAX_SRTHUB_AUDIO_PIDS; i++) {
+        int c;
+
+        srtcore->audio_pid[i] = summary.audio_pid[i];
+        srtcore->audio_stream_type[i] = summary.audio_stream_type[i];
+
+        /* The language tag comes straight off the wire and ends up in a JSON
+         * status file, so anything that is not three plain letters is dropped
+         * rather than copied through. */
+        memset(srtcore->audio_language[i], 0, MAX_SRTHUB_LANG_SIZE);
+        for (c = 0; c < 3; c++) {
+            char tag = summary.audio_language[i].lang_tag[c];
+            if (!((tag >= 'a' && tag <= 'z') || (tag >= 'A' && tag <= 'Z'))) {
+                memset(srtcore->audio_language[i], 0, MAX_SRTHUB_LANG_SIZE);
+                break;
+            }
+            srtcore->audio_language[i][c] = tag;
+        }
+    }
+}
+
+/* The PMT goes away with the input, so stop reporting PIDs from it. */
+static void clear_pid_summary(srthub_core_struct *srtcore)
+{
+    srtcore->pcr_pid = 0;
+    srtcore->video_pid = 0;
+    srtcore->video_stream_type = 0;
+    srtcore->scte35_pid = 0;
+    srtcore->audio_pid_count = 0;
+    memset(srtcore->audio_pid, 0, sizeof(srtcore->audio_pid));
+    memset(srtcore->audio_stream_type, 0, sizeof(srtcore->audio_stream_type));
+    memset(srtcore->audio_language, 0, sizeof(srtcore->audio_language));
+}
+
 static int send_restart_message(srthub_core_struct *srtcore)
 {
     dataqueue_message_struct *msg;
@@ -534,8 +589,7 @@ static void *srt_receiver_thread_listener(void *context)
             goto cleanup_srt_receiver_thread_listener;
         }
 
-        /* the PMT is gone with the input; stop claiming an SCTE-35 pid */
-        srtcore->scte35_pid = 0;
+        clear_pid_summary(srtcore);
 
         FILE *statsfile = fopen(statsfilename,"wb");
         if (statsfile) {
@@ -583,7 +637,7 @@ static void *srt_receiver_thread_listener(void *context)
                 if (lasterr == SRT_ENOCONN) {
                     int64_t delta_time_no_connection;
                     fprintf(stderr,"srt_receiver_thread_listener: SRT not connected, waiting...\n");
-                    srtcore->scte35_pid = 0;
+                    clear_pid_summary(srtcore);
                     if ((update_stats % 100)==0) {
                         FILE *statsfile = fopen(statsfilename,"wb");
                         if (statsfile) {
@@ -668,7 +722,7 @@ static void *srt_receiver_thread_listener(void *context)
                         fprintf(stderr,"srt_receiver_thread_listener: receive rate %.2f mbps @ %ld, %d\n", stats.mbpsRecvRate, stats.msTimeStamp, recvbytes);
 
                         /* published by the main loop in corestatus */
-                        srtcore->scte35_pid = get_scte35_pid(decode);
+                        publish_pid_summary(srtcore, decode);
 
                         FILE *statsfile = fopen(statsfilename,"wb");
                         if (statsfile) {
@@ -921,7 +975,7 @@ static void *srt_receiver_thread_caller(void *context)
             int lasterr = srt_getlasterror(NULL);
             if (lasterr == SRT_ENOCONN) {
                 int64_t delta_time_no_connection;
-                srtcore->scte35_pid = 0;
+                clear_pid_summary(srtcore);
                 if ((update_stats % 100)==0) {
                     fprintf(stderr,"srt_receiver_thread_caller: SRT not connected, waiting...\n");
                     FILE *statsfile = fopen(statsfilename,"wb");
@@ -1003,7 +1057,7 @@ static void *srt_receiver_thread_caller(void *context)
                     fprintf(stderr,"srt_receiver_thread_caller: receive rate %.2f mbps @ %ld, %d\n", stats.mbpsRecvRate, stats.msTimeStamp, recvbytes);
 
                     /* published by the main loop in corestatus */
-                    srtcore->scte35_pid = get_scte35_pid(decode);
+                    publish_pid_summary(srtcore, decode);
 
                     FILE *statsfile = fopen(statsfilename,"wb");
                     if (statsfile) {
@@ -1725,8 +1779,7 @@ static void *udp_receiver_thread(void *context)
             no_signal_count++;
             source_interruptions++;
             input_signal = 0;
-            /* the PMT is gone with the input; stop claiming an SCTE-35 pid */
-            srtcore->scte35_pid = 0;
+            clear_pid_summary(srtcore);
 
             FILE *statsfile = fopen(statsfilename,"wb");
             if (statsfile) {
@@ -1794,7 +1847,7 @@ static void *udp_receiver_thread(void *context)
                 diff = realtime_clock_difference(&signal_check_stop, &signal_check_start) / 1000;
                 if (diff >= 2000) {  // 2 second timeout
                     /* published by the main loop in corestatus */
-                    srtcore->scte35_pid = get_scte35_pid(decode);
+                    publish_pid_summary(srtcore, decode);
 
                     FILE *statsfile = fopen(statsfilename,"wb");
                     if (statsfile) {
@@ -3067,6 +3120,13 @@ int main(int argc, char **argv)
     srtcore.videopool = NULL;
     srtcore.video_initialized = 0;
     srtcore.scte35_pid = 0;
+    srtcore.pcr_pid = 0;
+    srtcore.video_pid = 0;
+    srtcore.video_stream_type = 0;
+    srtcore.audio_pid_count = 0;
+    memset(srtcore.audio_pid, 0, sizeof(srtcore.audio_pid));
+    memset(srtcore.audio_stream_type, 0, sizeof(srtcore.audio_stream_type));
+    memset(srtcore.audio_language, 0, sizeof(srtcore.audio_language));
     srtcore.scte35_cue_count = 0;
     srtcore.scte35_have_last_cue = 0;
     srtcore.scte35_last_event_id = 0;
@@ -3249,6 +3309,28 @@ restart_srt:
                 fprintf(statsfile,"    \"session-identifier\":%d,\n", srtcore.session_identifier);
                 fprintf(statsfile,"    \"thumbnail-queue\":%d,\n", dataqueue_get_size(srtcore.thumbnailqueue));
                 fprintf(statsfile,"    \"udpserver-queue\":%d,\n", dataqueue_get_size(srtcore.udpserverqueue));
+                fprintf(statsfile,"    \"pcr-pid\":%d,\n", srtcore.pcr_pid);
+                fprintf(statsfile,"    \"video-pid\":%d,\n", srtcore.video_pid);
+                fprintf(statsfile,"    \"video-type\":\"%s\",\n", stream_type_name(srtcore.video_stream_type));
+                fprintf(statsfile,"    \"audio-pids\":[");
+                {
+                    int audio_entry;
+                    int listed = 0;
+
+                    for (audio_entry = 0; audio_entry < srtcore.audio_pid_count; audio_entry++) {
+                        if (srtcore.audio_pid[audio_entry] == 0) {
+                            continue;   /* gap in the audio indexes */
+                        }
+                        fprintf(statsfile,"%s{\"index\":%d,\"pid\":%d,\"type\":\"%s\",\"language\":\"%s\"}",
+                                listed ? "," : "",
+                                audio_entry,
+                                srtcore.audio_pid[audio_entry],
+                                stream_type_name(srtcore.audio_stream_type[audio_entry]),
+                                srtcore.audio_language[audio_entry]);
+                        listed++;
+                    }
+                }
+                fprintf(statsfile,"],\n");
                 fprintf(statsfile,"    \"scte35-pid\":%d,\n", srtcore.scte35_pid);
                 fprintf(statsfile,"    \"scte35-present\":%d,\n", srtcore.scte35_pid != 0 ? 1 : 0);
                 fprintf(statsfile,"    \"scte35-cue-count\":%ld,\n", (long)srtcore.scte35_cue_count);

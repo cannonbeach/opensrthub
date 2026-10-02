@@ -33,6 +33,10 @@
  * define so this header stays independent of the transport decoder. */
 #define MAX_SCTE35_CUE_NAME 64
 
+/* Must match MAX_SUMMARY_AUDIO_PIDS in tsdecode.h, for the same reason. */
+#define MAX_SRTHUB_AUDIO_PIDS 8
+#define MAX_SRTHUB_LANG_SIZE  4
+
 /* A splice_info section is retransmitted several times a second for the same
  * event, so an identical cue is only reported once. This window re-arms the
  * check so that an encoder which reuses the same event id for every break
@@ -115,6 +119,18 @@ typedef struct _srthub_core_struct_ {
     pthread_t srt_server_worker_thread_id[MAX_WORKER_THREADS];
     void *srtserverqueue[MAX_WORKER_THREADS];
     srthub_configuration_struct *config;
+
+    /* Elementary stream PIDs from the PMT, refreshed by the receive thread at
+     * each status tick and read once a second by the main loop's status
+     * writer. Audio entries are indexed by the decoder's audio stream index,
+     * so entry i lines up with the audio_<i> status file. */
+    int      pcr_pid;
+    int      video_pid;                      /* 0 when the PMT has no video */
+    int      video_stream_type;              /* STREAM_TYPE_* from tsdecode.h */
+    int      audio_pid_count;
+    int      audio_pid[MAX_SRTHUB_AUDIO_PIDS];
+    int      audio_stream_type[MAX_SRTHUB_AUDIO_PIDS];
+    char     audio_language[MAX_SRTHUB_AUDIO_PIDS][MAX_SRTHUB_LANG_SIZE];
 
     /* SCTE-35 state. Written by the receive thread (which is the thread the
      * transport decoder's frame callback runs on) and read once a second by
