@@ -670,6 +670,16 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                         // Uptime is in milliseconds, convert to seconds
                         service.uptime = sfd["srthub-uptime"] ? sfd["srthub-uptime"] / 1000 : 0;
 
+                        // Elementary stream pids straight from the PMT. The
+                        // audio entries carry the decoder's audio index, which
+                        // is what lines them up with the audio status files.
+                        service.pids = {
+                            pcr: sfd["pcr-pid"] || 0,
+                            video: sfd["video-pid"] || 0,
+                            videoType: sfd["video-type"] || '',
+                            audio: Array.isArray(sfd["audio-pids"]) ? sfd["audio-pids"] : []
+                        };
+
                         // SCTE-35: pid presence comes from the PMT, the cue
                         // fields are only present once a cue has been seen.
                         service.scte35 = {
@@ -698,6 +708,7 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                             if (audiodata) {
                                 var ad = JSON.parse(audiodata);
                                 service.audioservices.push({
+                                    index: i,
                                     codec: ad["audio-codec"] || 'Unknown',
                                     channels: ad["audio-channels"] || 0,
                                     samplerate: ad["audio-samplerate"] || 0

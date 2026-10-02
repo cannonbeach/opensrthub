@@ -1756,6 +1756,12 @@
         }
       }
 
+      // Elementary stream pids from the PMT. These are reported independently
+      // of the decoders, so a pid can be known before (or without) a codec.
+      const pids = service.pids || { video: 0, videoType: '', audio: [] };
+      const audioPids = Array.isArray(pids.audio) ? pids.audio : [];
+      const videoPidText = pids.video ? ` &middot; PID ${pids.video}` : '';
+
       // Add video info if available
       if (service.video && isRunning) {
         detailsHtml += `
@@ -1765,7 +1771,7 @@
           </div>
           <div class="detail-item">
             <span class="detail-label">Video Codec</span>
-            <span class="detail-value">${service.video.codec || 'N/A'}</span>
+            <span class="detail-value">${escapeHtml(service.video.codec || 'N/A')}${videoPidText}</span>
           </div>
         `;
         if (service.video.errors > 0) {
@@ -1776,6 +1782,14 @@
             </div>
           `;
         }
+      } else if (pids.video && isRunning) {
+        // the PMT declares video but the decoder has not reported yet
+        detailsHtml += `
+          <div class="detail-item">
+            <span class="detail-label">Video</span>
+            <span class="detail-value">${escapeHtml(pids.videoType || 'video')} &middot; PID ${pids.video}</span>
+          </div>
+        `;
       }
 
       // SCTE-35: show the pid whenever the PMT declares one. The row is also
@@ -1811,14 +1825,32 @@
         }
       }
 
-      // Add audio info if available
+      // Add audio info if available. Pids are matched on the decoder's audio
+      // index rather than on position, so a missing audio status file does not
+      // shift every pid onto the wrong track.
       if (service.audioservices && service.audioservices.length > 0 && isRunning) {
-        const audioSummary = service.audioservices.map((a, idx) => 
-          `${a.codec} ${a.channels}ch`
-        ).join(', ');
+        const audioSummary = service.audioservices.map((a) => {
+          const match = audioPids.find(p => p.index === a.index);
+          let suffix = '';
+          if (match) {
+            suffix = ` (PID ${match.pid}${match.language ? ' ' + escapeHtml(match.language) : ''})`;
+          }
+          return `${escapeHtml(a.codec)} ${a.channels}ch${suffix}`;
+        }).join(', ');
         detailsHtml += `
           <div class="detail-item">
             <span class="detail-label">Audio (${service.audioservices.length} track${service.audioservices.length > 1 ? 's' : ''})</span>
+            <span class="detail-value">${audioSummary}</span>
+          </div>
+        `;
+      } else if (audioPids.length > 0 && isRunning) {
+        // the PMT declares audio but no decoder has reported yet
+        const audioSummary = audioPids.map(p =>
+          `${escapeHtml(p.type || 'audio')} PID ${p.pid}${p.language ? ' ' + escapeHtml(p.language) : ''}`
+        ).join(', ');
+        detailsHtml += `
+          <div class="detail-item">
+            <span class="detail-label">Audio (${audioPids.length} track${audioPids.length > 1 ? 's' : ''})</span>
             <span class="detail-value">${audioSummary}</span>
           </div>
         `;
