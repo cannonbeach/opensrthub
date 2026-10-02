@@ -2576,6 +2576,52 @@ static int format_change_update(format_change_struct *tracker,
     return 1;
 }
 
+/* Formats a coded frame rate the way people write it, so the common broadcast
+ * rates read as 25, 29.97, 23.976 and 59.94 rather than as ratios or as
+ * padded decimals. A rate the stream did not signal reports "unknown", which
+ * the change tracker ignores. */
+static void format_frame_rate(char *out, int out_size, AVRational rate, double *rate_value)
+{
+    int rate_num = 0;
+    int rate_den = 0;
+    int i;
+
+    if (rate_value) {
+        *rate_value = 0.0;
+    }
+    if (!out || out_size <= 0) {
+        return;
+    }
+    snprintf(out, out_size, "%s", "unknown");
+
+    if (rate.num <= 0 || rate.den <= 0) {
+        return;
+    }
+    av_reduce(&rate_num, &rate_den, (int64_t)rate.num, (int64_t)rate.den, 1024 * 1024);
+    if (rate_num <= 0 || rate_den <= 0) {
+        return;
+    }
+
+    snprintf(out, out_size, "%.3f", (double)rate_num / (double)rate_den);
+    /* trim trailing zeros, then the point if nothing is left after it */
+    if (strchr(out, '.')) {
+        for (i = (int)strlen(out) - 1; i > 0; i--) {
+            if (out[i] == '0') {
+                out[i] = 0;
+            } else if (out[i] == '.') {
+                out[i] = 0;
+                break;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (rate_value) {
+        *rate_value = (double)rate_num / (double)rate_den;
+    }
+}
+
 /* active_format values from ETSI TS 101 154 table B.1, which SMPTE 2016-1 and
  * ATSC A/53 share. Names are kept short enough to sit in a status row; "top"
  * means the active image is at the top of the coded frame, "centre" that it is
@@ -2638,6 +2684,7 @@ void *srthub_thumbnail_thread(void *context)
     format_change_struct aspect_tracker;
     format_change_struct resolution_tracker;
     format_change_struct afd_tracker;
+    format_change_struct frame_rate_tracker;
     /* source geometry the scaler was built for, so it can be rebuilt when the
      * source changes */
     int converter_width = 0;
@@ -2669,6 +2716,7 @@ void *srthub_thumbnail_thread(void *context)
     memset(&aspect_tracker, 0, sizeof(aspect_tracker));
     memset(&resolution_tracker, 0, sizeof(resolution_tracker));
     memset(&afd_tracker, 0, sizeof(afd_tracker));
+    memset(&frame_rate_tracker, 0, sizeof(frame_rate_tracker));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->thumbnailqueue, &srtcore->thumbnail_thread_running);
 
@@ -2757,6 +2805,8 @@ void *srthub_thumbnail_thread(void *context)
                     fprintf(statsfile,"    \"display-aspect-ratio\":\"unknown\",\n");
                     fprintf(statsfile,"    \"display-aspect-ratio-value\":0.0000,\n");
                     fprintf(statsfile,"    \"sample-aspect-ratio\":\"unknown\",\n");
+                    fprintf(statsfile,"    \"frame-rate\":\"unknown\",\n");
+                    fprintf(statsfile,"    \"frame-rate-value\":0.000,\n");
                     fprintf(statsfile,"    \"afd-present\":0,\n");
                     fprintf(statsfile,"    \"afd-code\":-1,\n");
                     fprintf(statsfile,"    \"afd\":\"\",\n");
@@ -2899,6 +2949,8 @@ void *srthub_thumbnail_thread(void *context)
                             char sample_aspect[32];
                             double display_aspect_value = 0.0;
                             int afd_code = -1;
+                            char frame_rate[32];
+                            double frame_rate_value = 0.0;
 
                             dret = avcodec_receive_frame(decode_avctx, decode_av_frame);
                             if (dret == AVERROR(EAGAIN) || dret == AVERROR_EOF) {
@@ -2935,6 +2987,13 @@ void *srthub_thumbnail_thread(void *context)
                                                 frame_sample_aspect, &display_aspect_value);
                             format_sample_aspect_ratio(sample_aspect, sizeof(sample_aspect),
                                                        frame_sample_aspect);
+
+                            /* The coded frame rate, which both the MPEG-2 and
+                             * the AVC/HEVC decoders put on the context. For an
+                             * interlaced source this is the frame rate, not the
+                             * field rate, so 1080i25 reports 25. */
+                            format_frame_rate(frame_rate, sizeof(frame_rate),
+                                              decode_avctx->framerate, &frame_rate_value);
 
                             /* The active format description, when the stream
                              * carries one. Both the MPEG-2 picture user data
@@ -3007,6 +3066,13 @@ void *srthub_thumbnail_thread(void *context)
                                                 change_message);
                                         send_signal(srtcore, SIGNAL_VIDEO_AFD_CHANGE, change_message);
                                     }
+                                }
+
+                                if (format_change_update(&frame_rate_tracker, frame_rate, resolution_text,
+                                                         change_message, sizeof(change_message))) {
+                                    fprintf(stderr,"srthub_thumbnail_thread: source frame rate changed: %s\n",
+                                            change_message);
+                                    send_signal(srtcore, SIGNAL_VIDEO_FRAMERATE_CHANGE, change_message);
                                 }
                             }
 
@@ -3082,6 +3148,8 @@ void *srthub_thumbnail_thread(void *context)
                                     fprintf(statsfile,"    \"display-aspect-ratio\":\"%s\",\n", display_aspect);
                                     fprintf(statsfile,"    \"display-aspect-ratio-value\":%.4f,\n", display_aspect_value);
                                     fprintf(statsfile,"    \"sample-aspect-ratio\":\"%s\",\n", sample_aspect);
+                                    fprintf(statsfile,"    \"frame-rate\":\"%s\",\n", frame_rate);
+                                    fprintf(statsfile,"    \"frame-rate-value\":%.3f,\n", frame_rate_value);
                                     fprintf(statsfile,"    \"afd-present\":%d,\n", afd_code >= 0 ? 1 : 0);
                                     fprintf(statsfile,"    \"afd-code\":%d,\n", afd_code);
                                     fprintf(statsfile,"    \"afd\":\"%s\",\n",

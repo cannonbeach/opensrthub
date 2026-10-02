@@ -656,6 +656,23 @@ void *signal_thread(void *context)
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
+            if (buffer_type == SIGNAL_VIDEO_FRAMERATE_CHANGE) {
+                snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
+                         "{\n"
+                         "    \"accesstime\": \"%s\",\n"
+                         "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
+                         "    \"id\": %ld,\n"
+                         "    \"status\": \"warning\",\n"
+                         "    \"message\": \"Source frame rate changed: %s\"\n"
+                         "}\n",
+                         formattedtime,
+                         node_hostname,
+                         sourcename,
+                         id,
+                         msg->smallbuf);
+                signal_management_interface(core, response_buffer, strlen(response_buffer));
+            }
             if (buffer_type == SIGNAL_PARSE_ERROR) {
                 snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
                          "{\n"
