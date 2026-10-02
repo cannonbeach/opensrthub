@@ -2577,9 +2577,15 @@ static int format_change_update(format_change_struct *tracker,
 }
 
 /* Formats a coded frame rate the way people write it, so the common broadcast
- * rates read as 25, 29.97, 23.976 and 59.94 rather than as ratios or as
- * padded decimals. A rate the stream did not signal reports "unknown", which
- * the change tracker ignores. */
+ * rates read as 25, 29.97, 23.98 and 59.94 rather than as ratios or as padded
+ * decimals. A rate the stream did not signal reports "unknown", which the
+ * change tracker ignores.
+ *
+ * Two decimals is the display precision, and it is also what the tracker
+ * compares, so two rates closer together than 0.005 fps count as the same
+ * rate. Nothing in use is that close - the nearest pair in practice is 23.98
+ * and 24 - and the alternative is carrying the rational around to tell apart
+ * rates no stream signals. */
 static void format_frame_rate(char *out, int out_size, AVRational rate, double *rate_value)
 {
     int rate_num = 0;
@@ -2602,7 +2608,7 @@ static void format_frame_rate(char *out, int out_size, AVRational rate, double *
         return;
     }
 
-    snprintf(out, out_size, "%.3f", (double)rate_num / (double)rate_den);
+    snprintf(out, out_size, "%.2f", (double)rate_num / (double)rate_den);
     /* trim trailing zeros, then the point if nothing is left after it */
     if (strchr(out, '.')) {
         for (i = (int)strlen(out) - 1; i > 0; i--) {
