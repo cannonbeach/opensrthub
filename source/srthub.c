@@ -65,17 +65,17 @@
 #define THUMBNAIL_HEIGHT           240
 #define MAX_DECODE_WIDTH           3840
 #define MAX_DECODE_HEIGHT          2160
-/* A new display aspect ratio has to hold for this many consecutive decoded
- * frames before it is reported as a change, so that a single corrupt sequence
- * header or VUI does not raise a spurious event.
+/* A new video format has to hold for this many consecutive decoded frames
+ * before it is reported as a change, so that a single corrupt sequence header
+ * or SPS does not raise a spurious event.
  *
  * This counts frames the thumbnail thread actually decodes, which is at most
  * one per second and only ever a frame carrying a sequence header or SPS - so
- * each sample is a fresh signalling of the ratio rather than a stale one, and
+ * each sample is a fresh signalling of the format rather than a stale one, and
  * a confirmed change reaches the event log a second or two after it happens.
  * That is the right trade for an event an operator reads, and it is why this
  * is deliberately small. */
-#define ASPECT_CHANGE_FRAMES       2
+#define VIDEO_FORMAT_CHANGE_FRAMES 2
 
 #include "../cbffmpeg/libavcodec/avcodec.h"
 #include "../cbffmpeg/libswscale/swscale.h"
@@ -2502,6 +2502,80 @@ static void format_aspect_ratio(char *out, int out_size, int width, int height,
     }
 }
 
+#define MAX_FORMAT_VALUE_SIZE 48
+
+/* Tracks one video format property across decoded frames so that a change can
+ * be reported once it is confirmed. "value" is the property itself (a ratio,
+ * or a resolution) and "context" is the other one, carried along so a reported
+ * change can say what the picture looked like on each side of it. */
+typedef struct _format_change_struct_ {
+    char current[MAX_FORMAT_VALUE_SIZE];
+    char current_context[MAX_FORMAT_VALUE_SIZE];
+    char pending[MAX_FORMAT_VALUE_SIZE];
+    char pending_context[MAX_FORMAT_VALUE_SIZE];
+    int  pending_count;
+} format_change_struct;
+
+/* Feeds one decoded frame's value into the tracker. Returns 1 when a change
+ * has been confirmed and fills message with "<old> (<ctx>) to <new> (<ctx>)";
+ * returns 0 otherwise.
+ *
+ * The first value seen establishes a baseline instead of counting as a change,
+ * so starting a service never reports one. A differing value has to repeat for
+ * VIDEO_FORMAT_CHANGE_FRAMES frames to be confirmed, and a return to the
+ * current value discards whatever was pending as a glitch. */
+static int format_change_update(format_change_struct *tracker,
+                                const char *value, const char *context,
+                                char *message, int message_size)
+{
+    if (!tracker || !value || value[0] == 0 || strcmp(value, "unknown") == 0) {
+        return 0;
+    }
+    if (!context) {
+        context = "";
+    }
+
+    if (tracker->current[0] == 0) {
+        snprintf(tracker->current, sizeof(tracker->current), "%s", value);
+        snprintf(tracker->current_context, sizeof(tracker->current_context), "%s", context);
+        tracker->pending[0] = 0;
+        tracker->pending_count = 0;
+        return 0;
+    }
+
+    if (strcmp(value, tracker->current) == 0) {
+        /* back on the reported value, so anything pending was a glitch */
+        tracker->pending[0] = 0;
+        tracker->pending_count = 0;
+        return 0;
+    }
+
+    if (tracker->pending_count > 0 && strcmp(value, tracker->pending) == 0) {
+        tracker->pending_count++;
+    } else {
+        snprintf(tracker->pending, sizeof(tracker->pending), "%s", value);
+        snprintf(tracker->pending_context, sizeof(tracker->pending_context), "%s", context);
+        tracker->pending_count = 1;
+    }
+
+    if (tracker->pending_count < VIDEO_FORMAT_CHANGE_FRAMES) {
+        return 0;
+    }
+
+    if (message && message_size > 0) {
+        snprintf(message, message_size, "%s (%s) to %s (%s)",
+                 tracker->current, tracker->current_context,
+                 tracker->pending, tracker->pending_context);
+    }
+
+    snprintf(tracker->current, sizeof(tracker->current), "%s", tracker->pending);
+    snprintf(tracker->current_context, sizeof(tracker->current_context), "%s", tracker->pending_context);
+    tracker->pending[0] = 0;
+    tracker->pending_count = 0;
+
+    return 1;
+}
+
 /* Reduced sample aspect ratio, "1:1" when the stream does not signal one. */
 static void format_sample_aspect_ratio(char *out, int out_size, AVRational sample_aspect)
 {
@@ -2537,15 +2611,9 @@ void *srthub_thumbnail_thread(void *context)
     enum AVPixelFormat source_format = AV_PIX_FMT_YUV420P;
     enum AVPixelFormat output_format = AV_PIX_FMT_YUV420P;
     struct SwsContext *decode_converter = NULL;
-    /* display aspect ratio currently being reported, and a candidate waiting
-     * to be confirmed over ASPECT_CHANGE_FRAMES frames */
-    char current_aspect[32];
-    int current_aspect_width = 0;
-    int current_aspect_height = 0;
-    char pending_aspect[32];
-    int pending_aspect_width = 0;
-    int pending_aspect_height = 0;
-    int pending_aspect_count = 0;
+    /* change trackers for the two source format properties we report on */
+    format_change_struct aspect_tracker;
+    format_change_struct resolution_tracker;
     uint8_t *source_data[4];
     uint8_t *output_data[4];
     int source_stride[4];
@@ -2568,8 +2636,8 @@ void *srthub_thumbnail_thread(void *context)
 
     gettimeofday(&thumbnail_timer_start, NULL);
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
-    memset(current_aspect, 0, sizeof(current_aspect));
-    memset(pending_aspect, 0, sizeof(pending_aspect));
+    memset(&aspect_tracker, 0, sizeof(aspect_tracker));
+    memset(&resolution_tracker, 0, sizeof(resolution_tracker));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->thumbnailqueue, &srtcore->thumbnail_thread_running);
 
@@ -2833,53 +2901,32 @@ void *srthub_thumbnail_thread(void *context)
                             format_sample_aspect_ratio(sample_aspect, sizeof(sample_aspect),
                                                        frame_sample_aspect);
 
-                            /* Report a mid-stream change of the source display
-                             * aspect ratio. The first ratio seen establishes
-                             * the baseline rather than counting as a change,
-                             * and a new ratio has to hold for
-                             * ASPECT_CHANGE_FRAMES decoded frames before it is
-                             * reported. */
-                            if (strcmp(display_aspect, "unknown") != 0) {
-                                if (current_aspect[0] == 0) {
-                                    snprintf(current_aspect, sizeof(current_aspect), "%s", display_aspect);
-                                    current_aspect_width = frame_width;
-                                    current_aspect_height = frame_height;
-                                    pending_aspect[0] = 0;
-                                    pending_aspect_count = 0;
-                                } else if (strcmp(display_aspect, current_aspect) != 0) {
-                                    if (pending_aspect_count > 0 &&
-                                        strcmp(display_aspect, pending_aspect) == 0) {
-                                        pending_aspect_count++;
-                                    } else {
-                                        snprintf(pending_aspect, sizeof(pending_aspect), "%s", display_aspect);
-                                        pending_aspect_width = frame_width;
-                                        pending_aspect_height = frame_height;
-                                        pending_aspect_count = 1;
-                                    }
+                            /* Report mid-stream changes of the source format.
+                             * The aspect ratio and the resolution are tracked
+                             * separately because either can change without the
+                             * other: an anamorphic switch leaves the
+                             * resolution alone, and a 1080p to 720p change
+                             * leaves the ratio alone. */
+                            {
+                                char resolution_text[MAX_FORMAT_VALUE_SIZE];
+                                char change_message[MAX_SMALLBUF_SIZE];
 
-                                    if (pending_aspect_count >= ASPECT_CHANGE_FRAMES) {
-                                        char aspect_message[MAX_SMALLBUF_SIZE];
+                                snprintf(resolution_text, sizeof(resolution_text), "%dx%d",
+                                         frame_width, frame_height);
 
-                                        snprintf(aspect_message, sizeof(aspect_message),
-                                                 "%s (%dx%d) to %s (%dx%d)",
-                                                 current_aspect, current_aspect_width, current_aspect_height,
-                                                 pending_aspect, pending_aspect_width, pending_aspect_height);
+                                if (format_change_update(&aspect_tracker, display_aspect, resolution_text,
+                                                         change_message, sizeof(change_message))) {
+                                    fprintf(stderr,"srthub_thumbnail_thread: source aspect ratio changed: %s\n",
+                                            change_message);
+                                    send_signal(srtcore, SIGNAL_VIDEO_ASPECT_CHANGE, change_message);
+                                }
 
-                                        fprintf(stderr,"srthub_thumbnail_thread: source aspect ratio changed: %s\n",
-                                                aspect_message);
-                                        send_signal(srtcore, SIGNAL_VIDEO_ASPECT_CHANGE, aspect_message);
-
-                                        snprintf(current_aspect, sizeof(current_aspect), "%s", pending_aspect);
-                                        current_aspect_width = pending_aspect_width;
-                                        current_aspect_height = pending_aspect_height;
-                                        pending_aspect[0] = 0;
-                                        pending_aspect_count = 0;
-                                    }
-                                } else {
-                                    /* back on the reported ratio, so whatever
-                                     * was pending was a glitch */
-                                    pending_aspect[0] = 0;
-                                    pending_aspect_count = 0;
+                                if (frame_width > 0 && frame_height > 0 &&
+                                    format_change_update(&resolution_tracker, resolution_text, display_aspect,
+                                                         change_message, sizeof(change_message))) {
+                                    fprintf(stderr,"srthub_thumbnail_thread: source resolution changed: %s\n",
+                                            change_message);
+                                    send_signal(srtcore, SIGNAL_VIDEO_RESOLUTION_CHANGE, change_message);
                                 }
                             }
 
