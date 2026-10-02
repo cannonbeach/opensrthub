@@ -65,6 +65,17 @@
 #define THUMBNAIL_HEIGHT           240
 #define MAX_DECODE_WIDTH           3840
 #define MAX_DECODE_HEIGHT          2160
+/* A new display aspect ratio has to hold for this many consecutive decoded
+ * frames before it is reported as a change, so that a single corrupt sequence
+ * header or VUI does not raise a spurious event.
+ *
+ * This counts frames the thumbnail thread actually decodes, which is at most
+ * one per second and only ever a frame carrying a sequence header or SPS - so
+ * each sample is a fresh signalling of the ratio rather than a stale one, and
+ * a confirmed change reaches the event log a second or two after it happens.
+ * That is the right trade for an event an operator reads, and it is why this
+ * is deliberately small. */
+#define ASPECT_CHANGE_FRAMES       2
 
 #include "../cbffmpeg/libavcodec/avcodec.h"
 #include "../cbffmpeg/libswscale/swscale.h"
@@ -2526,6 +2537,15 @@ void *srthub_thumbnail_thread(void *context)
     enum AVPixelFormat source_format = AV_PIX_FMT_YUV420P;
     enum AVPixelFormat output_format = AV_PIX_FMT_YUV420P;
     struct SwsContext *decode_converter = NULL;
+    /* display aspect ratio currently being reported, and a candidate waiting
+     * to be confirmed over ASPECT_CHANGE_FRAMES frames */
+    char current_aspect[32];
+    int current_aspect_width = 0;
+    int current_aspect_height = 0;
+    char pending_aspect[32];
+    int pending_aspect_width = 0;
+    int pending_aspect_height = 0;
+    int pending_aspect_count = 0;
     uint8_t *source_data[4];
     uint8_t *output_data[4];
     int source_stride[4];
@@ -2548,6 +2568,8 @@ void *srthub_thumbnail_thread(void *context)
 
     gettimeofday(&thumbnail_timer_start, NULL);
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
+    memset(current_aspect, 0, sizeof(current_aspect));
+    memset(pending_aspect, 0, sizeof(pending_aspect));
     while (srtcore->thumbnail_thread_running) {
         msg = (dataqueue_message_struct*)dataqueue_take_back_wait(srtcore->thumbnailqueue, &srtcore->thumbnail_thread_running);
 
@@ -2810,6 +2832,56 @@ void *srthub_thumbnail_thread(void *context)
                                                 frame_sample_aspect, &display_aspect_value);
                             format_sample_aspect_ratio(sample_aspect, sizeof(sample_aspect),
                                                        frame_sample_aspect);
+
+                            /* Report a mid-stream change of the source display
+                             * aspect ratio. The first ratio seen establishes
+                             * the baseline rather than counting as a change,
+                             * and a new ratio has to hold for
+                             * ASPECT_CHANGE_FRAMES decoded frames before it is
+                             * reported. */
+                            if (strcmp(display_aspect, "unknown") != 0) {
+                                if (current_aspect[0] == 0) {
+                                    snprintf(current_aspect, sizeof(current_aspect), "%s", display_aspect);
+                                    current_aspect_width = frame_width;
+                                    current_aspect_height = frame_height;
+                                    pending_aspect[0] = 0;
+                                    pending_aspect_count = 0;
+                                } else if (strcmp(display_aspect, current_aspect) != 0) {
+                                    if (pending_aspect_count > 0 &&
+                                        strcmp(display_aspect, pending_aspect) == 0) {
+                                        pending_aspect_count++;
+                                    } else {
+                                        snprintf(pending_aspect, sizeof(pending_aspect), "%s", display_aspect);
+                                        pending_aspect_width = frame_width;
+                                        pending_aspect_height = frame_height;
+                                        pending_aspect_count = 1;
+                                    }
+
+                                    if (pending_aspect_count >= ASPECT_CHANGE_FRAMES) {
+                                        char aspect_message[MAX_SMALLBUF_SIZE];
+
+                                        snprintf(aspect_message, sizeof(aspect_message),
+                                                 "%s (%dx%d) to %s (%dx%d)",
+                                                 current_aspect, current_aspect_width, current_aspect_height,
+                                                 pending_aspect, pending_aspect_width, pending_aspect_height);
+
+                                        fprintf(stderr,"srthub_thumbnail_thread: source aspect ratio changed: %s\n",
+                                                aspect_message);
+                                        send_signal(srtcore, SIGNAL_VIDEO_ASPECT_CHANGE, aspect_message);
+
+                                        snprintf(current_aspect, sizeof(current_aspect), "%s", pending_aspect);
+                                        current_aspect_width = pending_aspect_width;
+                                        current_aspect_height = pending_aspect_height;
+                                        pending_aspect[0] = 0;
+                                        pending_aspect_count = 0;
+                                    }
+                                } else {
+                                    /* back on the reported ratio, so whatever
+                                     * was pending was a glitch */
+                                    pending_aspect[0] = 0;
+                                    pending_aspect_count = 0;
+                                }
+                            }
 
                             source_data[0] = decode_av_frame->data[0];
                             source_data[1] = decode_av_frame->data[1];
