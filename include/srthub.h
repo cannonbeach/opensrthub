@@ -29,6 +29,34 @@
 #define MAX_STRING_SIZE 512
 #define MAX_WORKER_THREADS 8
 
+/* Must be at least MAX_SCTE35_NAME_SIZE from tsdecode.h. Kept as its own
+ * define so this header stays independent of the transport decoder. */
+#define MAX_SCTE35_CUE_NAME 64
+
+/* A splice_info section is retransmitted several times a second for the same
+ * event, so an identical cue is only reported once. This window re-arms the
+ * check so that an encoder which reuses the same event id for every break
+ * still produces one event per break rather than one ever. It is longer than
+ * any realistic pre-roll repeat interval and shorter than the gap between
+ * breaks. */
+#define SCTE35_CUE_REPEAT_WINDOW_SECONDS 30
+
+/* How many distinct cues are remembered for the repeat check above. More than
+ * one is needed because a single section can carry several segmentation
+ * descriptors: those arrive interleaved on every retransmission, so comparing
+ * against only the previous cue would report every one of them again each time
+ * the section repeats. */
+#define SCTE35_RECENT_CUES 8
+
+typedef struct _scte35_recent_cue_struct_ {
+    int      valid;
+    int64_t  event_id;
+    int      cue_direction;
+    int      cancel;
+    int      segmentation_type;
+    time_t   last_seen;
+} scte35_recent_cue_struct;
+
 typedef struct _srthub_configuration_struct_ {
     char sourcename[MAX_STRING_SIZE];
     char streamid[MAX_STRING_SIZE];
@@ -87,6 +115,24 @@ typedef struct _srthub_core_struct_ {
     pthread_t srt_server_worker_thread_id[MAX_WORKER_THREADS];
     void *srtserverqueue[MAX_WORKER_THREADS];
     srthub_configuration_struct *config;
+
+    /* SCTE-35 state. Written by the receive thread (which is the thread the
+     * transport decoder's frame callback runs on) and read once a second by
+     * the main loop's status writer. */
+    int      scte35_pid;                     /* 0 when the PMT has no SCTE-35 stream */
+    int64_t  scte35_cue_count;               /* distinct cues reported since start */
+    int      scte35_have_last_cue;           /* 0 until the first cue is reported */
+    int64_t  scte35_last_event_id;
+    int      scte35_last_cue_direction;      /* SCTE35_CUE_* from tsdecode.h */
+    int      scte35_last_cue_cancel;
+    int      scte35_last_cue_immediate;
+    int64_t  scte35_last_cue_duration;       /* 90kHz ticks, 0 when absent */
+    int      scte35_last_cue_command;        /* splice_command_type */
+    int      scte35_last_segmentation_type;  /* -1 when not from a time_signal */
+    char     scte35_last_cue_name[MAX_SCTE35_CUE_NAME];
+    time_t   scte35_last_cue_time;            /* when the last cue was reported */
+    /* recently reported cues, for suppressing retransmissions */
+    scte35_recent_cue_struct scte35_recent[SCTE35_RECENT_CUES];
 } srthub_core_struct;
 
 #endif

@@ -40,7 +40,7 @@
 #include "esignal.h"
 #include "curl.h"
 
-#define MAX_SIGNAL_RESPONSE_SIZE 1024
+#define MAX_SIGNAL_RESPONSE_SIZE 2048
 #define MAX_FORMATTED_TIME 128
 #define MAX_HOSTNAME_SIZE 128
 
@@ -74,6 +74,7 @@ int send_signal(srthub_core_struct *core, int signal_type, const char *message)
 
     msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
     if (msg) {
+        memset(msg, 0, sizeof(dataqueue_message_struct));
         msg->buffer_type = signal_type;
         snprintf(msg->smallbuf, MAX_SMALLBUF_SIZE-1, "%s", message);
         dataqueue_put_front(core->signalqueue, msg);
@@ -81,6 +82,51 @@ int send_signal(srthub_core_struct *core, int signal_type, const char *message)
         fprintf(stderr,"fatal error: unable to generate signal!\n");
         exit(-1);
     }
+    return 0;
+}
+
+/* Queues one SCTE-35 cue for reporting. The cue is copied, so the caller's
+ * copy does not have to outlive the call. The signal thread frees both the
+ * message and the attached cue. */
+int send_signal_scte35(srthub_core_struct *core, const scte35_data_struct *cue)
+{
+    dataqueue_message_struct *msg;
+    scte35_data_struct *payload;
+    int signal_type;
+
+    if (!cue) {
+        return -1;
+    }
+
+    if (cue->cancel) {
+        signal_type = SIGNAL_SCTE35_EVENT;
+    } else if (cue->cue_direction == SCTE35_CUE_OUT) {
+        signal_type = SIGNAL_SCTE35_START;
+    } else if (cue->cue_direction == SCTE35_CUE_IN) {
+        signal_type = SIGNAL_SCTE35_END;
+    } else {
+        signal_type = SIGNAL_SCTE35_EVENT;
+    }
+
+    payload = (scte35_data_struct*)malloc(sizeof(scte35_data_struct));
+    if (!payload) {
+        fprintf(stderr,"send_signal_scte35: unable to allocate cue payload\n");
+        return -1;
+    }
+    memcpy(payload, cue, sizeof(scte35_data_struct));
+
+    msg = (dataqueue_message_struct*)malloc(sizeof(dataqueue_message_struct));
+    if (!msg) {
+        fprintf(stderr,"send_signal_scte35: unable to allocate signal message\n");
+        free(payload);
+        return -1;
+    }
+    memset(msg, 0, sizeof(dataqueue_message_struct));
+    msg->buffer_type = signal_type;
+    msg->buffer = (void*)payload;
+    msg->buffer_size = sizeof(scte35_data_struct);
+    dataqueue_put_front(core->signalqueue, msg);
+
     return 0;
 }
 
@@ -324,36 +370,141 @@ void *signal_thread(void *context)
                          msg->smallbuf);
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
-            if (buffer_type == SIGNAL_SCTE35_START) {
-                snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
-                         "{\n"
-                         "    \"accesstime\": \"%s\",\n"
-                         "    \"host\": \"%s\",\n"
-                         "    \"sourcename\": \"%s\",\n"
-                         "    \"id\": %ld,\n"
-                         "    \"status\": \"success\",\n"
-                         "    \"message\": \"scte35 out of network start\"\n"
-                         "}\n",
-                         formattedtime,
-                         node_hostname,
-                         sourcename,
-                         id);
-                signal_management_interface(core, response_buffer, strlen(response_buffer));
-            }
-            if (buffer_type == SIGNAL_SCTE35_END) {
-                snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
-                         "{\n"
-                         "    \"accesstime\": \"%s\",\n"
-                         "    \"host\": \"%s\",\n"
-                         "    \"sourcename\": \"%s\",\n"
-                         "    \"id\": %ld,\n"
-                         "    \"status\": \"success\",\n"
-                         "    \"message\": \"scte35 out of network done\"\n"
-                         "}\n",
-                         formattedtime,
-                         node_hostname,
-                         sourcename,
-                         id);
+            if (buffer_type == SIGNAL_SCTE35_START ||
+                buffer_type == SIGNAL_SCTE35_END ||
+                buffer_type == SIGNAL_SCTE35_EVENT) {
+                const scte35_data_struct *cue = (const scte35_data_struct*)msg->buffer;
+
+                if (cue && msg->buffer_size == sizeof(scte35_data_struct)) {
+                    char cue_message[MAX_SMALLBUF_SIZE];
+                    const char *cue_text;
+                    const char *command_text;
+                    double duration_seconds = (double)cue->pts_duration / (double)90000.0;
+                    int offset;
+
+                    if (cue->cue_direction == SCTE35_CUE_OUT) {
+                        cue_text = "out";
+                    } else if (cue->cue_direction == SCTE35_CUE_IN) {
+                        cue_text = "in";
+                    } else {
+                        cue_text = "none";
+                    }
+
+                    if (cue->splice_command_type == SCTE35_CMD_TIME_SIGNAL) {
+                        command_text = "time_signal";
+                    } else if (cue->splice_command_type == SCTE35_CMD_SPLICE_INSERT) {
+                        command_text = "splice_insert";
+                    } else {
+                        command_text = "unknown";
+                    }
+
+                    /* Human-readable summary for the event log table. */
+                    if (cue->cancel) {
+                        offset = snprintf(cue_message, sizeof(cue_message),
+                                          "SCTE-35 event canceled");
+                    } else if (cue->cue_direction == SCTE35_CUE_OUT) {
+                        offset = snprintf(cue_message, sizeof(cue_message),
+                                          "SCTE-35 cue out");
+                    } else if (cue->cue_direction == SCTE35_CUE_IN) {
+                        offset = snprintf(cue_message, sizeof(cue_message),
+                                          "SCTE-35 cue in");
+                    } else {
+                        offset = snprintf(cue_message, sizeof(cue_message),
+                                          "SCTE-35 event");
+                    }
+                    if (offset < 0) {
+                        offset = 0;
+                    }
+                    if (offset < (int)sizeof(cue_message) && cue->descriptor_name[0] != 0) {
+                        int written = snprintf(cue_message + offset,
+                                               sizeof(cue_message) - offset,
+                                               " - %s", cue->descriptor_name);
+                        if (written > 0) {
+                            offset += written;
+                            if (offset > (int)sizeof(cue_message)) {
+                                offset = (int)sizeof(cue_message);
+                            }
+                        }
+                    }
+                    if (offset < (int)sizeof(cue_message)) {
+                        if (cue->pts_duration > 0 && cue->splice_immediate) {
+                            snprintf(cue_message + offset, sizeof(cue_message) - offset,
+                                     " (event %ld, immediate, duration %.3fs)",
+                                     (long)cue->splice_event_id, duration_seconds);
+                        } else if (cue->pts_duration > 0) {
+                            snprintf(cue_message + offset, sizeof(cue_message) - offset,
+                                     " (event %ld, duration %.3fs)",
+                                     (long)cue->splice_event_id, duration_seconds);
+                        } else if (cue->splice_immediate) {
+                            snprintf(cue_message + offset, sizeof(cue_message) - offset,
+                                     " (event %ld, immediate)",
+                                     (long)cue->splice_event_id);
+                        } else {
+                            snprintf(cue_message + offset, sizeof(cue_message) - offset,
+                                     " (event %ld)",
+                                     (long)cue->splice_event_id);
+                        }
+                    }
+
+                    snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
+                             "{\n"
+                             "    \"accesstime\": \"%s\",\n"
+                             "    \"host\": \"%s\",\n"
+                             "    \"sourcename\": \"%s\",\n"
+                             "    \"id\": %ld,\n"
+                             "    \"status\": \"success\",\n"
+                             "    \"message\": \"%s\",\n"
+                             "    \"scte35\": {\n"
+                             "        \"cue\": \"%s\",\n"
+                             "        \"immediate\": %s,\n"
+                             "        \"duration\": %.3f,\n"
+                             "        \"event-id\": %ld,\n"
+                             "        \"program-id\": %d,\n"
+                             "        \"auto-return\": %s,\n"
+                             "        \"cancel\": %s,\n"
+                             "        \"command\": \"%s\",\n"
+                             "        \"segmentation-type-id\": %d,\n"
+                             "        \"descriptor\": \"%s\",\n"
+                             "        \"pts-time\": %ld,\n"
+                             "        \"pts-adjustment\": %ld,\n"
+                             "        \"pid\": %d\n"
+                             "    }\n"
+                             "}\n",
+                             formattedtime,
+                             node_hostname,
+                             sourcename,
+                             id,
+                             cue_message,
+                             cue_text,
+                             cue->splice_immediate ? "true" : "false",
+                             duration_seconds,
+                             (long)cue->splice_event_id,
+                             cue->program_id,
+                             cue->auto_return ? "true" : "false",
+                             cue->cancel ? "true" : "false",
+                             command_text,
+                             cue->segmentation_type_id,
+                             cue->descriptor_name,
+                             (long)cue->pts_time,
+                             (long)cue->pts_adjustment,
+                             cue->splice_pid);
+                } else {
+                    /* no cue attached - should not happen, but never report a
+                     * cue that was not actually decoded */
+                    snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
+                             "{\n"
+                             "    \"accesstime\": \"%s\",\n"
+                             "    \"host\": \"%s\",\n"
+                             "    \"sourcename\": \"%s\",\n"
+                             "    \"id\": %ld,\n"
+                             "    \"status\": \"warning\",\n"
+                             "    \"message\": \"SCTE-35 signal received with no cue data\"\n"
+                             "}\n",
+                             formattedtime,
+                             node_hostname,
+                             sourcename,
+                             id);
+                }
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
             if (buffer_type == SIGNAL_SEGMENT_PUBLISHED) {
@@ -489,8 +640,14 @@ void *signal_thread(void *context)
                 signal_management_interface(core, response_buffer, strlen(response_buffer));
             }
         }
-        free(msg);
-        msg = NULL;
+        if (msg) {
+            if (msg->buffer) {
+                free(msg->buffer);
+                msg->buffer = NULL;
+            }
+            free(msg);
+            msg = NULL;
+        }
     }
 
     return NULL;

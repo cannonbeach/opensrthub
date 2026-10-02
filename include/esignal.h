@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include "srthub.h"
+#include "tsdecode.h"
 
 #define SIGNAL_START_SERVICE         0x01
 #define SIGNAL_STOP_SERVICE          0x02
@@ -41,6 +42,7 @@
 #define SIGNAL_LOW_DISK_SPACE        0x0b
 #define SIGNAL_INPUT_SIGNAL_LOCKED   0x0c
 #define SIGNAL_INPUT_ERRORS          0x0d  // hit specific error threshold
+#define SIGNAL_SCTE35_EVENT          0x0e  // scte35 cue with no in/out meaning
 #define SIGNAL_SEGMENT_WRITTEN       0x0f
 #define SIGNAL_MANIFEST_WRITTEN      0x10
 #define SIGNAL_FRAME_REPEAT          0x11
@@ -74,6 +76,7 @@ extern "C" {
     int start_signal_thread(srthub_core_struct *srtcore);
     int stop_signal_thread(srthub_core_struct *srtcore);
     int send_signal(srthub_core_struct *srtcore, int signal_type, const char *message);
+    int send_signal_scte35(srthub_core_struct *srtcore, const scte35_data_struct *cue);
     int send_direct_error(srthub_core_struct *srtcore, int signal_type, const char *message);
 
 #if defined(__cplusplus)

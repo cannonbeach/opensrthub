@@ -238,6 +238,105 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
             source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);
 
+    if (sample_type == STREAM_TYPE_SCTE35) {
+        scte35_data_struct cue;
+        time_t cue_time;
+        int report_cue;
+
+        if (!sample || sample_size != (int)sizeof(scte35_data_struct)) {
+            fprintf(stderr,"receive_frame: unexpected scte35 sample size %d, ignoring\n", sample_size);
+            return 0;
+        }
+        /* the decoder frees its copy as soon as this returns */
+        memcpy(&cue, sample, sizeof(cue));
+
+        if (!cue.parse_complete) {
+            /* a section split across transport packets, or one running past
+             * the payload - most of the fields are unset, so reporting it
+             * would invent a cue that is not in the stream */
+            fprintf(stderr,"receive_frame: incomplete scte35 section on pid %d, ignoring\n", cue.splice_pid);
+            return 0;
+        }
+
+        cue_time = time(NULL);
+
+        /* splice_info sections repeat several times a second for the same
+         * event, so only the first of each distinct cue is reported. Several
+         * cues are tracked rather than just the previous one, because one
+         * section can carry several segmentation descriptors that arrive
+         * interleaved on every retransmission. */
+        report_cue = 1;
+        {
+            int slot = -1;
+            int i;
+
+            for (i = 0; i < SCTE35_RECENT_CUES; i++) {
+                scte35_recent_cue_struct *recent = &srtcore->scte35_recent[i];
+
+                if (recent->valid &&
+                    recent->event_id == cue.splice_event_id &&
+                    recent->cue_direction == cue.cue_direction &&
+                    recent->cancel == cue.cancel &&
+                    recent->segmentation_type == cue.segmentation_type_id) {
+                    slot = i;
+                    break;
+                }
+            }
+
+            if (slot >= 0) {
+                if ((cue_time - srtcore->scte35_recent[slot].last_seen) <
+                    SCTE35_CUE_REPEAT_WINDOW_SECONDS) {
+                    report_cue = 0;
+                }
+            } else {
+                /* take a free slot, otherwise evict the least recently seen */
+                slot = 0;
+                for (i = 0; i < SCTE35_RECENT_CUES; i++) {
+                    if (!srtcore->scte35_recent[i].valid) {
+                        slot = i;
+                        break;
+                    }
+                    if (srtcore->scte35_recent[i].last_seen <
+                        srtcore->scte35_recent[slot].last_seen) {
+                        slot = i;
+                    }
+                }
+                srtcore->scte35_recent[slot].valid = 1;
+                srtcore->scte35_recent[slot].event_id = cue.splice_event_id;
+                srtcore->scte35_recent[slot].cue_direction = cue.cue_direction;
+                srtcore->scte35_recent[slot].cancel = cue.cancel;
+                srtcore->scte35_recent[slot].segmentation_type = cue.segmentation_type_id;
+            }
+
+            /* refreshed on every repeat, so a pre-roll that runs longer than
+             * the window does not age out and get reported a second time */
+            srtcore->scte35_recent[slot].last_seen = cue_time;
+        }
+
+        if (report_cue) {
+            srtcore->scte35_have_last_cue = 1;
+            srtcore->scte35_last_cue_time = cue_time;
+            srtcore->scte35_last_event_id = cue.splice_event_id;
+            srtcore->scte35_last_cue_direction = cue.cue_direction;
+            srtcore->scte35_last_cue_cancel = cue.cancel;
+            srtcore->scte35_last_cue_immediate = cue.splice_immediate;
+            srtcore->scte35_last_cue_duration = cue.pts_duration;
+            srtcore->scte35_last_cue_command = cue.splice_command_type;
+            srtcore->scte35_last_segmentation_type = cue.segmentation_type_id;
+            snprintf(srtcore->scte35_last_cue_name, sizeof(srtcore->scte35_last_cue_name),
+                     "%s", cue.descriptor_name);
+            srtcore->scte35_cue_count++;
+
+            fprintf(stderr,"receive_frame: scte35 cue pid=%d command=0x%x direction=%d event=%ld immediate=%d duration=%ld (%s)\n",
+                    cue.splice_pid, cue.splice_command_type, cue.cue_direction,
+                    (long)cue.splice_event_id, cue.splice_immediate,
+                    (long)cue.pts_duration, cue.descriptor_name);
+
+            send_signal_scte35(srtcore, &cue);
+        }
+        return 0;
+    }
+
     if (sample_type == STREAM_TYPE_MPEG || sample_type == STREAM_TYPE_AC3 || sample_type == STREAM_TYPE_AAC || sample_type == STREAM_TYPE_UNKNOWN_AUDIO) {
         msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
         if (msg) {
@@ -435,6 +534,9 @@ static void *srt_receiver_thread_listener(void *context)
             goto cleanup_srt_receiver_thread_listener;
         }
 
+        /* the PMT is gone with the input; stop claiming an SCTE-35 pid */
+        srtcore->scte35_pid = 0;
+
         FILE *statsfile = fopen(statsfilename,"wb");
         if (statsfile) {
             fprintf(statsfile,"{\n");
@@ -481,6 +583,7 @@ static void *srt_receiver_thread_listener(void *context)
                 if (lasterr == SRT_ENOCONN) {
                     int64_t delta_time_no_connection;
                     fprintf(stderr,"srt_receiver_thread_listener: SRT not connected, waiting...\n");
+                    srtcore->scte35_pid = 0;
                     if ((update_stats % 100)==0) {
                         FILE *statsfile = fopen(statsfilename,"wb");
                         if (statsfile) {
@@ -563,6 +666,9 @@ static void *srt_receiver_thread_listener(void *context)
                                 now-srtcontrol.srctime);
                         //fprintf(stderr,"srt_receiver_thread_caller: retransmissions detected = %d\n", stats.pktRetransTotal);
                         fprintf(stderr,"srt_receiver_thread_listener: receive rate %.2f mbps @ %ld, %d\n", stats.mbpsRecvRate, stats.msTimeStamp, recvbytes);
+
+                        /* published by the main loop in corestatus */
+                        srtcore->scte35_pid = get_scte35_pid(decode);
 
                         FILE *statsfile = fopen(statsfilename,"wb");
                         if (statsfile) {
@@ -815,6 +921,7 @@ static void *srt_receiver_thread_caller(void *context)
             int lasterr = srt_getlasterror(NULL);
             if (lasterr == SRT_ENOCONN) {
                 int64_t delta_time_no_connection;
+                srtcore->scte35_pid = 0;
                 if ((update_stats % 100)==0) {
                     fprintf(stderr,"srt_receiver_thread_caller: SRT not connected, waiting...\n");
                     FILE *statsfile = fopen(statsfilename,"wb");
@@ -894,6 +1001,9 @@ static void *srt_receiver_thread_caller(void *context)
                             now-srtcontrol.srctime);
                     //fprintf(stderr,"srt_receiver_thread_caller: retransmissions detected = %d\n", stats.pktRetransTotal);
                     fprintf(stderr,"srt_receiver_thread_caller: receive rate %.2f mbps @ %ld, %d\n", stats.mbpsRecvRate, stats.msTimeStamp, recvbytes);
+
+                    /* published by the main loop in corestatus */
+                    srtcore->scte35_pid = get_scte35_pid(decode);
 
                     FILE *statsfile = fopen(statsfilename,"wb");
                     if (statsfile) {
@@ -1615,6 +1725,8 @@ static void *udp_receiver_thread(void *context)
             no_signal_count++;
             source_interruptions++;
             input_signal = 0;
+            /* the PMT is gone with the input; stop claiming an SCTE-35 pid */
+            srtcore->scte35_pid = 0;
 
             FILE *statsfile = fopen(statsfilename,"wb");
             if (statsfile) {
@@ -1681,6 +1793,9 @@ static void *udp_receiver_thread(void *context)
                 clock_gettime(CLOCK_MONOTONIC, &signal_check_stop);
                 diff = realtime_clock_difference(&signal_check_stop, &signal_check_start) / 1000;
                 if (diff >= 2000) {  // 2 second timeout
+                    /* published by the main loop in corestatus */
+                    srtcore->scte35_pid = get_scte35_pid(decode);
+
                     FILE *statsfile = fopen(statsfilename,"wb");
                     if (statsfile) {
                         fprintf(statsfile,"{\n");
@@ -2951,6 +3066,19 @@ int main(int argc, char **argv)
     srtcore.packetpool = memory_create(MAX_PACKET_BUFFERS, MAX_PACKET_BUFFER_SIZE);
     srtcore.videopool = NULL;
     srtcore.video_initialized = 0;
+    srtcore.scte35_pid = 0;
+    srtcore.scte35_cue_count = 0;
+    srtcore.scte35_have_last_cue = 0;
+    srtcore.scte35_last_event_id = 0;
+    srtcore.scte35_last_cue_direction = SCTE35_CUE_UNKNOWN;
+    srtcore.scte35_last_cue_cancel = 0;
+    srtcore.scte35_last_cue_immediate = 0;
+    srtcore.scte35_last_cue_duration = 0;
+    srtcore.scte35_last_cue_command = 0;
+    srtcore.scte35_last_segmentation_type = -1;
+    srtcore.scte35_last_cue_time = 0;
+    memset(srtcore.scte35_last_cue_name, 0, sizeof(srtcore.scte35_last_cue_name));
+    memset(srtcore.scte35_recent, 0, sizeof(srtcore.scte35_recent));
     srtcore.video_init_lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(srtcore.video_init_lock, NULL);
     srtcore.audiopool = memory_create(MAX_AUDIO_BUFFERS, MAX_AUDIO_BUFFER_SIZE);
@@ -3120,7 +3248,34 @@ restart_srt:
                 fprintf(statsfile,"    \"srthub-uptime\":%ld,\n", diff);
                 fprintf(statsfile,"    \"session-identifier\":%d,\n", srtcore.session_identifier);
                 fprintf(statsfile,"    \"thumbnail-queue\":%d,\n", dataqueue_get_size(srtcore.thumbnailqueue));
-                fprintf(statsfile,"    \"udpserver-queue\":%d\n", dataqueue_get_size(srtcore.udpserverqueue));
+                fprintf(statsfile,"    \"udpserver-queue\":%d,\n", dataqueue_get_size(srtcore.udpserverqueue));
+                fprintf(statsfile,"    \"scte35-pid\":%d,\n", srtcore.scte35_pid);
+                fprintf(statsfile,"    \"scte35-present\":%d,\n", srtcore.scte35_pid != 0 ? 1 : 0);
+                fprintf(statsfile,"    \"scte35-cue-count\":%ld,\n", (long)srtcore.scte35_cue_count);
+                if (srtcore.scte35_have_last_cue) {
+                    const char *last_cue_text;
+
+                    if (srtcore.scte35_last_cue_cancel) {
+                        last_cue_text = "none";
+                    } else if (srtcore.scte35_last_cue_direction == SCTE35_CUE_OUT) {
+                        last_cue_text = "out";
+                    } else if (srtcore.scte35_last_cue_direction == SCTE35_CUE_IN) {
+                        last_cue_text = "in";
+                    } else {
+                        last_cue_text = "none";
+                    }
+
+                    fprintf(statsfile,"    \"scte35-last-cue\":\"%s\",\n", last_cue_text);
+                    fprintf(statsfile,"    \"scte35-last-cue-name\":\"%s\",\n", srtcore.scte35_last_cue_name);
+                    fprintf(statsfile,"    \"scte35-last-cue-immediate\":%d,\n", srtcore.scte35_last_cue_immediate);
+                    fprintf(statsfile,"    \"scte35-last-cue-duration\":%.3f,\n",
+                            (double)srtcore.scte35_last_cue_duration / (double)90000.0);
+                    fprintf(statsfile,"    \"scte35-last-cue-event-id\":%ld,\n", (long)srtcore.scte35_last_event_id);
+                    fprintf(statsfile,"    \"scte35-last-cue-cancel\":%d,\n", srtcore.scte35_last_cue_cancel);
+                    fprintf(statsfile,"    \"scte35-last-cue-time\":%ld\n", (long)srtcore.scte35_last_cue_time);
+                } else {
+                    fprintf(statsfile,"    \"scte35-last-cue\":\"\"\n");
+                }
                 fprintf(statsfile,"}\n");
                 fclose(statsfile);
             }
