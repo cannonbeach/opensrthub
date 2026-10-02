@@ -778,6 +778,8 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                             height: thumb.height || 0,
                             codec: thumb["video-codec"] || '',
                             format: thumb["source-format"] || '',
+                            frameRate: thumb["frame-rate"] || '',
+                            frameRateValue: thumb["frame-rate-value"] || 0,
                             aspectRatio: thumb["display-aspect-ratio"] || '',
                             aspectRatioValue: thumb["display-aspect-ratio-value"] || 0,
                             sampleAspectRatio: thumb["sample-aspect-ratio"] || '',
@@ -1974,6 +1976,8 @@ app.get('/api/v1/get_service_status/:uid', auth, (req, res) => {
                                     obj.video_height = dd.height;
                                     obj.video_codec = dd["video-codec"];
                                     obj.source_format = dd["source-format"];
+                                    obj.video_frame_rate = dd["frame-rate"];
+                                    obj.video_frame_rate_value = dd["frame-rate-value"];
                                     obj.video_aspect_ratio = dd["display-aspect-ratio"];
                                     obj.video_aspect_ratio_value = dd["display-aspect-ratio-value"];
                                     obj.video_sample_aspect_ratio = dd["sample-aspect-ratio"];
