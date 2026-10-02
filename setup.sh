@@ -676,8 +676,12 @@ install_file "${REPO_DIR}/webapp/public/index.html"  "${APP_DIR}/public/"
 if [ -f "${REPO_DIR}/webapp/package-lock.json" ]; then
     install_file "${REPO_DIR}/webapp/package-lock.json" "${APP_DIR}/"
 fi
-if [ -f "${REPO_DIR}/webapp/public/client.js" ]; then
-    install_file "${REPO_DIR}/webapp/public/client.js" "${APP_DIR}/public/"
+# client.js was the predecessor of the inline script in index.html. Nothing
+# loads it any more, so an install that still has it is serving a dead 47KB
+# file to every logged-in browser that asks for /srthub/client.js.
+if [ -f "${APP_DIR}/public/client.js" ]; then
+    log "removing the obsolete public/client.js"
+    $SUDO rm -f "${APP_DIR}/public/client.js"
 fi
 
 # Node modules are installed locally from a lockfile rather than globally with a
