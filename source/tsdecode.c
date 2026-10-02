@@ -175,6 +175,100 @@ int get_scte35_pid(transport_data_struct *tsdata)
     return scte35_pid;
 }
 
+/* True for the decoded stream types that carry video. */
+static int is_video_stream_type(int decoded_stream_type)
+{
+    return decoded_stream_type == STREAM_TYPE_MPEG2 ||
+           decoded_stream_type == STREAM_TYPE_H264 ||
+           decoded_stream_type == STREAM_TYPE_HEVC ||
+           decoded_stream_type == STREAM_TYPE_AV1 ||
+           decoded_stream_type == STREAM_TYPE_UNKNOWN_VIDEO;
+}
+
+const char *stream_type_name(int decoded_stream_type)
+{
+    switch (decoded_stream_type) {
+        case STREAM_TYPE_MPEG2:         return "mpeg2";
+        case STREAM_TYPE_H264:          return "h264";
+        case STREAM_TYPE_HEVC:          return "hevc";
+        case STREAM_TYPE_AV1:           return "av1";
+        case STREAM_TYPE_UNKNOWN_VIDEO: return "video";
+        case STREAM_TYPE_AC3:           return "ac3";
+        case STREAM_TYPE_EAC3:          return "eac3";
+        case STREAM_TYPE_AAC:           return "aac";
+        case STREAM_TYPE_MPEG:          return "mpeg-audio";
+        case STREAM_TYPE_UNKNOWN_AUDIO: return "audio";
+        case STREAM_TYPE_SCTE35:        return "scte35";
+        default: break;
+    }
+    return "";
+}
+
+/* Collects the PIDs of the first decoded program in one pass under pmt_lock,
+ * so the video, audio and SCTE-35 PIDs reported together always come from the
+ * same PMT version. Must not be called from code already holding pmt_lock.
+ *
+ * audio_stream_index is the authority on which entries are audio: the PMT
+ * decoder defaults decoded_stream_type to STREAM_TYPE_UNKNOWN_AUDIO for stream
+ * types it does not recognise, but only assigns an audio index to entries it
+ * actually treats as audio. */
+int get_pid_summary(transport_data_struct *tsdata, pid_summary_struct *summary)
+{
+    int stream_loop;
+    int stream_count;
+
+    if (!summary) {
+        return -1;
+    }
+    memset(summary, 0, sizeof(pid_summary_struct));
+    if (!tsdata) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&pmt_lock);
+    if (tsdata->pmt_pid_count > 0) {
+        pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[0];
+
+        summary->pcr_pid = current_pmt_table->pcr_pid;
+
+        stream_count = current_pmt_table->stream_count;
+        if (stream_count > MAX_STREAMS) {
+            stream_count = MAX_STREAMS;
+        }
+
+        for (stream_loop = 0; stream_loop < stream_count; stream_loop++) {
+            int decoded_type = current_pmt_table->decoded_stream_type[stream_loop];
+            int stream_pid = current_pmt_table->stream_pid[stream_loop];
+            int audio_index = current_pmt_table->audio_stream_index[stream_loop];
+
+            if (decoded_type == STREAM_TYPE_SCTE35) {
+                if (summary->scte35_pid == 0) {
+                    summary->scte35_pid = stream_pid;
+                }
+            } else if (audio_index >= 0) {
+                if (audio_index < MAX_SUMMARY_AUDIO_PIDS) {
+                    summary->audio_pid[audio_index] = stream_pid;
+                    summary->audio_stream_type[audio_index] = decoded_type;
+                    memcpy(&summary->audio_language[audio_index],
+                           &current_pmt_table->decoded_language_tag[stream_loop],
+                           sizeof(lang_struct));
+                    if ((audio_index + 1) > summary->audio_pid_count) {
+                        summary->audio_pid_count = audio_index + 1;
+                    }
+                }
+            } else if (is_video_stream_type(decoded_type)) {
+                if (summary->video_pid == 0) {
+                    summary->video_pid = stream_pid;
+                    summary->video_stream_type = decoded_type;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&pmt_lock);
+
+    return 0;
+}
+
 /* segmentation_type_id names from SCTE-35 table 23. */
 const char *scte35_segmentation_type_name(int segmentation_type_id)
 {
@@ -840,6 +934,7 @@ static int decode_pmt_table(pat_table_struct *master_pat_table, pmt_table_struct
           current_pmt_table->stream_pid[stream_count] = current_stream_pid;
           current_pmt_table->stream_type[stream_count] = current_stream_type;
           current_pmt_table->audio_stream_index[stream_count] = -1;
+          memset(&current_pmt_table->decoded_language_tag[stream_count], 0, sizeof(lang_struct));
           current_pmt_table->first_pts[stream_count] = -1;
           current_pmt_table->first_dts[stream_count] = -1;
           current_pmt_table->last_pts[stream_count] = -1;

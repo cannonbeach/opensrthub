@@ -225,6 +225,22 @@ typedef struct _pmt_table_struct_ {
      data_engine_struct data_engine[MAX_DATA_STREAMS];
 } pmt_table_struct;
 
+/* Elementary stream PIDs of the first decoded program, for status reporting.
+ * Audio entries are indexed by the decoder's audio stream index, so entry i
+ * corresponds to the audio_<i> status file. */
+#define MAX_SUMMARY_AUDIO_PIDS 8
+
+typedef struct _pid_summary_struct_ {
+     int pcr_pid;
+     int video_pid;                  /* 0 when the PMT declares no video */
+     int video_stream_type;          /* STREAM_TYPE_*, 0 when no video */
+     int audio_pid_count;            /* highest audio index seen, plus one */
+     int audio_pid[MAX_SUMMARY_AUDIO_PIDS];
+     int audio_stream_type[MAX_SUMMARY_AUDIO_PIDS];
+     lang_struct audio_language[MAX_SUMMARY_AUDIO_PIDS];
+     int scte35_pid;                 /* 0 when the PMT declares no SCTE-35 */
+} pid_summary_struct;
+
 typedef struct _pat_table_struct_ {
      unsigned char pat_data[MAX_TABLE_SIZE];
      int pat_data_size;
@@ -296,6 +312,11 @@ extern "C" {
     int64_t get_time_difference(struct timeval *stoptime, struct timeval *starttime);
     /* PID carrying SCTE-35 in the first decoded program, or 0 if none */
     int get_scte35_pid(transport_data_struct *tsdata);
+    /* Video, audio and SCTE-35 PIDs of the first decoded program, taken as one
+     * consistent snapshot. Returns 0 on success. */
+    int get_pid_summary(transport_data_struct *tsdata, pid_summary_struct *summary);
+    /* Short name for a decoded stream type ("h264", "aac", ...), "" if unknown */
+    const char *stream_type_name(int decoded_stream_type);
     /* Human-readable segmentation_type_id, "" when type_id is out of range */
     const char *scte35_segmentation_type_name(int segmentation_type_id);
     /* SCTE35_CUE_* classification of a segmentation_type_id */
