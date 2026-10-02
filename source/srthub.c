@@ -2614,6 +2614,12 @@ void *srthub_thumbnail_thread(void *context)
     /* change trackers for the two source format properties we report on */
     format_change_struct aspect_tracker;
     format_change_struct resolution_tracker;
+    /* source geometry the scaler was built for, so it can be rebuilt when the
+     * source changes */
+    int converter_width = 0;
+    int converter_height = 0;
+    enum AVPixelFormat converter_format = AV_PIX_FMT_NONE;
+    int output_allocated = 0;
     uint8_t *source_data[4];
     uint8_t *output_data[4];
     int source_stride[4];
@@ -2939,11 +2945,46 @@ void *srthub_thumbnail_thread(void *context)
                             source_stride[2] = decode_av_frame->linesize[2];
                             source_stride[3] = decode_av_frame->linesize[3];
 
-                            if (!decode_converter) {
+                            /* The scaler is bound to the source geometry it
+                             * was built with, so it has to be rebuilt when the
+                             * source changes. Without this, sws_scale() is
+                             * handed a frame the context was not made for and
+                             * refuses the slice ("Slice parameters 0, 1080 are
+                             * invalid"), which left the preview frozen on the
+                             * last good frame after a resolution change. The
+                             * output buffer is a fixed thumbnail size, so it is
+                             * allocated only once. */
+                            if (!decode_converter ||
+                                converter_width != frame_width ||
+                                converter_height != frame_height ||
+                                converter_format != source_format) {
+                                if (decode_converter) {
+                                    fprintf(stderr,"srthub_thumbnail_thread: rebuilding scaler for %dx%d %s\n",
+                                            frame_width, frame_height, av_get_pix_fmt_name(source_format));
+                                    sws_freeContext(decode_converter);
+                                    decode_converter = NULL;
+                                }
                                 decode_converter = sws_getContext(frame_width, frame_height, source_format,
                                                                   THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format,
                                                                   SWS_BICUBIC, NULL, NULL, NULL);
-                                av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
+                                if (!output_allocated) {
+                                    av_image_alloc(output_data, output_stride, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, output_format, 1);
+                                    output_allocated = 1;
+                                }
+                                converter_width = frame_width;
+                                converter_height = frame_height;
+                                converter_format = source_format;
+                            }
+                            if (!decode_converter) {
+                                /* cannot scale this frame; keep the service
+                                 * running rather than losing the stream */
+                                memory_return(srtcore->videopool, buffer);
+                                memory_return(srtcore->msgpool, msg);
+                                buffer = NULL;
+                                buffer_size = 0;
+                                msg = NULL;
+                                data_size = 0;
+                                break;
                             }
 
                             {
@@ -3054,7 +3095,11 @@ cleanup_thumbnail_thread:
     av_parser_close(decode_parser);
     if (decode_converter) {
         sws_freeContext(decode_converter);
+        decode_converter = NULL;
+    }
+    if (output_allocated) {
         av_freep(&output_data[0]);
+        output_allocated = 0;
     }
 
     msg = (dataqueue_message_struct*)dataqueue_take_back(srtcore->thumbnailqueue);
