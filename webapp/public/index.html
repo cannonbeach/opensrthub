@@ -1778,6 +1778,17 @@
             <span class="detail-value">${escapeHtml(service.video.codec || 'N/A')}${videoPidText}</span>
           </div>
         `;
+        // AFD, only when the source actually signals one
+        if (service.video.afdPresent) {
+          const afdCode = service.video.afdCode;
+          const afdName = service.video.afd || '';
+          detailsHtml += `
+            <div class="detail-item">
+              <span class="detail-label">AFD</span>
+              <span class="detail-value">${afdCode}${afdName ? ' &middot; ' + escapeHtml(afdName) : ''}</span>
+            </div>
+          `;
+        }
         if (service.video.errors > 0) {
           detailsHtml += `
             <div class="detail-item">

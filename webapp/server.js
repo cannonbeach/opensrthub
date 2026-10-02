@@ -781,6 +781,10 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                             aspectRatio: thumb["display-aspect-ratio"] || '',
                             aspectRatioValue: thumb["display-aspect-ratio-value"] || 0,
                             sampleAspectRatio: thumb["sample-aspect-ratio"] || '',
+                            afdPresent: thumb["afd-present"] === 1,
+                            afdCode: (thumb["afd-code"] === undefined ||
+                                      thumb["afd-code"] === null) ? -1 : thumb["afd-code"],
+                            afd: thumb["afd"] || '',
                             totalStreams: thumb["total-streams"] || 0,
                             currentStream: thumb["current-stream"] || 0,
                             errors: thumb["transport-source-errors"] || 0,
@@ -1967,6 +1971,9 @@ app.get('/api/v1/get_service_status/:uid', auth, (req, res) => {
                                     obj.video_aspect_ratio = dd["display-aspect-ratio"];
                                     obj.video_aspect_ratio_value = dd["display-aspect-ratio-value"];
                                     obj.video_sample_aspect_ratio = dd["sample-aspect-ratio"];
+                                    obj.video_afd_present = dd["afd-present"];
+                                    obj.video_afd_code = dd["afd-code"];
+                                    obj.video_afd = dd["afd"];
                                     obj.total_streams = dd["total-streams"];
                                     obj.current_stream = dd["current-stream"];
                                     obj.transport_source_errors = dd["transport-source-errors"];
