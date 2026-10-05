@@ -2369,19 +2369,23 @@ app.get('/api/v1/get_log_days', auth, (req, res) => {
 // date is matched against a strict YYYY-MM-DD and is never used to build a path
 // -- the files for a day are found by listing the log folder -- so there is no
 // filename for a caller to steer.
-app.get('/api/v1/get_log_day', auth, async (req, res) => {
-    var date = (req.query.date === undefined || req.query.date === '') ?
-               utcDayString(Date.now()) : String(req.query.date);
+// The day and filters shared by the view and the export, so a download always
+// holds exactly what the table was showing. date is matched against a strict
+// YYYY-MM-DD and is never used to build a path -- the files for a day are found
+// by listing the log folder -- so there is no filename for a caller to steer.
+// Returns null when the date is not a real day.
+function logRequestFromQuery(query) {
+    var date = (query.date === undefined || query.date === '') ?
+               utcDayString(Date.now()) : String(query.date);
 
     if (!isLogDate(date)) {
-        res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-        return;
+        return null;
     }
 
-    var severity = String(req.query.severity || 'all');
-    var type = String(req.query.type || 'all');
-    var service = (req.query.service === undefined) ? 'all' : String(req.query.service);
-    var search = String(req.query.search || '').trim().toLowerCase()
+    var severity = String(query.severity || 'all');
+    var type = String(query.type || 'all');
+    var service = (query.service === undefined) ? 'all' : String(query.service);
+    var search = String(query.search || '').trim().toLowerCase()
                  .substring(0, MAX_LOG_SEARCH_SIZE);
 
     if (['all', 'error', 'warning', 'info', 'debug'].indexOf(severity) < 0) {
@@ -2391,6 +2395,21 @@ app.get('/api/v1/get_log_day', auth, async (req, res) => {
         type = 'all';
     }
 
+    return {
+        date: date,
+        filters: { severity: severity, type: type, service: service, search: search }
+    };
+}
+
+app.get('/api/v1/get_log_day', auth, async (req, res) => {
+    var request = logRequestFromQuery(req.query);
+
+    if (!request) {
+        res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+        return;
+    }
+
+    var date = request.date;
     var offset = parseInt(req.query.offset, 10);
     var limit = parseInt(req.query.limit, 10);
 
@@ -2403,9 +2422,7 @@ app.get('/api/v1/get_log_day', auth, async (req, res) => {
 
     try {
         var day = await loadLogDay(date);
-        var selected = selectLogEntries(day,
-            { severity: severity, type: type, service: service, search: search },
-            offset, limit);
+        var selected = selectLogEntries(day, request.filters, offset, limit);
 
         res.set('Expires', new Date().toUTCString());
         res.json({
@@ -2423,6 +2440,60 @@ app.get('/api/v1/get_log_day', auth, async (req, res) => {
         });
     } catch (e) {
         console.log('unable to read the event log for ' + date + ': ', e.message);
+        res.sendStatus(500);
+    }
+});
+
+// Every entry of the day that matches the filters -- not just the window the
+// table has loaded -- as a downloadable JSON document. The file on disk is not
+// itself valid JSON (each line after the first carries a leading comma), so the
+// export is assembled from the parsed entries rather than copied out raw.
+//
+// Entries are in time order, oldest first, the way a log reads. The wrapper
+// records the day and the filters that produced it, and says plainly when the
+// day was larger than the server holds, so a partial export is never mistaken
+// for a complete one.
+app.get('/api/v1/export_log_day', auth, async (req, res) => {
+    var request = logRequestFromQuery(req.query);
+
+    if (!request) {
+        res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+        return;
+    }
+
+    var date = request.date;
+
+    try {
+        var day = await loadLogDay(date);
+        var selected = selectLogEntries(day, request.filters, 0, Infinity);
+        var filtered = (request.filters.severity !== 'all' || request.filters.type !== 'all' ||
+                        request.filters.service !== 'all' || request.filters.search !== '');
+        var host = os.hostname().replace(/[^A-Za-z0-9._-]/g, '') || 'srthub';
+        var filename = 'srthub-events-' + host + '-' + date + (filtered ? '-filtered' : '') + '.json';
+
+        var body = {
+            exported: new Date().toISOString(),
+            host: os.hostname(),
+            date: date,
+            timezone: 'UTC',
+            filters: request.filters,
+            total: day.total,
+            exportedcount: selected.entries.length,
+            complete: (day.total <= day.entries.length),
+            note: (day.total > day.entries.length) ?
+                  'This day held ' + day.total + ' events; only the newest ' +
+                  day.entries.length + ' are kept in memory, so older events are not in this export. ' +
+                  'The full day is in the rotated log files in the support bundle.' : undefined,
+            malformed: day.malformed,
+            entries: selected.entries.slice().reverse()
+        };
+
+        res.set('Content-Type', 'application/json; charset=utf-8');
+        res.set('Content-Disposition', 'attachment; filename="' + filename + '"');
+        res.set('Cache-Control', 'no-store');
+        res.send(JSON.stringify(body, null, 2) + '\n');
+    } catch (e) {
+        console.log('unable to export the event log for ' + date + ': ', e.message);
         res.sendStatus(500);
     }
 });

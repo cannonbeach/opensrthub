@@ -730,6 +730,11 @@
       color: var(--accent-cyan);
     }
 
+    .log-export {
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
     /* A day of events is far more than fits on a page, so the table scrolls
        inside the card with its header pinned, instead of pushing the services
        list off the bottom of the window. */
@@ -1512,6 +1517,8 @@
         <input class="log-filter" id="log-search" type="search" autocomplete="off"
                placeholder="Search messages…" aria-label="Search event text">
         <button class="log-filter-reset" id="log-reset" type="button">Reset</button>
+        <button class="log-filter-reset log-export" id="log-export" type="button"
+                title="Download every event matching these filters on this day, as JSON">Export</button>
       </div>
       <div class="log-scroll" id="log-scroll">
         <table class="log-table">
@@ -2579,6 +2586,26 @@
       document.getElementById('log-more').addEventListener('click', () => {
         logState.window = Math.min(logState.window + LOG_WINDOW_STEP, logState.maxpage);
         updateLogSection();
+      });
+
+      // The export carries the same day and filters as the table, but every
+      // matching entry rather than the loaded window. The server answers with
+      // Content-Disposition: attachment, so following the link downloads the
+      // file and leaves the page where it is.
+      document.getElementById('log-export').addEventListener('click', () => {
+        const query = new URLSearchParams({
+          date: logState.date || '',
+          severity: logState.severity,
+          type: logState.type,
+          service: logState.service,
+          search: logState.search
+        });
+        const link = document.createElement('a');
+        link.href = '/api/v1/export_log_day?' + query.toString();
+        link.rel = 'noopener';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
       });
 
       document.getElementById('log-reset').addEventListener('click', () => {
