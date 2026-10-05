@@ -2444,8 +2444,77 @@ app.get('/api/v1/get_log_day', auth, async (req, res) => {
     }
 });
 
+// CSV for spreadsheets. Fixed columns rather than one per key seen, so every
+// export of every day lines up the same way and can be pasted under the last.
+// The SCTE-35 cue detail is flattened into its own columns, empty on the rows
+// that are not cues.
+const LOG_CSV_COLUMNS = [
+    ['time',                 e => e.accesstime || e.logtime || e.time || e.timestamp],
+    ['severity',             e => logEntrySeverity(e)],
+    ['status',               e => e.status || e.severity || e.level],
+    ['event',                e => classifyLogEntry(e)],
+    ['service',              e => e.logsourcename || e.sourcename || e.name || e.source],
+    ['id',                   e => e.logid || e.id || e.resource],
+    ['host',                 e => e.host],
+    ['message',              e => e.logmessage || e.message || e.msg],
+    ['cue',                  e => e.scte35 && e.scte35.cue],
+    ['command',              e => e.scte35 && e.scte35.command],
+    ['event_id',             e => e.scte35 && e.scte35['event-id']],
+    ['duration',             e => e.scte35 && e.scte35.duration],
+    ['immediate',            e => e.scte35 && e.scte35.immediate],
+    ['cancel',               e => e.scte35 && e.scte35.cancel],
+    ['auto_return',          e => e.scte35 && e.scte35['auto-return']],
+    ['descriptor',           e => e.scte35 && e.scte35.descriptor],
+    ['segmentation_type_id', e => e.scte35 && e.scte35['segmentation-type-id']],
+    ['pid',                  e => e.scte35 && e.scte35.pid],
+    ['program_id',           e => e.scte35 && e.scte35['program-id']],
+    ['pts_time',             e => e.scte35 && e.scte35['pts-time']],
+    ['pts_adjustment',       e => e.scte35 && e.scte35['pts-adjustment']]
+];
+
+// RFC 4180 quoting, plus a guard against formula injection: service names are
+// typed in by whoever configured the box and cue descriptors come off the wire,
+// and a spreadsheet will execute a cell that starts with = + - or @. Such a cell
+// is prefixed with an apostrophe so it opens as the text it is.
+function csvCell(value) {
+    if (value === undefined || value === null) {
+        return '';
+    }
+
+    var text = (typeof value === 'object') ? JSON.stringify(value) : String(value);
+
+    if (/^[=+\-@\t\r]/.test(text) && !/^-?\d+(\.\d+)?$/.test(text)) {
+        text = "'" + text;
+    }
+    if (/[",\r\n]/.test(text)) {
+        text = '"' + text.replace(/"/g, '""') + '"';
+    }
+    return text;
+}
+
+function logEntriesToCsv(entries) {
+    var lines = [LOG_CSV_COLUMNS.map(c => c[0]).join(',')];
+
+    entries.forEach(entry => {
+        lines.push(LOG_CSV_COLUMNS.map(c => {
+            var value;
+            try {
+                value = c[1](entry);
+            } catch (e) {
+                value = '';
+            }
+            return csvCell(value);
+        }).join(','));
+    });
+
+    // CRLF per RFC 4180, and a byte order mark so Excel reads UTF-8 as UTF-8
+    // instead of mangling any non-ASCII service name.
+    return '﻿' + lines.join('\r\n') + '\r\n';
+}
+
 // Every entry of the day that matches the filters -- not just the window the
-// table has loaded -- as a downloadable JSON document. The file on disk is not
+// table has loaded -- as a downloadable JSON document, or CSV with format=csv
+// (the columns are LOG_CSV_COLUMNS above). The file on disk is not
 // itself valid JSON (each line after the first carries a leading comma), so the
 // export is assembled from the parsed entries rather than copied out raw.
 //
@@ -2469,7 +2538,19 @@ app.get('/api/v1/export_log_day', auth, async (req, res) => {
         var filtered = (request.filters.severity !== 'all' || request.filters.type !== 'all' ||
                         request.filters.service !== 'all' || request.filters.search !== '');
         var host = os.hostname().replace(/[^A-Za-z0-9._-]/g, '') || 'srthub';
-        var filename = 'srthub-events-' + host + '-' + date + (filtered ? '-filtered' : '') + '.json';
+        var complete = (day.total <= day.entries.length);
+        var csv = (String(req.query.format || 'json').toLowerCase() === 'csv');
+        var filename = 'srthub-events-' + host + '-' + date + (filtered ? '-filtered' : '') +
+                       // CSV has nowhere to carry the complete flag, so the name does
+                       (csv && !complete ? '-partial' : '') + (csv ? '.csv' : '.json');
+
+        if (csv) {
+            res.set('Content-Type', 'text/csv; charset=utf-8');
+            res.set('Content-Disposition', 'attachment; filename="' + filename + '"');
+            res.set('Cache-Control', 'no-store');
+            res.send(logEntriesToCsv(selected.entries.slice().reverse()));
+            return;
+        }
 
         var body = {
             exported: new Date().toISOString(),
@@ -2479,8 +2560,8 @@ app.get('/api/v1/export_log_day', auth, async (req, res) => {
             filters: request.filters,
             total: day.total,
             exportedcount: selected.entries.length,
-            complete: (day.total <= day.entries.length),
-            note: (day.total > day.entries.length) ?
+            complete: complete,
+            note: !complete ?
                   'This day held ' + day.total + ' events; only the newest ' +
                   day.entries.length + ' are kept in memory, so older events are not in this export. ' +
                   'The full day is in the rotated log files in the support bundle.' : undefined,
