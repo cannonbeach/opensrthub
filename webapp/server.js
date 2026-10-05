@@ -605,6 +605,848 @@ app.get('/api/v1/backup_services', auth, (req, res) => {
     zip.finalize();
 });
 
+// ---- Config backup and restore ----------------------------------------------
+//
+// Backup streams every service config as a .tar.gz. Restore takes either that
+// archive or individual .json files, and runs in two passes against the same
+// code: "inspect" reports what each file is and what restoring it would do,
+// "apply" re-inspects against the state at that moment and then writes. Nothing
+// from the upload is trusted between the two.
+//
+// What a restored config can reach, and why each check exists:
+//
+//   - The service id is the config's filename, and start_service and
+//     stop_service concatenate it into a root shell command
+//     ("sudo docker run --name srthub<id> ... srthub <id>"). So an id is only
+//     ever digits, it only ever comes from a filename that is already digits or
+//     is freshly allocated here, and nothing in a file's contents can set it.
+//   - srthub reads every field with cJSON's valuestring and atoi(), so a field
+//     that is present but not a string is a NULL dereference in the decoder.
+//     Every field is a string on the way out; integers for the numeric fields
+//     are converted (and reported), anything else is refused.
+//   - esignal.c writes the service name, addresses and interface into its event
+//     JSON without escaping, so those fields may not carry quotes, backslashes
+//     or control characters, or a restored name would corrupt the event log.
+//   - Fields are copied by name from an allowlist into a fresh object, so
+//     unknown keys - __proto__ included - never reach the file or the server's
+//     objects.
+//   - Archives are read in memory, entry by entry. No path from inside an
+//     archive is ever used to write anything; only the last component of a name
+//     is read, and only as a hint for the id.
+
+const MAX_RESTORE_UPLOAD = 2 * 1024 * 1024;        // compressed upload
+const MAX_RESTORE_EXPANDED = 16 * 1024 * 1024;     // after gunzip
+const MAX_RESTORE_FILES = 200;                     // configs per archive
+const MAX_CONFIG_FILE_SIZE = 64 * 1024;            // one config, as uploaded
+const SERVICE_ID_PATTERN = /^[0-9]{1,12}$/;
+
+// Fields srthub reads (source/srthub.c), and the two the UI adds when it fetches
+// a config for editing, which are dropped without comment.
+const CONFIG_FIELDS = {
+    sourcename:         { kind: 'name', required: true },
+    sourcemode:         { kind: 'mode', required: true },
+    outputmode:         { kind: 'mode', required: true },
+    clienttype:         { kind: 'direction' },
+    servertype:         { kind: 'direction' },
+    sourceaddress:      { kind: 'address' },
+    outputaddress:      { kind: 'address' },
+    managementserverip: { kind: 'address' },
+    sourceport:         { kind: 'port', required: true },
+    outputport:         { kind: 'port', required: true },
+    sourceinterface:    { kind: 'interface' },
+    outputinterface:    { kind: 'interface' },
+    outputttl:          { kind: 'int', min: 1, max: 255 },
+    latency:            { kind: 'int', min: 0, max: 60000 },
+    keysize:            { kind: 'keysize' },
+    connectionqueue:    { kind: 'int', min: 1, max: 1024 },
+    overheadbw:         { kind: 'int', min: 5, max: 100 },
+    passphrase:         { kind: 'passphrase' },
+    streamid:           { kind: 'streamid' },
+    whitelist:          { kind: 'whitelist' }
+};
+const CONFIG_UI_FIELDS = ['fileprefix', 'configindex'];
+const NUMERIC_KINDS = ['port', 'int', 'keysize'];
+
+const HOSTNAME_PATTERN =
+    /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+const INTERFACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,31}$/;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+// One field: returns { value } with the string to store, or { error }.
+function validateConfigField(name, rule, raw, warnings) {
+    var value = raw;
+
+    if (typeof value === 'number' && NUMERIC_KINDS.indexOf(rule.kind) >= 0 &&
+        Number.isInteger(value)) {
+        value = String(value);
+        warnings.push(name + ' was a number; stored as text, which is what srthub reads');
+    }
+    if (typeof value !== 'string') {
+        return { error: name + ' must be text, not ' + (value === null ? 'null' :
+                                                         Array.isArray(value) ? 'a list' : typeof value) };
+    }
+    if (CONTROL_CHARACTERS.test(value)) {
+        return { error: name + ' contains control characters' };
+    }
+
+    var trimmed = value.trim();
+
+    switch (rule.kind) {
+    case 'name':
+        if (trimmed.length === 0) {
+            return { error: 'sourcename is empty' };
+        }
+        if (trimmed.length > 128 || Buffer.byteLength(trimmed, 'utf8') > 255) {
+            return { error: 'sourcename is longer than 128 characters' };
+        }
+        if (/["\\]/.test(trimmed)) {
+            return { error: 'sourcename may not contain quotes or backslashes' };
+        }
+        // Every page that shows a name escapes it, but no real service name
+        // needs markup characters, so a backup cannot carry any to a page that
+        // one day forgets to.
+        if (/[<>]/.test(trimmed)) {
+            return { error: 'sourcename may not contain < or >' };
+        }
+        return { value: trimmed };
+
+    case 'mode':
+        trimmed = trimmed.toLowerCase();
+        if (['udp', 'srt', 'srtpull', 'srtpush'].indexOf(trimmed) < 0) {
+            return { error: name + ' must be udp, srtpull or srtpush' };
+        }
+        return { value: trimmed };
+
+    case 'direction':
+        if (['', 'push', 'pull', 'caller', 'listener'].indexOf(trimmed.toLowerCase()) < 0) {
+            return { error: name + ' must be push, pull, caller or listener' };
+        }
+        return { value: trimmed.toLowerCase() };
+
+    case 'address':
+        if (trimmed === '' || validator.isIP(trimmed) || HOSTNAME_PATTERN.test(trimmed)) {
+            return { value: trimmed };
+        }
+        return { error: name + ' is not an IP address or host name' };
+
+    case 'port':
+        if (!/^[0-9]{1,5}$/.test(trimmed) || Number(trimmed) < 1 || Number(trimmed) > 65535) {
+            return { error: name + ' must be a port number from 1 to 65535' };
+        }
+        return { value: String(Number(trimmed)) };
+
+    case 'int':
+        if (trimmed === '') {
+            return { value: '' };
+        }
+        if (!/^[0-9]{1,6}$/.test(trimmed) || Number(trimmed) < rule.min || Number(trimmed) > rule.max) {
+            return { error: name + ' must be a whole number from ' + rule.min + ' to ' + rule.max };
+        }
+        return { value: String(Number(trimmed)) };
+
+    case 'keysize':
+        if (['', '0', '16', '24', '32'].indexOf(trimmed) < 0) {
+            return { error: 'keysize must be 0, 16, 24 or 32' };
+        }
+        return { value: trimmed };
+
+    case 'interface':
+        if (trimmed !== '' && !INTERFACE_PATTERN.test(trimmed)) {
+            return { error: name + ' is not a network interface name' };
+        }
+        return { value: trimmed };
+
+    case 'passphrase':
+        // Passed straight to SRTO_PASSPHRASE and never logged, so any printable
+        // character is allowed; SRT itself insists on 10 to 79 of them.
+        if (value !== '' && (value.length < 10 || value.length > 79 || !/^[\x20-\x7e]+$/.test(value))) {
+            return { error: 'passphrase must be empty or 10 to 79 printable ASCII characters' };
+        }
+        return { value: value };
+
+    case 'streamid':
+        if (value.length > 511 || /["\\]/.test(value) || !/^[\x20-\x7e]*$/.test(value)) {
+            return { error: 'streamid must be printable ASCII without quotes or backslashes, at most 511 characters' };
+        }
+        return { value: value };
+
+    case 'whitelist':
+        if (!/^[0-9A-Fa-f.:,/ ]{0,511}$/.test(trimmed)) {
+            return { error: 'whitelist may only list IP addresses and networks' };
+        }
+        return { value: trimmed };
+    }
+
+    return { error: name + ' has no validation rule' };
+}
+
+// Parses and validates one uploaded config. Returns { config, errors, warnings }
+// where config is a fresh object holding only allowlisted, validated fields.
+function validateConfigText(buffer) {
+    var errors = [];
+    var warnings = [];
+
+    if (!buffer || buffer.length === 0) {
+        return { config: null, errors: ['the file is empty'], warnings: warnings };
+    }
+    if (buffer.length > MAX_CONFIG_FILE_SIZE) {
+        return { config: null, errors: ['the file is larger than a service config can be'], warnings: warnings };
+    }
+
+    var text;
+    try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    } catch (e) {
+        return { config: null, errors: ['the file is not UTF-8 text'], warnings: warnings };
+    }
+    text = text.replace(/^\ufeff/, '');
+    if (text.trim().length === 0) {
+        return { config: null, errors: ['the file is empty'], warnings: warnings };
+    }
+
+    var parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch (e) {
+        return { config: null, errors: ['the file is not valid JSON (corrupt or truncated)'], warnings: warnings };
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { config: null, errors: ['the file is JSON but not a service config'], warnings: warnings };
+    }
+
+    var config = {};
+    var has = (key) => Object.prototype.hasOwnProperty.call(parsed, key);
+
+    Object.keys(CONFIG_FIELDS).forEach(name => {
+        var rule = CONFIG_FIELDS[name];
+        if (!has(name)) {
+            if (rule.required) {
+                errors.push(name + ' is missing');
+            }
+            return;
+        }
+        var result = validateConfigField(name, rule, parsed[name], warnings);
+        if (result.error) {
+            errors.push(result.error);
+        } else {
+            config[name] = result.value;
+        }
+    });
+
+    var unknown = Object.keys(parsed).filter(k =>
+        !Object.prototype.hasOwnProperty.call(CONFIG_FIELDS, k) && CONFIG_UI_FIELDS.indexOf(k) < 0);
+    if (unknown.length > 0) {
+        var shown = unknown.slice(0, 5).map(k => String(k).substring(0, 32)).join(', ');
+        warnings.push('ignored unrecognised field' + (unknown.length > 1 ? 's' : '') + ': ' + shown +
+                      (unknown.length > 5 ? ' and ' + (unknown.length - 5) + ' more' : ''));
+    }
+
+    // The four supported shapes: an SRT input to UDP out (receiver), or UDP in
+    // to an SRT output (server). Anything else would start a container that
+    // srthub cannot run.
+    if (config.sourcemode && config.outputmode) {
+        var receiver = isSrtMode(config.sourcemode) && config.outputmode === 'udp';
+        var server = config.sourcemode === 'udp' && isSrtMode(config.outputmode);
+        if (!receiver && !server) {
+            errors.push('sourcemode ' + config.sourcemode + ' with outputmode ' + config.outputmode +
+                        ' is not a supported service (SRT to UDP, or UDP to SRT)');
+        }
+    }
+
+    if (errors.length > 0) {
+        return { config: null, errors: errors, warnings: warnings };
+    }
+
+    if (normalizeConfigModes(config)) {
+        warnings.push('SRT mode updated to match the service direction');
+    }
+
+    // Interfaces are per machine, so a config from another box may name one
+    // this one does not have. Worth knowing before it fails to start, but not a
+    // reason to refuse it.
+    var present = Object.keys(os.networkInterfaces());
+    ['sourceinterface', 'outputinterface'].forEach(name => {
+        if (config[name] && present.indexOf(config[name]) < 0) {
+            warnings.push(name + ' ' + config[name] + ' does not exist on this machine');
+        }
+    });
+
+    return { config: config, errors: errors, warnings: warnings };
+}
+
+// The ports a service binds: a UDP input, an SRT listener input, an SRT
+// listener output - a UDP to SRT listener service binds two. Each comes with
+// the address it binds, because two UDP inputs may share a port when they join
+// different multicast groups.
+function configListenPorts(config) {
+    var ports = [];
+    if (!config) {
+        return ports;
+    }
+    if (config.sourcemode === 'udp' || config.sourcemode === 'srtpush') {
+        ports.push({ port: config.sourceport, address: config.sourceaddress || '' });
+    }
+    if (config.outputmode === 'srtpull') {
+        ports.push({ port: config.outputport, address: config.outputaddress || '' });
+    }
+    return ports.filter(p => p.port);
+}
+
+function isMulticastAddress(address) {
+    var match = /^(\d{1,3})\./.exec(String(address || ''));
+    return !!match && Number(match[1]) >= 224 && Number(match[1]) <= 239;
+}
+
+function portsCollide(a, b) {
+    if (String(a.port) !== String(b.port)) {
+        return false;
+    }
+    if (isMulticastAddress(a.address) && isMulticastAddress(b.address) && a.address !== b.address) {
+        return false;
+    }
+    return true;
+}
+
+function configSummary(config) {
+    if (!config) {
+        return null;
+    }
+    var receiver = isSrtMode(config.sourcemode);
+    return {
+        sourcename: config.sourcename,
+        type: receiver ? 'SRT Receiver' : 'SRT Server',
+        input: (receiver ? 'SRT ' : 'UDP ') + (config.sourceaddress || '*') + ':' + config.sourceport,
+        output: (receiver ? 'UDP ' : 'SRT ') + (config.outputaddress || '*') + ':' + config.outputport
+    };
+}
+
+// Field order is fixed so two configs with the same settings compare equal
+// however their files happened to be written.
+function canonicalConfig(config) {
+    var out = {};
+    Object.keys(CONFIG_FIELDS).forEach(name => {
+        if (Object.prototype.hasOwnProperty.call(config, name)) {
+            out[name] = config[name];
+        }
+    });
+    return JSON.stringify(out);
+}
+
+// Every config on disk now, keyed by id. A file that will not parse is still
+// listed - its id is taken - but has no config to compare against.
+function readExistingConfigs() {
+    var existing = {};
+    var names;
+
+    try {
+        names = fs.readdirSync(configFolder);
+    } catch (e) {
+        return existing;
+    }
+
+    names.forEach(name => {
+        if (getExtension(name) !== '.json') {
+            return;
+        }
+        var id = path.basename(name, '.json');
+        var entry = { id: id, config: null, canonical: null, running: false };
+        try {
+            var raw = fs.readFileSync(path.join(configFolder, name));
+            var parsed = JSON.parse(raw.toString('utf8'));
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                entry.config = parsed;
+                // Compared in the same normalised form an upload is put into, so
+                // a config still carrying the legacy bare "srt" mode matches its
+                // own backup instead of looking like a conflict with it.
+                var checked = validateConfigText(raw);
+                entry.canonical = canonicalConfig(checked.config || parsed);
+            }
+        } catch (e) {
+            // unreadable: the id still counts as taken
+        }
+        entry.running = fs.existsSync(statusFolder + '/corestatus_' + id + '.json') ||
+                        fs.existsSync(statusFolder + '/' + id + '.lock');
+        existing[id] = entry;
+    });
+
+    return existing;
+}
+
+// ---- reading an upload --------------------------------------------------------
+
+function tarString(block, start, length) {
+    var end = start;
+    while (end < start + length && block[end] !== 0) {
+        end++;
+    }
+    return block.toString('utf8', start, end);
+}
+
+function tarOctal(block, start, length) {
+    if (block[start] & 0x80) {
+        throw new Error('the archive uses a size encoding no backup of this size needs');
+    }
+    var text = tarString(block, start, length).trim();
+    if (text === '') {
+        return 0;
+    }
+    if (!/^[0-7]+$/.test(text)) {
+        throw new Error('the archive has a damaged header');
+    }
+    return parseInt(text, 8);
+}
+
+// A ustar/GNU/pax reader just large enough for a config backup. Only regular
+// files are returned; directories, links and devices are skipped, and nothing is
+// ever written anywhere. Throws on any structural damage.
+function readTarEntries(buffer) {
+    var entries = [];
+    var offset = 0;
+    var longName = null;
+    var paxName = null;
+    var skipped = 0;
+
+    while (offset + 512 <= buffer.length) {
+        var header = buffer.subarray(offset, offset + 512);
+
+        if (header.every(b => b === 0)) {
+            break;                                  // end of archive
+        }
+
+        var stored = tarOctal(header, 148, 8);
+        var sum = 0;
+        for (var i = 0; i < 512; i++) {
+            sum += (i >= 148 && i < 156) ? 0x20 : header[i];
+        }
+        if (sum !== stored) {
+            throw new Error('the archive is corrupt (a header checksum does not match)');
+        }
+
+        var size = tarOctal(header, 124, 12);
+        var type = String.fromCharCode(header[156] || 0x30);
+        var name = tarString(header, 0, 100);
+        if (header.toString('ascii', 257, 262) === 'ustar') {
+            var prefix = tarString(header, 345, 155);
+            if (prefix) {
+                name = prefix + '/' + name;
+            }
+        }
+
+        var dataStart = offset + 512;
+        var dataEnd = dataStart + size;
+        if (dataEnd > buffer.length) {
+            throw new Error('the archive is truncated');
+        }
+        var data = buffer.subarray(dataStart, dataEnd);
+
+        if (type === 'L') {
+            longName = tarString(data, 0, data.length);
+        } else if (type === 'x') {
+            var match = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(data.toString('utf8'));
+            paxName = match ? match[1] : null;
+        } else if (type === 'g') {
+            // global pax header: nothing in it matters here
+        } else {
+            if (type === '0' || type === '7') {
+                entries.push({ name: paxName || longName || name, data: data });
+                if (entries.length > MAX_RESTORE_FILES * 4) {
+                    throw new Error('the archive holds more files than a config backup can');
+                }
+            } else if (type !== '5') {
+                skipped++;
+            }
+            longName = null;
+            paxName = null;
+        }
+
+        offset = dataStart + Math.ceil(size / 512) * 512;
+    }
+
+    return { entries: entries, skipped: skipped };
+}
+
+// Turns one upload into the list of config files it holds. A gzip is expected to
+// hold a tar; a bare tar is accepted too; anything else is treated as a single
+// .json file. Returns { files: [{ source, idHint, data }], notes } or { error }.
+function readRestoreUpload(buffer, uploadName) {
+    var notes = [];
+
+    if (!buffer || buffer.length === 0) {
+        return { error: 'the file is empty' };
+    }
+    if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+        return { error: 'zip files are not supported; use a .tar.gz from Backup Configs, or the .json files' };
+    }
+
+    var isGzip = (buffer[0] === 0x1f && buffer[1] === 0x8b);
+    var isTar = (buffer.length >= 512 && buffer.toString('ascii', 257, 262) === 'ustar');
+
+    if (!isGzip && !isTar) {
+        var hint = path.basename(String(uploadName || '')).match(/^([0-9]{1,12})\.json$/i);
+        return {
+            files: [{ source: path.basename(String(uploadName || 'upload.json')).substring(0, 200),
+                      idHint: hint ? hint[1] : null, data: buffer }],
+            notes: notes
+        };
+    }
+
+    var tar = buffer;
+    if (isGzip) {
+        try {
+            tar = zlib.gunzipSync(buffer, { maxOutputLength: MAX_RESTORE_EXPANDED });
+        } catch (e) {
+            if (e && e.code === 'ERR_BUFFER_TOO_LARGE') {
+                return { error: 'the archive expands to more than a config backup can be' };
+            }
+            return { error: 'the archive is corrupt or truncated (it will not decompress)' };
+        }
+        if (tar.length < 512 || tar.toString('ascii', 257, 262) !== 'ustar') {
+            return { error: 'the archive is compressed but does not contain a tar file' };
+        }
+    }
+
+    var read;
+    try {
+        read = readTarEntries(tar);
+    } catch (e) {
+        return { error: e.message };
+    }
+
+    var files = [];
+    var ignored = 0;
+    var seen = {};
+
+    read.entries.forEach(entry => {
+        var base = String(entry.name).split('/').pop();
+        // macOS adds ._name resource forks and __MACOSX folders when it builds an
+        // archive; neither is a config.
+        if (!/\.json$/i.test(base) || base.charAt(0) === '.' || /(^|\/)__MACOSX\//.test(entry.name)) {
+            ignored++;
+            return;
+        }
+        var match = base.match(/^([0-9]{1,12})\.json$/i);
+        var idHint = match ? match[1] : null;
+        if (idHint && seen[idHint]) {
+            notes.push('the archive holds ' + idHint + '.json more than once; later copies restore as new services');
+            idHint = null;
+        }
+        if (idHint) {
+            seen[idHint] = true;
+        }
+        files.push({ source: String(entry.name).substring(0, 200), idHint: idHint, data: entry.data });
+    });
+
+    if (files.length > MAX_RESTORE_FILES) {
+        return { error: 'the archive holds more than ' + MAX_RESTORE_FILES + ' configs' };
+    }
+    if (ignored + read.skipped > 0) {
+        notes.push('skipped ' + (ignored + read.skipped) + ' entr' + (ignored + read.skipped === 1 ? 'y' : 'ies') +
+                   ' that ' + (ignored + read.skipped === 1 ? 'is' : 'are') + ' not a service config');
+    }
+    if (files.length === 0) {
+        return { error: 'the archive holds no service configs' };
+    }
+
+    return { files: files, notes: notes };
+}
+
+// ---- inspect and apply ----------------------------------------------------------
+
+function inspectRestoreFiles(files, existing) {
+    return files.map((file, index) => {
+        var checked = validateConfigText(file.data);
+        var item = {
+            index: index,
+            source: file.source,
+            id: file.idHint,
+            status: 'invalid',
+            errors: checked.errors,
+            warnings: checked.warnings.slice(),
+            summary: configSummary(checked.config),
+            existing: null,
+            config: checked.config        // stripped before anything is sent back
+        };
+
+        if (!checked.config) {
+            return item;
+        }
+
+        var match = file.idHint ? existing[file.idHint] : null;
+        var mine = canonicalConfig(checked.config);
+
+        // No service under this id, or no id to go on at all (a file not named
+        // for one): a service with exactly these settings under any id is still
+        // this service, so uploading the same file twice does not make two.
+        if (!match) {
+            Object.keys(existing).some(id => {
+                if (existing[id].canonical === mine) {
+                    match = existing[id];
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        if (match) {
+            item.existing = {
+                id: match.id,
+                sourcename: match.config && typeof match.config.sourcename === 'string' ?
+                            match.config.sourcename.substring(0, 128) : '',
+                running: match.running
+            };
+            item.status = (match.canonical === mine) ? 'identical' : 'conflict';
+        } else {
+            item.status = 'new';
+        }
+
+        // Another service, under a different id, that this one would collide
+        // with once both are running.
+        var name = checked.config.sourcename.toLowerCase();
+        var ports = configListenPorts(checked.config);
+        Object.keys(existing).forEach(id => {
+            if (id === file.idHint || (match && id === match.id) || !existing[id].config) {
+                return;
+            }
+            var other = existing[id].config;
+            if (typeof other.sourcename === 'string' && other.sourcename.trim().toLowerCase() === name) {
+                item.warnings.push('a service named "' + checked.config.sourcename + '" already exists (id ' + id + ')');
+            }
+            var theirs = configListenPorts(other);
+            ports.forEach(mine => {
+                if (theirs.some(t => portsCollide(mine, t))) {
+                    item.warnings.push('port ' + mine.port + ' is already used by service ' + id +
+                                       (typeof other.sourcename === 'string' ? ' (' + other.sourcename.substring(0, 64) + ')' : ''));
+                }
+            });
+        });
+
+        return item;
+    });
+}
+
+function nextServiceId(taken) {
+    var id = seconds_since_epoch();
+    Object.keys(taken).forEach(existingId => {
+        if (SERVICE_ID_PATTERN.test(existingId) && Number(existingId) >= id) {
+            id = Number(existingId) + 1;
+        }
+    });
+    while (taken[String(id)] || fs.existsSync(path.join(configFolder, id + '.json'))) {
+        id++;
+    }
+    return String(id);
+}
+
+// Written beside the target under a name the service listing ignores, then
+// moved into place: a new config by link(), which refuses to overwrite, and a
+// replacement by rename(), which is atomic. A reader never sees half a config.
+function writeConfigFile(id, config, replace) {
+    if (!SERVICE_ID_PATTERN.test(id)) {
+        throw new Error('refusing a service id that is not all digits');
+    }
+    var target = path.join(configFolder, id + '.json');
+    var temp = path.join(configFolder, '.restore-' + id + '-' + crypto.randomBytes(6).toString('hex') + '.tmp');
+
+    fs.writeFileSync(temp, JSON.stringify(config), { flag: 'wx', mode: 0o644 });
+    try {
+        if (replace) {
+            fs.renameSync(temp, target);
+        } else {
+            fs.linkSync(temp, target);
+            fs.unlinkSync(temp);
+        }
+    } catch (e) {
+        try { fs.unlinkSync(temp); } catch (ignore) { /* already gone */ }
+        throw e;
+    }
+}
+
+function applyRestore(items, actions, existing) {
+    var taken = Object.assign({}, existing);
+
+    return items.map(item => {
+        var requested = actions[String(item.index)];
+        var action = (typeof requested === 'string') ? requested : null;
+        var result = { index: item.index, source: item.source, result: 'skipped', id: null, reason: null };
+
+        if (item.status === 'invalid') {
+            result.reason = 'not a valid service config';
+            return result;
+        }
+        if (!action) {
+            action = (item.status === 'new') ? 'restore' : 'skip';
+        }
+        if (['skip', 'restore', 'replace', 'new'].indexOf(action) < 0) {
+            result.reason = 'unknown action';
+            return result;
+        }
+        if (action === 'skip') {
+            result.reason = (item.status === 'identical') ? 'already present and identical' : 'skipped';
+            return result;
+        }
+
+        try {
+            if (action === 'replace') {
+                if (!item.existing) {
+                    result.reason = 'there is no existing service to replace';
+                    return result;
+                }
+                if (item.existing.running) {
+                    result.result = 'failed';
+                    result.reason = 'service ' + item.existing.id + ' is running; stop it before replacing it';
+                    return result;
+                }
+                writeConfigFile(item.existing.id, item.config, true);
+                result.result = 'replaced';
+                result.id = item.existing.id;
+                return result;
+            }
+
+            // restore keeps the id from the filename when it is free, so a
+            // backup restored onto a fresh machine comes back as the same
+            // services; new, or a taken id, gets a fresh one.
+            var id = (action === 'restore' && item.id && !taken[item.id]) ? item.id : nextServiceId(taken);
+            if (action === 'restore' && item.status !== 'new' && item.id && taken[item.id]) {
+                result.reason = 'id ' + item.id + ' was taken, so it was added as a new service';
+            }
+            writeConfigFile(id, item.config, false);
+            taken[id] = { id: id, config: item.config, canonical: canonicalConfig(item.config), running: false };
+            activeconfigurations++;
+            result.result = 'added';
+            result.id = id;
+            return result;
+        } catch (e) {
+            console.log('restore of ' + item.source + ' failed: ', e.message);
+            result.result = 'failed';
+            result.reason = (e.code === 'EEXIST') ? 'that id was taken while restoring' : 'could not be written';
+            return result;
+        }
+    });
+}
+
+function publicRestoreItem(item) {
+    return {
+        index: item.index,
+        source: item.source,
+        id: item.id,
+        status: item.status,
+        errors: item.errors.slice(0, 20),
+        warnings: item.warnings.slice(0, 20),
+        summary: item.summary,
+        existing: item.existing
+    };
+}
+
+app.get('/api/v1/backup_configs', auth, (req, res) => {
+    var names;
+
+    try {
+        names = fs.readdirSync(configFolder).filter(n => getExtension(n) === '.json').sort();
+    } catch (e) {
+        res.status(500).json({ error: 'unable to read the config folder' });
+        return;
+    }
+
+    var host = os.hostname().replace(/[^A-Za-z0-9._-]/g, '') || 'srthub';
+    var stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').substring(0, 15);
+    var archiver = require('archiver');
+    var tar = archiver('tar', { gzip: true, gzipOptions: { level: 9 } });
+
+    res.set('Content-Type', 'application/gzip');
+    res.set('Content-Disposition', 'attachment; filename="opensrthub-configs-' + host + '-' + stamp + '.tar.gz"');
+    res.set('Cache-Control', 'no-store');
+
+    tar.on('warning', (err) => console.log('config backup: ', err.message));
+    tar.on('error', (err) => {
+        console.log('config backup failed: ', err.message);
+        res.destroy(err);
+    });
+    tar.pipe(res);
+
+    names.forEach(name => {
+        try {
+            var full = path.join(configFolder, name);
+            if (fs.lstatSync(full).isFile()) {
+                tar.append(fs.readFileSync(full), { name: 'opensrthub-configs/' + name, mode: 0o644 });
+            }
+        } catch (e) {
+            console.log('config backup skipped ' + name + ': ', e.message);
+        }
+    });
+    tar.finalize();
+});
+
+// Only application/octet-stream is read as an upload. A cross-site form cannot
+// send that type, and a cross-site script cannot send it without a preflight
+// this server never answers, so the type is part of the CSRF defence alongside
+// the SameSite session cookie.
+var restoreBody = express.raw({ type: 'application/octet-stream', limit: MAX_RESTORE_UPLOAD });
+
+app.post('/api/v1/restore_configs', auth, (req, res, next) => {
+    restoreBody(req, res, (err) => {
+        if (err) {
+            var tooLarge = (err.type === 'entity.too.large');
+            res.status(tooLarge ? 413 : 400).json({
+                error: tooLarge ? 'the file is larger than a config backup can be' : 'the upload could not be read'
+            });
+            return;
+        }
+        next();
+    });
+}, (req, res) => {
+    if (!Buffer.isBuffer(req.body)) {
+        res.status(415).json({ error: 'upload the file as application/octet-stream' });
+        return;
+    }
+
+    var mode = String(req.query.mode || 'inspect');
+    if (mode !== 'inspect' && mode !== 'apply') {
+        res.status(400).json({ error: 'mode must be inspect or apply' });
+        return;
+    }
+
+    var actions = {};
+    if (mode === 'apply' && req.query.actions !== undefined) {
+        try {
+            var parsedActions = JSON.parse(String(req.query.actions));
+            if (parsedActions && typeof parsedActions === 'object' && !Array.isArray(parsedActions)) {
+                Object.keys(parsedActions).forEach(key => {
+                    if (/^[0-9]{1,4}$/.test(key) && typeof parsedActions[key] === 'string') {
+                        actions[key] = parsedActions[key];
+                    }
+                });
+            }
+        } catch (e) {
+            res.status(400).json({ error: 'actions is not valid JSON' });
+            return;
+        }
+    }
+
+    var upload = readRestoreUpload(req.body, req.query.name);
+    if (upload.error) {
+        res.status(422).json({ error: upload.error });
+        return;
+    }
+
+    // Everything from here on is synchronous, so no other request can change the
+    // config folder between the checks and the writes.
+    var existing = readExistingConfigs();
+    var items = inspectRestoreFiles(upload.files, existing);
+    var body = {
+        mode: mode,
+        notes: upload.notes,
+        files: items.map(publicRestoreItem)
+    };
+
+    if (mode === 'apply') {
+        body.results = applyRestore(items, actions, existing);
+        console.log('config restore: ' + body.results.map(r => r.source + '=' + r.result).join(', '));
+    }
+
+    res.set('Cache-Control', 'no-store');
+    res.json(body);
+});
+
 app.get('/api/v1/get_service_count', auth, (req, res) => {
     var services;
 

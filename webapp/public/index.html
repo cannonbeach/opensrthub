@@ -187,6 +187,26 @@
       background: var(--accent-cyan);
     }
 
+    .nav-spacer { flex: 1 1 auto; }
+
+    .nav-btn-config {
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      margin: 0.5rem 0;
+      padding: 0.55rem 0.9rem;
+      color: var(--text-secondary);
+    }
+
+    .nav-btn-config:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    @media (max-width: 720px) {
+      .nav-content { flex-wrap: wrap; }
+      .nav-spacer { display: none; }
+    }
+
     /* Main Content */
     .main {
       max-width: 1600px;
@@ -1017,6 +1037,48 @@
     }
     .bitrate-modal.active { display: flex; }
 
+    /* Config restore dialog: reuses the bitrate modal shell */
+    .restore-card { max-width: 980px; max-height: calc(100vh - 3rem); display: flex; flex-direction: column; }
+    .restore-body { padding: 1.1rem 1.5rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.9rem; }
+    .restore-drop {
+      border: 1px dashed var(--border-color);
+      border-radius: var(--radius-md, 8px);
+      padding: 1rem;
+      text-align: center;
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+    }
+    .restore-drop.dragging { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+    .restore-drop input[type=file] { margin-top: 0.6rem; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.8rem; max-width: 100%; }
+    .restore-hint { font-size: 0.75rem; color: var(--text-muted); }
+    .restore-notes { font-size: 0.78rem; color: var(--accent-orange); }
+    .restore-table-wrap { overflow-x: auto; }
+    .restore-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-family: var(--font-mono); }
+    .restore-table th {
+      text-align: left; padding: 0.5rem 0.6rem; color: var(--text-muted); font-size: 0.68rem;
+      text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border-color); white-space: nowrap;
+    }
+    .restore-table td { padding: 0.55rem 0.6rem; vertical-align: top; color: var(--text-secondary); border-bottom: 1px solid rgba(42, 53, 66, 0.5); }
+    .restore-table .src { color: var(--text-muted); font-size: 0.72rem; word-break: break-all; }
+    .restore-table .name { color: var(--text-primary); }
+    .restore-status { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
+    .restore-status.new { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); }
+    .restore-status.identical { background: rgba(110, 118, 129, 0.2); color: var(--text-muted); }
+    .restore-status.conflict { background: rgba(210, 153, 34, 0.15); color: var(--accent-orange); }
+    .restore-status.invalid, .restore-status.failed { background: rgba(248, 81, 73, 0.15); color: var(--accent-red); }
+    .restore-status.added, .restore-status.replaced { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); }
+    .restore-status.skipped { background: rgba(110, 118, 129, 0.2); color: var(--text-muted); }
+    .restore-msg { font-size: 0.72rem; margin-top: 0.3rem; }
+    .restore-msg.err { color: var(--accent-red); }
+    .restore-msg.warn { color: var(--accent-orange); }
+    .restore-msg.info { color: var(--text-muted); }
+    .restore-footer {
+      display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; justify-content: space-between;
+      padding: 0.9rem 1.5rem; background: var(--bg-elevated); border-top: 1px solid var(--border-color);
+    }
+    .restore-summary { font-size: 0.8rem; color: var(--text-secondary); }
+    .restore-footer .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
     .bitrate-modal-card {
       width: 100%;
       max-width: 760px;
@@ -1144,6 +1206,11 @@
       <button class="nav-btn active" id="statuspage_btn">Dashboard</button>
       <button class="nav-btn nav-btn-new" id="srt_receiver_button">+ SRT Receiver</button>
       <button class="nav-btn nav-btn-new" id="srt_server_button">+ SRT Server</button>
+      <div class="nav-spacer"></div>
+      <button class="nav-btn nav-btn-config" id="backup_configs_button" type="button"
+              title="Download every service config as a .tar.gz. It includes SRT passphrases, so keep it somewhere safe.">&#x2B07; Backup Configs</button>
+      <button class="nav-btn nav-btn-config" id="restore_configs_button" type="button"
+              title="Restore service configs from a .tar.gz backup or from individual .json files">&#x2B06; Restore Configs</button>
     </div>
   </nav>
 
@@ -1567,6 +1634,44 @@
   </main>
 
   <!-- Bitrate graph window (lives outside #services-container so the 2s re-render can't destroy it) -->
+  <div class="bitrate-modal" id="restore-modal" role="dialog" aria-modal="true" aria-labelledby="restore-title">
+    <div class="bitrate-modal-card restore-card">
+      <div class="bitrate-modal-header">
+        <div class="bitrate-modal-title">
+          <span class="name" id="restore-title">Restore Configs</span>
+          <span class="sub">Nothing is changed until you press Restore</span>
+        </div>
+        <div class="bitrate-actions">
+          <button class="bitrate-close" id="restore-close" type="button" aria-label="Close restore">&#x2715;</button>
+        </div>
+      </div>
+      <div class="restore-body">
+        <div class="restore-drop" id="restore-drop">
+          Choose a <strong>.tar.gz</strong> made by Backup Configs, or one or more <strong>.json</strong> service configs.
+          <div><input type="file" id="restore-file" multiple
+                      accept=".tar.gz,.tgz,.tar,.json,application/gzip,application/x-gzip,application/json"></div>
+          <div class="restore-hint">Each file is checked for damage and for services that already exist before anything is written.</div>
+        </div>
+        <div class="restore-notes" id="restore-notes"></div>
+        <div class="restore-table-wrap">
+          <table class="restore-table">
+            <thead>
+              <tr><th>File</th><th>Service</th><th>Check</th><th>Action</th></tr>
+            </thead>
+            <tbody id="restore-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="restore-footer">
+        <span class="restore-summary" id="restore-summary">No files chosen.</span>
+        <div>
+          <button class="btn btn-ghost" id="restore-cancel" type="button">Close</button>
+          <button class="btn btn-primary" id="restore-apply" type="button" disabled>Restore</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="bitrate-modal" id="bitrate-modal">
     <div class="bitrate-modal-card">
       <div class="bitrate-modal-header">
@@ -2632,6 +2737,317 @@
       });
     }
 
+    // ---- Config backup and restore ----------------------------------------
+    //
+    // Restore runs in two steps against the same server code. Choosing files
+    // uploads each one with mode=inspect, which writes nothing and reports
+    // whether each config is new, already present, in conflict with an existing
+    // service, or unusable. Restore uploads them again with mode=apply and the
+    // chosen action per config; the server re-checks everything at that point
+    // rather than trusting the earlier answer, so a service started or created in
+    // between is still caught.
+
+    const MAX_RESTORE_UPLOAD = 2 * 1024 * 1024;
+    const RESTORE_STATUSES = ['new', 'identical', 'conflict', 'invalid'];
+    const RESTORE_RESULTS = ['added', 'replaced', 'skipped', 'failed'];
+
+    const restoreState = {
+      uploads: [],        // { name, bytes, inspected, error, results }
+      busy: false,
+      applied: false
+    };
+
+    function restoreActionChoices(item) {
+      if (item.status === 'new') {
+        return [['restore', 'Restore'], ['skip', 'Skip']];
+      }
+      if (item.status === 'identical') {
+        return [['skip', 'Skip (already present)'], ['new', 'Add as a copy']];
+      }
+      if (item.status === 'conflict') {
+        const running = item.existing && item.existing.running;
+        return [['skip', 'Skip'],
+                ['replace', running ? 'Replace (stop it first)' : 'Replace existing', running],
+                ['new', 'Add as a new service']];
+      }
+      return [];
+    }
+
+    function restoreSummaryCell(item) {
+      const sum = item.summary;
+      if (!sum) {
+        return '<span class="restore-msg info">&mdash;</span>';
+      }
+      return `<div class="name">${escapeHtml(sum.sourcename)}</div>
+              <div class="restore-msg info">${escapeHtml(sum.type)} &middot; ${escapeHtml(sum.input)} &rarr; ${escapeHtml(sum.output)}</div>`;
+    }
+
+    function restoreCheckCell(item) {
+      const status = RESTORE_STATUSES.indexOf(item.status) >= 0 ? item.status : 'invalid';
+      const label = { new: 'New', identical: 'Already present', conflict: 'Exists', invalid: 'Invalid' }[status];
+      let html = `<span class="restore-status ${status}">${label}</span>`;
+
+      if (item.existing) {
+        html += `<div class="restore-msg info">existing service ${escapeHtml(item.existing.id)}` +
+                (item.existing.sourcename ? ` &middot; ${escapeHtml(item.existing.sourcename)}` : '') +
+                (item.existing.running ? ' &middot; <strong>running</strong>' : '') + '</div>';
+      }
+      (Array.isArray(item.errors) ? item.errors : []).forEach(e => {
+        html += `<div class="restore-msg err">${escapeHtml(e)}</div>`;
+      });
+      (Array.isArray(item.warnings) ? item.warnings : []).forEach(w => {
+        html += `<div class="restore-msg warn">${escapeHtml(w)}</div>`;
+      });
+      return html;
+    }
+
+    function restoreActionCell(uploadIndex, item, result) {
+      if (result) {
+        const outcome = RESTORE_RESULTS.indexOf(result.result) >= 0 ? result.result : 'failed';
+        let html = `<span class="restore-status ${outcome}">${escapeHtml(outcome)}</span>`;
+        if (result.id) {
+          html += `<div class="restore-msg info">as service ${escapeHtml(result.id)}</div>`;
+        }
+        if (result.reason) {
+          html += `<div class="restore-msg ${outcome === 'failed' ? 'err' : 'info'}">${escapeHtml(result.reason)}</div>`;
+        }
+        return html;
+      }
+
+      const choices = restoreActionChoices(item);
+      if (choices.length === 0) {
+        return '<span class="restore-msg info">cannot be restored</span>';
+      }
+      return `<select class="log-filter restore-action" data-upload="${uploadIndex}" data-index="${Number(item.index)}">` +
+        choices.map(([value, label, disabled]) =>
+          `<option value="${value}"${disabled ? ' disabled' : ''}>${escapeHtml(label)}</option>`).join('') +
+        '</select>';
+    }
+
+    function renderRestore() {
+      const rows = [];
+      const notes = [];
+      const counts = { new: 0, identical: 0, conflict: 0, invalid: 0 };
+      const outcomes = { added: 0, replaced: 0, skipped: 0, failed: 0 };
+      let total = 0;
+
+      restoreState.uploads.forEach((upload, u) => {
+        if (upload.error) {
+          counts.invalid++;
+          total++;
+          rows.push(`<tr><td class="src">${escapeHtml(upload.name)}</td>
+            <td><span class="restore-msg info">&mdash;</span></td>
+            <td><span class="restore-status invalid">Invalid</span>
+                <div class="restore-msg err">${escapeHtml(upload.error)}</div></td>
+            <td><span class="restore-msg info">cannot be restored</span></td></tr>`);
+          return;
+        }
+        if (!upload.inspected) {
+          rows.push(`<tr><td class="src">${escapeHtml(upload.name)}</td>
+            <td colspan="3"><span class="restore-msg info">checking&hellip;</span></td></tr>`);
+          return;
+        }
+
+        (upload.inspected.notes || []).forEach(n => notes.push(upload.name + ': ' + n));
+
+        upload.inspected.files.forEach(item => {
+          total++;
+          if (counts[item.status] !== undefined) {
+            counts[item.status]++;
+          }
+          const result = upload.results ? upload.results.find(r => r.index === item.index) : null;
+          if (result && outcomes[result.result] !== undefined) {
+            outcomes[result.result]++;
+          }
+          const inArchive = (item.source && item.source !== upload.name) ?
+            `<div>${escapeHtml(item.source)}</div>` : '';
+          rows.push(`<tr>
+            <td class="src">${escapeHtml(upload.name)}${inArchive}</td>
+            <td>${restoreSummaryCell(item)}</td>
+            <td>${restoreCheckCell(item)}</td>
+            <td>${restoreActionCell(u, item, result)}</td>
+          </tr>`);
+        });
+      });
+
+      document.getElementById('restore-rows').innerHTML = rows.join('');
+      document.getElementById('restore-notes').innerHTML =
+        notes.map(n => `<div>${escapeHtml(n)}</div>`).join('');
+
+      let summary;
+      if (restoreState.uploads.length === 0) {
+        summary = 'No files chosen.';
+      } else if (restoreState.applied) {
+        summary = `Restored ${outcomes.added + outcomes.replaced} ` +
+                  `(${outcomes.added} added, ${outcomes.replaced} replaced), ` +
+                  `skipped ${outcomes.skipped}, failed ${outcomes.failed}.`;
+      } else {
+        summary = `${total} config${total === 1 ? '' : 's'}: ${counts.new} new, ` +
+                  `${counts.identical} already present, ${counts.conflict} existing, ${counts.invalid} invalid.`;
+      }
+      document.getElementById('restore-summary').textContent = summary;
+
+      const ready = !restoreState.busy && !restoreState.applied &&
+        restoreState.uploads.some(u => u.inspected && u.inspected.files.some(f => f.status !== 'invalid'));
+      document.getElementById('restore-apply').disabled = !ready;
+    }
+
+    async function postRestore(upload, mode, actions) {
+      const query = new URLSearchParams({ mode: mode, name: upload.name });
+      if (actions) {
+        query.set('actions', JSON.stringify(actions));
+      }
+      const response = await fetch('/api/v1/restore_configs?' + query.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: upload.bytes
+      });
+
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (e) {
+        // A lapsed session answers with the login page, not JSON.
+        throw new Error(response.ok ? 'your session has expired; reload the page and sign in again'
+                                    : 'the server answered ' + response.status);
+      }
+      if (!response.ok) {
+        throw new Error((data && typeof data.error === 'string') ? data.error : 'the server answered ' + response.status);
+      }
+      if (!data || !Array.isArray(data.files)) {
+        throw new Error('the server sent an answer this page does not understand');
+      }
+      return data;
+    }
+
+    async function chooseRestoreFiles(fileList) {
+      const files = Array.prototype.slice.call(fileList || []);
+      if (files.length === 0) {
+        return;
+      }
+
+      restoreState.uploads = files.map(file => ({
+        file: file, name: file.name || 'upload', bytes: null, inspected: null, error: null, results: null
+      }));
+      restoreState.applied = false;
+      restoreState.busy = true;
+      renderRestore();
+
+      for (const upload of restoreState.uploads) {
+        try {
+          if (upload.file.size === 0) {
+            throw new Error('the file is empty');
+          }
+          if (upload.file.size > MAX_RESTORE_UPLOAD) {
+            throw new Error('the file is larger than a config backup can be');
+          }
+          upload.bytes = await upload.file.arrayBuffer();
+          upload.inspected = await postRestore(upload, 'inspect', null);
+        } catch (err) {
+          upload.error = err.message || String(err);
+        }
+        renderRestore();
+      }
+
+      restoreState.busy = false;
+      renderRestore();
+    }
+
+    async function applyRestore() {
+      if (restoreState.busy || restoreState.applied) {
+        return;
+      }
+      restoreState.busy = true;
+      renderRestore();
+
+      // One file at a time, in the order chosen, so a later file sees what an
+      // earlier one created and is checked against it.
+      for (let u = 0; u < restoreState.uploads.length; u++) {
+        const upload = restoreState.uploads[u];
+        if (!upload.inspected || upload.error) {
+          continue;
+        }
+        const actions = {};
+        document.querySelectorAll(`.restore-action[data-upload="${u}"]`).forEach(select => {
+          actions[select.dataset.index] = select.value;
+        });
+        if (!Object.keys(actions).some(k => actions[k] !== 'skip')) {
+          upload.results = upload.inspected.files.map(f => ({
+            index: f.index, result: 'skipped', id: null,
+            reason: f.status === 'invalid' ? 'not a valid service config' : 'skipped'
+          }));
+          continue;
+        }
+        try {
+          const data = await postRestore(upload, 'apply', actions);
+          upload.inspected = data;
+          upload.results = Array.isArray(data.results) ? data.results : [];
+        } catch (err) {
+          upload.error = err.message || String(err);
+        }
+      }
+
+      restoreState.busy = false;
+      restoreState.applied = true;
+      renderRestore();
+      loadServices();
+    }
+
+    function openRestore() {
+      restoreState.uploads = [];
+      restoreState.applied = false;
+      restoreState.busy = false;
+      document.getElementById('restore-file').value = '';
+      renderRestore();
+      document.getElementById('restore-modal').classList.add('active');
+    }
+
+    function closeRestore() {
+      document.getElementById('restore-modal').classList.remove('active');
+    }
+
+    function wireConfigBackup() {
+      document.getElementById('backup_configs_button').addEventListener('click', () => {
+        const link = document.createElement('a');
+        link.href = '/api/v1/backup_configs';
+        link.rel = 'noopener';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      });
+
+      document.getElementById('restore_configs_button').addEventListener('click', openRestore);
+      document.getElementById('restore-close').addEventListener('click', closeRestore);
+      document.getElementById('restore-cancel').addEventListener('click', closeRestore);
+      document.getElementById('restore-apply').addEventListener('click', applyRestore);
+      document.getElementById('restore-file').addEventListener('change', (e) => {
+        chooseRestoreFiles(e.target.files);
+      });
+
+      const drop = document.getElementById('restore-drop');
+      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragging'); });
+      drop.addEventListener('dragleave', () => drop.classList.remove('dragging'));
+      drop.addEventListener('drop', (e) => {
+        e.preventDefault();
+        drop.classList.remove('dragging');
+        if (e.dataTransfer && e.dataTransfer.files) {
+          chooseRestoreFiles(e.dataTransfer.files);
+        }
+      });
+
+      document.getElementById('restore-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'restore-modal' && !restoreState.busy) {
+          closeRestore();
+        }
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !restoreState.busy &&
+            document.getElementById('restore-modal').classList.contains('active')) {
+          closeRestore();
+        }
+      });
+    }
+
     // ---- Edit Service ----
     let currentEditUid = null;
     let currentEditType = null; // 'receiver' or 'server'
@@ -2925,6 +3341,7 @@
     loadInterfaces();
     updateSystemInfo();
     wireLogFilters();
+    wireConfigBackup();
     updateLogSection({ reloadDays: true, toTop: true });
 
     // Periodic updates

@@ -310,6 +310,58 @@ manages other apps - if opensrthub was the only one, `sudo pm2 unstartup systemd
 removes it. Switching back with `--service=pm2` stands the systemd unit down the
 same way.
 
+#### Backing up and restoring service configs
+
+**Backup Configs** at the top of the web UI downloads every service config as
+`opensrthub-configs-<host>-<date>.tar.gz`. **The archive includes SRT
+passphrases in plain text**, so store it accordingly.
+
+**Restore Configs** accepts that archive, a plain `.tar`, or one or more
+individual `.json` configs. Restoring takes two steps, and nothing is written
+until you press **Restore**:
+
+1. Each file is checked and every config in it is listed as one of:
+   - **New** - restored by default.
+   - **Already present** - a service with exactly these settings exists, under
+     any id. Skipped by default, so restoring the same backup twice does not
+     duplicate anything.
+   - **Exists** - a service with this id exists with different settings. You
+     choose: skip it (the default), replace the existing one, or add the
+     backup as a new service. A running service cannot be replaced; stop it
+     first.
+   - **Invalid** - the file is empty, corrupt, truncated, not a service config,
+     or has a setting srthub cannot use. The reason is shown and the file is
+     never written.
+
+   Warnings are shown for a service name already in use, a listening port that
+   another service already binds, and a network interface this machine does not
+   have.
+2. On **Restore**, every check runs again against the configs on disk at that
+   moment, so a service started or created in between is still caught.
+
+A config restored onto a machine where its id is free keeps that id, so
+restoring a backup onto a fresh install brings back the same services.
+
+What restore refuses, and why:
+
+- **Anything but a plain number as the service id.** The id is the config's
+  filename, and the start and stop commands pass it to a root shell. Ids come
+  only from filenames that are already all digits, or are newly allocated -
+  never from a file's contents and never from a path inside an archive.
+- **Settings that are not text.** srthub reads every setting as a string and
+  crashes on anything else. Whole numbers for numeric settings, such as a port
+  written as `9000` rather than `"9000"`, are converted and reported; anything
+  else is refused.
+- **Quotes, backslashes, control characters, `<` or `>` in a service name,**
+  and anything in an address, port or interface name that isn't an address,
+  port or interface name. srthub writes those into its event JSON unescaped.
+- **Unknown settings,** which are dropped (and listed) rather than copied in.
+- **Archive tricks:** nothing is ever extracted to disk, so paths with `..`,
+  absolute paths, symlinks, hard links and device files have nothing to act
+  on. Links and devices are skipped, and only the last part of each name is
+  read. Uploads are limited to 2 MB, and to 16 MB once decompressed, so a
+  compression bomb is refused quickly.
+
 #### Event log and rotation
 
 Every event the streams raise - signal lock and loss, SRT connections, SCTE-35
@@ -483,7 +535,12 @@ tapeworm@tapeworm-parasite1-cloud6:~$
 
 ```
 /api/v1/system_information
-/api/v1/backup_services (returns a .zip file of all configurations)
+/api/v1/backup_services (returns a .zip support bundle: configurations and logs)
+/api/v1/backup_configs (returns a .tar.gz of every service config)
+/api/v1/restore_configs?mode=inspect|apply (POST a .tar.gz or a .json as application/octet-stream)
+/api/v1/get_log_days
+/api/v1/get_log_day?date=YYYY-MM-DD
+/api/v1/export_log_day?date=YYYY-MM-DD&format=json|csv
 /api/v1/get_service_count
 /api/v1/thumbnail/[service]
 /api/v1/get_interfaces
