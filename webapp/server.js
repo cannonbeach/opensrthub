@@ -31,6 +31,8 @@ const readLastLines = require('read-last-lines');
 var bodyParser = require('body-parser');
 const fs = require('fs');
 const crypto = require('crypto');
+const zlib = require('zlib');
+const readline = require('readline');
 var path = require('path');
 var https = require('https');
 var http = require('http');
@@ -587,13 +589,13 @@ app.get('/api/v1/backup_services', auth, (req, res) => {
             zip.file(fullfile);
         }
     });
-    zip.file('/var/log/srthub.log');
-    if (fs.existsSync('/var/log/srthub.log.1')) {
-        zip.file('/var/log/srthub.log.1');
-    }
-    if (fs.existsSync('/var/log/srthub.log.2.gz')) {
-        zip.file('/var/log/srthub.log.2.gz');
-    }
+    // Every rotation that is still on disk, however it happens to be named, so a
+    // support bundle carries the whole retention window rather than the two
+    // files the old numbered naming happened to produce.
+    logFileCandidates().forEach(file => {
+        console.log('zipping ', file.path);
+        zip.file(file.path);
+    });
     zip.file('/var/log/kern.log');
     if (fs.existsSync('/var/log/kern.log.1')) {
         zip.file('/var/log/kern.log.1');
@@ -1777,21 +1779,31 @@ function input_stream(ip, port, input_interface, bitrate) {
 // by a comma (the file is appended to as if it were one big array). Parsing
 // line by line means a single truncated or malformed entry is skipped instead
 // of discarding the whole page of log data.
+function parseLogLine(line) {
+    var text = String(line).trim();
+
+    if (text.charAt(0) == ',') {
+        text = text.substring(1);
+    }
+    if (text.length == 0) {
+        return null;
+    }
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        return null;
+    }
+}
+
 function parseLogLines(lines) {
     var entries = [];
 
     String(lines).split('\n').forEach(line => {
-        var text = line.trim();
-        if (text.charAt(0) == ',') {
-            text = text.substring(1);
-        }
-        if (text.length == 0) {
-            return;
-        }
-        try {
-            entries.push(JSON.parse(text));
-        } catch (e) {
-            console.log('skipping malformed log line: ', text.substring(0, 120));
+        var entry = parseLogLine(line);
+        if (entry) {
+            entries.push(entry);
+        } else if (String(line).trim().length > 0) {
+            console.log('skipping malformed log line: ', String(line).trim().substring(0, 120));
         }
     });
 
@@ -1825,6 +1837,593 @@ app.get('/api/v1/get_extended_log_data', auth, (req, res) => {
         sendLogData(res, 50);
     } else {
         res.sendStatus(404);  // logdata was not found
+    }
+});
+
+// ---- A day of events at a time ----------------------------------------------
+//
+// srthub.log is rotated daily by /etc/logrotate.d/srthub, so one day's events
+// are spread over a small number of files, and which files is not something the
+// names can be trusted to answer. logrotate fires from a timer some time after
+// midnight; with dateyesterday the file it writes is named for the day the
+// events mostly came from, and mostly is the operative word, because the file
+// named for the 4th holds the 4th from the rotation hour onwards while the 4th's
+// small hours are still at the tail of the file named for the 3rd. A machine
+// that was powered off across a rotation shifts the names further still.
+//
+// So files are picked by the window they were written in rather than by what
+// they are called: sorted oldest first, a file can hold events for day D if it
+// was last written at or after the start of D and the file before it was last
+// written before the end of D. Each entry is then kept or dropped on its own
+// accesstime, which is the only authority on which day an event belongs to.
+//
+// Days are UTC days, because accesstime is stamped UTC by esignal.c. That keeps
+// the day test a string compare over hundreds of thousands of entries instead of
+// a date parse, and the page says UTC so the boundary is not a surprise.
+
+const LOG_RETENTION_DAYS = 30;       // matches "rotate 30" in the logrotate drop-in
+const MAX_LOG_DAY_ENTRIES = 50000;   // newest entries held in memory for one day
+const MAX_LOG_DAY_PAGE = 2000;       // most entries returned in one response
+const LOG_DAY_CACHE_SIZE = 3;        // days kept parsed at once
+const LOG_TAIL_WINDOW = 65536;       // bytes read when locating the final newline
+const MAX_LOG_SEARCH_SIZE = 200;     // characters accepted in the text filter
+
+// The messages all come from esignal.c, so the set is closed and can be matched
+// exactly. The log carries no machine-readable event type of its own; matching
+// on the text has the side benefit of classifying logs written by older builds
+// just as well as new ones.
+const LOG_EVENT_TYPES = [
+    { id: 'scte35',     label: 'SCTE-35 cues' },
+    { id: 'aspect',     label: 'Aspect ratio changes' },
+    { id: 'resolution', label: 'Resolution changes' },
+    { id: 'afd',        label: 'AFD changes' },
+    { id: 'framerate',  label: 'Frame rate changes' },
+    { id: 'input',      label: 'Input signal' },
+    { id: 'srt',        label: 'SRT connection' },
+    { id: 'service',    label: 'Service start/stop' },
+    { id: 'publish',    label: 'Segment publishing' },
+    { id: 'system',     label: 'System health' },
+    { id: 'fault',      label: 'Decode and parse faults' },
+    { id: 'other',      label: 'Other' }
+];
+
+function classifyLogEntry(entry) {
+    if (entry && entry.scte35) {
+        return 'scte35';
+    }
+
+    var message = String((entry && (entry.message || entry.logmessage || entry.msg)) || '');
+
+    if (/^SCTE-35/.test(message))                  return 'scte35';
+    if (/^Source aspect ratio changed/.test(message))  return 'aspect';
+    if (/^Source resolution changed/.test(message))    return 'resolution';
+    if (/^Source AFD changed/.test(message))           return 'afd';
+    if (/^Source frame rate changed/.test(message))    return 'framerate';
+    if (/^Input Signal Locked|^No Input Signal|^No Data on SRT/.test(message)) return 'input';
+    if (/^SRT |^Accepted SRT /.test(message))      return 'srt';
+    if (/^Started |^Service Stopped/.test(message))    return 'service';
+    if (/^segment /.test(message))                 return 'publish';
+    if (/^high cpu usage|^disk space is low/.test(message)) return 'system';
+    if (/^decode error|^parse error|^malformed data/.test(message)) return 'fault';
+
+    return 'other';
+}
+
+// Same buckets the event table colours by, so the dropdown and the badges agree.
+function logEntrySeverity(entry) {
+    var status = String((entry && (entry.severity || entry.status || entry.level)) || '').toLowerCase();
+
+    if (status.indexOf('err') >= 0)   return 'error';
+    if (status.indexOf('warn') >= 0)  return 'warning';
+    if (status.indexOf('debug') >= 0) return 'debug';
+    return 'info';
+}
+
+function utcDayString(ms) {
+    return new Date(ms).toISOString().substring(0, 10);
+}
+
+function utcDayStart(ms) {
+    return Date.parse(utcDayString(ms) + 'T00:00:00Z');
+}
+
+function isLogDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return false;
+    }
+
+    // Shape alone lets 2026-13-01 and 2026-02-30 through, and round-tripping the
+    // parse is what rejects them. Date.parse answers NaN for those, so the guard
+    // has to come before the round trip or formatting the NaN throws.
+    var parsed = Date.parse(value + 'T00:00:00Z');
+    if (!isFinite(parsed)) {
+        return false;
+    }
+
+    return utcDayString(parsed) === value;
+}
+
+// The live log plus whatever rotations are on disk, oldest write first. Both
+// naming schemes are accepted: the dateext names this build installs, and the
+// numbered ones an install that rotated under the old config already has.
+function logFileCandidates() {
+    var found = [];
+    var names;
+
+    try {
+        names = fs.readdirSync(logFolder);
+    } catch (e) {
+        console.log('unable to list the log folder: ', e.message);
+        return found;
+    }
+
+    names.forEach(name => {
+        if (!/^srthub\.log(-\d{8}|\.\d+)?(\.gz)?$/.test(name)) {
+            return;
+        }
+        var full = path.join(logFolder, name);
+        try {
+            var stats = fs.statSync(full);
+            if (!stats.isFile()) {
+                return;
+            }
+            found.push({
+                path: full,
+                name: name,
+                size: stats.size,
+                mtimeMs: stats.mtimeMs,
+                birthMs: stats.birthtimeMs || stats.ctimeMs || stats.mtimeMs,
+                gz: /\.gz$/.test(name),
+                live: (name === 'srthub.log')
+            });
+        } catch (e) {
+            // A file can vanish under us mid-rotation; it simply isn't a source.
+        }
+    });
+
+    found.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    return found;
+}
+
+function logFilesForDay(date) {
+    var start = Date.parse(date + 'T00:00:00Z');
+    var end = start + 86400000;
+    var all = logFileCandidates();
+    var picked = [];
+
+    for (var i = 0; i < all.length; i++) {
+        var previousWrite = (i > 0) ? all[i - 1].mtimeMs : -Infinity;
+        if (all[i].mtimeMs >= start && previousWrite < end) {
+            picked.push(all[i]);
+        }
+    }
+
+    return picked;
+}
+
+// Which days the picker should offer. A file covers from the moment the file
+// before it stopped being written to its own last write, so it can contribute
+// every day that span touches. The result is deliberately generous: listing a
+// day that turns out to hold nothing costs an empty table, while missing a day
+// that holds events would hide them.
+function listLogDays() {
+    var all = logFileCandidates();
+    var today = utcDayStart(Date.now());
+    var earliest = today - (LOG_RETENTION_DAYS - 1) * 86400000;
+    var days = {};
+
+    for (var i = 0; i < all.length; i++) {
+        var from = (i > 0) ? all[i - 1].mtimeMs : all[i].birthMs;
+        if (from > all[i].mtimeMs) {
+            from = all[i].mtimeMs;
+        }
+        var day = utcDayStart(from);
+        if (day < earliest) {
+            day = earliest;
+        }
+        for (; day <= all[i].mtimeMs && day <= today; day += 86400000) {
+            days[utcDayString(day)] = true;
+        }
+    }
+
+    days[utcDayString(today)] = true;   // today always exists, even before a first event
+
+    return Object.keys(days).sort().reverse();
+}
+
+// Offset just past the final newline, so a follow-up read of the live log starts
+// on a line boundary and a half-written entry is read again next time instead of
+// being lost. -1 means the boundary could not be established, which only turns
+// off the incremental read.
+function offsetAfterLastNewline(file, size) {
+    if (size === 0) {
+        return 0;
+    }
+
+    var window = Math.min(LOG_TAIL_WINDOW, size);
+    var buffer = Buffer.allocUnsafe(window);
+    var read;
+    var fd;
+
+    try {
+        fd = fs.openSync(file, 'r');
+    } catch (e) {
+        return -1;
+    }
+    try {
+        read = fs.readSync(fd, buffer, 0, window, size - window);
+    } catch (e) {
+        return -1;
+    } finally {
+        fs.closeSync(fd);
+    }
+
+    var last = buffer.lastIndexOf(0x0a, read - 1);
+    if (last < 0) {
+        return (window === size) ? 0 : -1;
+    }
+
+    return size - window + last + 1;
+}
+
+function streamLogLines(file, gz, onLine) {
+    return new Promise((resolve, reject) => {
+        var input = fs.createReadStream(file);
+        var source = input;
+
+        input.on('error', reject);
+        if (gz) {
+            var gunzip = zlib.createGunzip();
+            gunzip.on('error', reject);
+            source = input.pipe(gunzip);
+        }
+
+        var reader = readline.createInterface({ input: source, crlfDelay: Infinity });
+        reader.on('line', onLine);
+        reader.on('error', reject);
+        reader.on('close', resolve);
+    });
+}
+
+async function scanLogDay(date, files) {
+    var day = {
+        date: date,
+        entries: [],        // chronological; the newest MAX_LOG_DAY_ENTRIES of the day
+        total: 0,           // entries seen for the day, including any the cap dropped
+        malformed: 0,
+        services: {},
+        sources: [],
+        followOffset: -1,
+        scannedAt: Date.now()
+    };
+
+    function keep(line) {
+        var entry = parseLogLine(line);
+        if (!entry) {
+            if (String(line).trim().length > 0) {
+                day.malformed++;
+            }
+            return;
+        }
+
+        var stamp = String(entry.accesstime || entry.logtime || entry.time || entry.timestamp || '');
+        if (stamp.substring(0, 10) !== date) {
+            return;
+        }
+
+        day.total++;
+
+        var service = entry.logsourcename || entry.sourcename || entry.name || entry.source;
+        if (service) {
+            day.services[String(service)] = true;
+        }
+
+        day.entries.push(entry);
+        if (day.entries.length >= MAX_LOG_DAY_ENTRIES * 2) {
+            day.entries = day.entries.slice(-MAX_LOG_DAY_ENTRIES);
+        }
+    }
+
+    for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        var complete = (file.live && !file.gz) ?
+                       offsetAfterLastNewline(file.path, file.size) : file.size;
+        var pending = null;
+
+        try {
+            // readline cannot say whether the last line it handed over ended in a
+            // newline, so the final line is held back and only kept once the file
+            // size says it was whole.
+            await streamLogLines(file.path, file.gz, (line) => {
+                if (pending !== null) {
+                    keep(pending);
+                }
+                pending = line;
+            });
+        } catch (e) {
+            console.log('unable to read ' + file.path + ': ', e.message);
+            pending = null;
+        }
+
+        if (pending !== null && (complete < 0 || complete >= file.size)) {
+            keep(pending);
+        }
+
+        day.sources.push({
+            path: file.path, size: file.size, mtimeMs: file.mtimeMs,
+            gz: file.gz, live: file.live
+        });
+        if (file.live && !file.gz) {
+            day.followOffset = complete;
+        }
+    }
+
+    if (day.entries.length > MAX_LOG_DAY_ENTRIES) {
+        day.entries = day.entries.slice(-MAX_LOG_DAY_ENTRIES);
+    }
+
+    return day;
+}
+
+function logSourcesUnchanged(cached, files) {
+    if (cached.length !== files.length) {
+        return false;
+    }
+    for (var i = 0; i < cached.length; i++) {
+        if (cached[i].path !== files[i].path ||
+            cached[i].size !== files[i].size ||
+            cached[i].mtimeMs !== files[i].mtimeMs) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The common case for today's view: nothing has rotated and the live log has
+// simply grown, so only the bytes appended since the last read are parsed. Any
+// other change (a rotation, a truncation, a file appearing) returns false and
+// the day is scanned again from scratch.
+async function followLiveTail(day, files) {
+    if (day.sources.length === 0 || day.sources.length !== files.length ||
+        day.followOffset < 0) {
+        return false;
+    }
+
+    var last = files.length - 1;
+    for (var i = 0; i < last; i++) {
+        if (day.sources[i].path !== files[i].path ||
+            day.sources[i].size !== files[i].size ||
+            day.sources[i].mtimeMs !== files[i].mtimeMs) {
+            return false;
+        }
+    }
+
+    var live = files[last];
+    if (!live.live || live.gz || day.sources[last].path !== live.path ||
+        live.size < day.followOffset) {
+        return false;
+    }
+    if (live.size === day.followOffset) {
+        day.sources[last].size = live.size;
+        day.sources[last].mtimeMs = live.mtimeMs;
+        return true;
+    }
+
+    var length = live.size - day.followOffset;
+    var buffer = Buffer.allocUnsafe(length);
+    var read;
+    var fd;
+
+    try {
+        fd = fs.openSync(live.path, 'r');
+    } catch (e) {
+        return false;
+    }
+    try {
+        read = fs.readSync(fd, buffer, 0, length, day.followOffset);
+    } catch (e) {
+        return false;
+    } finally {
+        fs.closeSync(fd);
+    }
+
+    var boundary = buffer.lastIndexOf(0x0a, read - 1);
+    if (boundary < 0) {
+        // Nothing but a part-written entry so far: leave the offset where it is
+        // and pick the whole line up on the next poll.
+        day.sources[last].mtimeMs = live.mtimeMs;
+        day.sources[last].size = live.size;
+        return true;
+    }
+
+    var text = buffer.toString('utf8', 0, boundary + 1);
+    text.split('\n').forEach(line => {
+        var entry = parseLogLine(line);
+        if (!entry) {
+            if (line.trim().length > 0) {
+                day.malformed++;
+            }
+            return;
+        }
+
+        var stamp = String(entry.accesstime || entry.logtime || entry.time || entry.timestamp || '');
+        if (stamp.substring(0, 10) !== day.date) {
+            return;
+        }
+
+        day.total++;
+
+        var service = entry.logsourcename || entry.sourcename || entry.name || entry.source;
+        if (service) {
+            day.services[String(service)] = true;
+        }
+
+        day.entries.push(entry);
+    });
+
+    if (day.entries.length > MAX_LOG_DAY_ENTRIES) {
+        day.entries = day.entries.slice(-MAX_LOG_DAY_ENTRIES);
+    }
+
+    day.followOffset += boundary + 1;
+    day.sources[last].size = live.size;
+    day.sources[last].mtimeMs = live.mtimeMs;
+    day.scannedAt = Date.now();
+    return true;
+}
+
+var logDayCache = [];
+
+function touchLogDayCache(day) {
+    logDayCache = [day].concat(logDayCache.filter(c => c !== day));
+    logDayCache = logDayCache.slice(0, LOG_DAY_CACHE_SIZE);
+    return day;
+}
+
+async function loadLogDay(date) {
+    var files = logFilesForDay(date);
+    var cached = logDayCache.find(c => c.date === date);
+
+    if (cached) {
+        if (logSourcesUnchanged(cached.sources, files)) {
+            return touchLogDayCache(cached);
+        }
+        if (await followLiveTail(cached, files)) {
+            return touchLogDayCache(cached);
+        }
+    }
+
+    return touchLogDayCache(await scanLogDay(date, files));
+}
+
+function logEntryMatches(entry, filters) {
+    if (filters.severity !== 'all' && logEntrySeverity(entry) !== filters.severity) {
+        return false;
+    }
+    if (filters.type !== 'all' && classifyLogEntry(entry) !== filters.type) {
+        return false;
+    }
+    if (filters.service !== 'all') {
+        var service = String(entry.logsourcename || entry.sourcename ||
+                             entry.name || entry.source || '');
+        if (service !== filters.service) {
+            return false;
+        }
+    }
+    if (filters.search) {
+        var haystack = [
+            entry.message || entry.logmessage || entry.msg || '',
+            entry.logsourcename || entry.sourcename || entry.name || entry.source || '',
+            entry.logid || entry.id || entry.resource || '',
+            entry.accesstime || entry.logtime || entry.time || ''
+        ].join(' ').toLowerCase();
+        if (haystack.indexOf(filters.search) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Walks the day newest first, counting every match but only materialising the
+// requested window, so a filter that hits forty thousand entries still answers
+// with one page of them and an honest total.
+function selectLogEntries(day, filters, offset, limit) {
+    var matched = 0;
+    var page = [];
+
+    // Folded once here rather than inside the per-entry test, so the match is
+    // case insensitive without the caller having to know it must hand over a
+    // lowercased needle and without refolding it for every entry in the day.
+    var normalized = {
+        severity: filters.severity || 'all',
+        type: filters.type || 'all',
+        service: (filters.service === undefined) ? 'all' : filters.service,
+        search: String(filters.search || '').toLowerCase()
+    };
+
+    for (var i = day.entries.length - 1; i >= 0; i--) {
+        var entry = day.entries[i];
+        if (!logEntryMatches(entry, normalized)) {
+            continue;
+        }
+        if (matched >= offset && page.length < limit) {
+            page.push(entry);
+        }
+        matched++;
+    }
+
+    return { matched: matched, entries: page };
+}
+
+app.get('/api/v1/get_log_days', auth, (req, res) => {
+    res.set('Expires', new Date().toUTCString());
+    res.json({
+        days: listLogDays(),
+        today: utcDayString(Date.now()),
+        retentiondays: LOG_RETENTION_DAYS,
+        types: LOG_EVENT_TYPES,
+        maxpage: MAX_LOG_DAY_PAGE
+    });
+});
+
+// date is matched against a strict YYYY-MM-DD and is never used to build a path
+// -- the files for a day are found by listing the log folder -- so there is no
+// filename for a caller to steer.
+app.get('/api/v1/get_log_day', auth, async (req, res) => {
+    var date = (req.query.date === undefined || req.query.date === '') ?
+               utcDayString(Date.now()) : String(req.query.date);
+
+    if (!isLogDate(date)) {
+        res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+        return;
+    }
+
+    var severity = String(req.query.severity || 'all');
+    var type = String(req.query.type || 'all');
+    var service = (req.query.service === undefined) ? 'all' : String(req.query.service);
+    var search = String(req.query.search || '').trim().toLowerCase()
+                 .substring(0, MAX_LOG_SEARCH_SIZE);
+
+    if (['all', 'error', 'warning', 'info', 'debug'].indexOf(severity) < 0) {
+        severity = 'all';
+    }
+    if (type !== 'all' && !LOG_EVENT_TYPES.some(t => t.id === type)) {
+        type = 'all';
+    }
+
+    var offset = parseInt(req.query.offset, 10);
+    var limit = parseInt(req.query.limit, 10);
+
+    if (!isFinite(offset) || offset < 0) {
+        offset = 0;
+    }
+    if (!isFinite(limit) || limit <= 0 || limit > MAX_LOG_DAY_PAGE) {
+        limit = MAX_LOG_DAY_PAGE;
+    }
+
+    try {
+        var day = await loadLogDay(date);
+        var selected = selectLogEntries(day,
+            { severity: severity, type: type, service: service, search: search },
+            offset, limit);
+
+        res.set('Expires', new Date().toUTCString());
+        res.json({
+            date: date,
+            today: utcDayString(Date.now()),
+            total: day.total,
+            held: day.entries.length,
+            capped: (day.total > day.entries.length),
+            malformed: day.malformed,
+            matched: selected.matched,
+            offset: offset,
+            limit: limit,
+            services: Object.keys(day.services).sort(),
+            entries: selected.entries
+        });
+    } catch (e) {
+        console.log('unable to read the event log for ' + date + ': ', e.message);
+        res.sendStatus(500);
     }
 });
 

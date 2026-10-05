@@ -671,6 +671,151 @@
       font-size: 0.85rem;
     }
 
+    /* Event log filters and the scrolling day view */
+    .log-filters {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .log-filter-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-right: 0.1rem;
+    }
+
+    .log-filter {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 0.4rem 0.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      max-width: 100%;
+    }
+
+    .log-filter:focus {
+      outline: none;
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 3px rgba(57, 212, 224, 0.15);
+    }
+
+    #log-search {
+      flex: 1 1 12rem;
+      min-width: 8rem;
+    }
+
+    .log-filter-reset {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 0.4rem 0.7rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .log-filter-reset:hover {
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    /* A day of events is far more than fits on a page, so the table scrolls
+       inside the card with its header pinned, instead of pushing the services
+       list off the bottom of the window. */
+    .log-scroll {
+      max-height: 26rem;
+      overflow-y: auto;
+      overflow-x: auto;
+      overscroll-behavior: contain;
+      scrollbar-color: var(--border-color) transparent;
+    }
+
+    .log-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    .log-scroll::-webkit-scrollbar-track {
+      background: var(--bg-secondary);
+    }
+
+    .log-scroll::-webkit-scrollbar-thumb {
+      background: #39424f;
+      border-radius: 5px;
+    }
+
+    .log-scroll::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+
+    .log-scroll .log-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--bg-card);
+    }
+
+    .log-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.6rem 1.5rem;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-color);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .log-footer.hidden {
+      display: none;
+    }
+
+    .log-more {
+      background: transparent;
+      border: 1px solid var(--accent-blue);
+      border-radius: var(--radius-sm);
+      padding: 0.35rem 0.8rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--accent-blue);
+      cursor: pointer;
+    }
+
+    .log-more:hover {
+      background: rgba(88, 166, 255, 0.12);
+    }
+
+    .log-more.hidden {
+      display: none;
+    }
+
+    .log-warning {
+      color: var(--accent-orange);
+    }
+
+    @media (max-width: 720px) {
+      .log-filters {
+        padding: 0.75rem 1rem;
+      }
+      .log-scroll {
+        max-height: 20rem;
+      }
+    }
+
     /* Form Modal/Page */
     .form-page {
       display: none;
@@ -1346,24 +1491,49 @@
     <!-- Event Log Section -->
     <section class="log-section">
       <div class="log-section-header">
-        <div class="log-section-title">📋 Recent Events</div>
+        <div class="log-section-title">📋 Event Log</div>
         <span class="section-badge" id="log-updated">—</span>
       </div>
-      <table class="log-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Severity</th>
-            <th>Time</th>
-            <th>Name</th>
-            <th>Resource</th>
-            <th>Message</th>
-          </tr>
-        </thead>
-        <tbody id="log-table-body">
-          <tr><td colspan="6" class="log-empty">Loading…</td></tr>
-        </tbody>
-      </table>
+      <div class="log-filters">
+        <span class="log-filter-label">Day (UTC)</span>
+        <select class="log-filter" id="log-day" aria-label="Day of events to show"></select>
+        <select class="log-filter" id="log-severity" aria-label="Filter by severity">
+          <option value="all">All severities</option>
+          <option value="error">Errors</option>
+          <option value="warning">Warnings</option>
+          <option value="info">Info</option>
+        </select>
+        <select class="log-filter" id="log-type" aria-label="Filter by event type">
+          <option value="all">All events</option>
+        </select>
+        <select class="log-filter" id="log-service" aria-label="Filter by service">
+          <option value="all">All services</option>
+        </select>
+        <input class="log-filter" id="log-search" type="search" autocomplete="off"
+               placeholder="Search messages…" aria-label="Search event text">
+        <button class="log-filter-reset" id="log-reset" type="button">Reset</button>
+      </div>
+      <div class="log-scroll" id="log-scroll">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Severity</th>
+              <th>Time (UTC)</th>
+              <th>Name</th>
+              <th>Resource</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="log-table-body">
+            <tr><td colspan="6" class="log-empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="log-footer hidden" id="log-footer">
+        <span id="log-counts"></span>
+        <button class="log-more hidden" id="log-more" type="button">Load more</button>
+      </div>
     </section>
 
     <!-- Services List -->
@@ -2087,76 +2257,346 @@
         .replace(/'/g, '&#39;');
     }
 
-    async function updateLogSection() {
-      const tbody = document.getElementById('log-table-body');
-      try {
-        const response = await fetch('/api/v1/get_log_data');
-        if (!response.ok) throw new Error('No log data');
-        const entries = await response.json();
+    // ---- Event log -------------------------------------------------------
+    //
+    // The log holds a day at a time. Filtering happens on the server, over the
+    // whole day, so narrowing by type or text reaches events far outside the
+    // rows currently on screen; the browser is only ever handed a window of the
+    // newest matches, because a busy day runs to tens of thousands of entries
+    // and putting all of them in the DOM would wedge the page.
 
-        if (!Array.isArray(entries) || entries.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" class="log-empty">No log entries found.</td></tr>';
-          return;
+    const LOG_WINDOW_START = 250;   // rows fetched for a fresh view
+    const LOG_WINDOW_STEP  = 250;   // rows added by Load more
+
+    const logState = {
+      date: '',
+      today: '',
+      severity: 'all',
+      type: 'all',
+      service: 'all',
+      search: '',
+      window: LOG_WINDOW_START,
+      maxpage: 2000,
+      daysLoadedAt: 0
+    };
+
+    let logSearchTimer = null;
+    // Every request is issued; only the newest one is allowed to paint. Dropping
+    // a request instead would lose a filter change made while a poll was still
+    // in flight, leaving the table showing rows that do not match the controls.
+    let logRequestSeq = 0;
+
+    function logRowHtml(entry, i) {
+      const severity = (entry.severity || entry.status || entry.level || '').toLowerCase();
+      const severityClass = severity.includes('err') ? 'error'
+        : severity.includes('warn') ? 'warn'
+        : severity.includes('debug') ? 'debug'
+        : 'info';
+
+      const time     = entry.accesstime || entry.logtime || entry.time || entry.timestamp || '';
+      const name     = entry.logsourcename || entry.sourcename || entry.name || entry.source || '';
+      const resource = entry.logid || entry.id || entry.resource || '';
+      const message  = entry.logmessage || entry.message || entry.msg || '';
+
+      // Handle Unix epoch timestamps (seconds or milliseconds)
+      let timeDisplay = time;
+      if (time && !isNaN(Number(time))) {
+        const ms = Number(time) < 1e12 ? Number(time) * 1000 : Number(time);
+        timeDisplay = new Date(ms).toLocaleTimeString();
+      } else {
+        // The table covers one day, named in the picker and the footer, so the
+        // date in every row is just width. esignal.c stamps UTC, and the column
+        // says so once in its heading; the full value stays on hover.
+        const iso = String(time).match(/^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})/);
+        if (iso) {
+          timeDisplay = iso[1];
         }
+      }
 
-        tbody.innerHTML = entries.map((entry, i) => {
-          const severity = (entry.severity || entry.status || entry.level || '').toLowerCase();
-          const severityClass = severity.includes('err') ? 'error'
-            : severity.includes('warn') ? 'warn'
-            : severity.includes('debug') ? 'debug'
-            : 'info';
+      // SCTE-35 cues get a direction badge plus chips for the details that
+      // matter at a glance, instead of only the flat message text.
+      const cue = entry.scte35;
+      let messageCell;
+      if (cue && cue.cue) {
+        const dir = (cue.cue === 'out' || cue.cue === 'in') ? cue.cue : 'none';
+        const label = dir === 'out' ? 'Cue Out' : (dir === 'in' ? 'Cue In' : 'Cue');
+        const duration = Number(cue.duration) || 0;
+        let chips = '';
+        if (cue.immediate) {
+          chips += '<span class="cue-chip">immediate</span>';
+        }
+        if (duration > 0) {
+          chips += `<span class="cue-chip">${duration.toFixed(3)}s</span>`;
+        }
+        if (cue['event-id'] !== undefined && cue['event-id'] !== null) {
+          chips += `<span class="cue-chip">event ${escapeHtml(cue['event-id'])}</span>`;
+        }
+        const detail = cue.descriptor ? escapeHtml(cue.descriptor) : escapeHtml(message);
+        messageCell = `<span class="cue-badge ${dir}">${label}</span>${detail}${chips}`;
+      } else {
+        messageCell = escapeHtml(message);
+      }
 
-          const time     = entry.accesstime || entry.logtime || entry.time || entry.timestamp || '';
-          const name     = entry.logsourcename || entry.sourcename || entry.name || entry.source || '';
-          const resource = entry.logid || entry.id || entry.resource || '';
-          const message  = entry.logmessage || entry.message || entry.msg || '';
-
-          // Handle Unix epoch timestamps (seconds or milliseconds)
-          let timeDisplay = time;
-          if (time && !isNaN(Number(time))) {
-            const ms = Number(time) < 1e12 ? Number(time) * 1000 : Number(time);
-            timeDisplay = new Date(ms).toLocaleTimeString();
-          }
-
-          // SCTE-35 cues get a direction badge plus chips for the details that
-          // matter at a glance, instead of only the flat message text.
-          const cue = entry.scte35;
-          let messageCell;
-          if (cue && cue.cue) {
-            const dir = (cue.cue === 'out' || cue.cue === 'in') ? cue.cue : 'none';
-            const label = dir === 'out' ? 'Cue Out' : (dir === 'in' ? 'Cue In' : 'Cue');
-            const duration = Number(cue.duration) || 0;
-            let chips = '';
-            if (cue.immediate) {
-              chips += '<span class="cue-chip">immediate</span>';
-            }
-            if (duration > 0) {
-              chips += `<span class="cue-chip">${duration.toFixed(3)}s</span>`;
-            }
-            if (cue['event-id'] !== undefined && cue['event-id'] !== null) {
-              chips += `<span class="cue-chip">event ${escapeHtml(cue['event-id'])}</span>`;
-            }
-            const detail = cue.descriptor ? escapeHtml(cue.descriptor) : escapeHtml(message);
-            messageCell = `<span class="cue-badge ${dir}">${label}</span>${detail}${chips}`;
-          } else {
-            messageCell = escapeHtml(message);
-          }
-
-          return `<tr>
+      return `<tr>
             <td>${i + 1}</td>
             <td><span class="log-severity ${severityClass}">${escapeHtml(severity || 'info')}</span></td>
-            <td>${escapeHtml(timeDisplay)}</td>
+            <td title="${escapeHtml(time)}">${escapeHtml(timeDisplay)}</td>
             <td>${escapeHtml(name)}</td>
             <td>${escapeHtml(resource)}</td>
             <td style="color:var(--text-primary);">${messageCell}</td>
           </tr>`;
-        }).join('');
+    }
+
+    // Rebuilds a <select> without disturbing the user's choice, and falls back
+    // to "all" when the value they had picked is not in the new day.
+    function setLogOptions(select, values, current, allLabel) {
+      const wanted = current;
+      let html = `<option value="all">${escapeHtml(allLabel)}</option>`;
+
+      values.forEach(value => {
+        const id = (typeof value === 'string') ? value : value.id;
+        const label = (typeof value === 'string') ? value : value.label;
+        html += `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+      });
+
+      if (select.innerHTML !== html) {
+        select.innerHTML = html;
+      }
+
+      const available = Array.prototype.some.call(select.options, o => o.value === wanted);
+      select.value = available ? wanted : 'all';
+      return select.value;
+    }
+
+    function logDayLabel(day, today) {
+      if (day === today) {
+        return day + ' (today)';
+      }
+      const yesterday = new Date(Date.parse(today + 'T00:00:00Z') - 86400000)
+                        .toISOString().substring(0, 10);
+      return (day === yesterday) ? day + ' (yesterday)' : day;
+    }
+
+    async function loadLogDays() {
+      try {
+        const response = await fetch('/api/v1/get_log_days');
+        if (!response.ok) throw new Error('no day list');
+        const info = await response.json();
+
+        logState.today = info.today || '';
+        logState.maxpage = Number(info.maxpage) || logState.maxpage;
+        if (!logState.date) {
+          logState.date = logState.today;
+        }
+
+        const select = document.getElementById('log-day');
+        const days = Array.isArray(info.days) ? info.days : [];
+        let html = '';
+        days.forEach(day => {
+          html += `<option value="${escapeHtml(day)}">${escapeHtml(logDayLabel(day, logState.today))}</option>`;
+        });
+        if (select.innerHTML !== html) {
+          select.innerHTML = html;
+        }
+        // A day that has aged out of retention since the page was opened falls
+        // back to today rather than leaving the view pinned to nothing.
+        if (days.indexOf(logState.date) < 0) {
+          logState.date = logState.today;
+        }
+        select.value = logState.date;
+
+        const types = Array.isArray(info.types) ? info.types : [];
+        logState.type = setLogOptions(document.getElementById('log-type'),
+                                      types, logState.type, 'All events');
+
+        logState.daysLoadedAt = Date.now();
+      } catch (err) {
+        // No day list is not fatal: the day request below defaults to today.
+        if (!logState.date) {
+          logState.date = '';
+        }
+      }
+    }
+
+    async function updateLogSection(options) {
+      const settings = options || {};
+      const tbody = document.getElementById('log-table-body');
+      const scroller = document.getElementById('log-scroll');
+      const footer = document.getElementById('log-footer');
+      const counts = document.getElementById('log-counts');
+      const more = document.getElementById('log-more');
+
+      const seq = ++logRequestSeq;
+
+      // The day list only changes when a day rolls over or a rotation ages out,
+      // so it is refreshed on a slow cadence rather than on every poll.
+      if (!logState.daysLoadedAt || Date.now() - logState.daysLoadedAt > 300000 ||
+          settings.reloadDays) {
+        await loadLogDays();
+      }
+
+      const query = new URLSearchParams({
+        date: logState.date || '',
+        severity: logState.severity,
+        type: logState.type,
+        service: logState.service,
+        search: logState.search,
+        offset: '0',
+        limit: String(logState.window)
+      });
+
+      // Keeping the scroll offset means a ten second poll does not yank the row
+      // the user is reading back to the top of the list.
+      const keepScroll = scroller ? scroller.scrollTop : 0;
+
+      try {
+        const response = await fetch('/api/v1/get_log_day?' + query.toString());
+        if (!response.ok) throw new Error('No log data');
+        const data = await response.json();
+
+        if (seq !== logRequestSeq) {
+          return;   // superseded while this one was in flight
+        }
+
+        logState.today = data.today || logState.today;
+        if (data.date) {
+          logState.date = data.date;
+        }
+
+        logState.service = setLogOptions(document.getElementById('log-service'),
+          Array.isArray(data.services) ? data.services : [], logState.service, 'All services');
+
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+
+        if (entries.length === 0) {
+          const filtered = (logState.severity !== 'all' || logState.type !== 'all' ||
+                            logState.service !== 'all' || logState.search !== '');
+          tbody.innerHTML = '<tr><td colspan="6" class="log-empty">' +
+            (filtered ? 'No events match these filters on ' + escapeHtml(logState.date) + '.'
+                      : 'No events recorded on ' + escapeHtml(logState.date) + '.') +
+            '</td></tr>';
+        } else {
+          tbody.innerHTML = entries.map(logRowHtml).join('');
+        }
+
+        const matched = Number(data.matched) || 0;
+        const total = Number(data.total) || 0;
+        let text = 'Showing ' + entries.length.toLocaleString() +
+                   ' of ' + matched.toLocaleString() + ' matching';
+        if (matched !== total) {
+          text += ' · ' + total.toLocaleString() + ' events on ' + data.date;
+        } else {
+          text += ' event' + (matched === 1 ? '' : 's') + ' on ' + data.date;
+        }
+        if (data.capped) {
+          text += ' · <span class="log-warning">only the newest ' +
+                  Number(data.held).toLocaleString() + ' of the day are searchable</span>';
+        }
+        if (data.malformed) {
+          text += ' · <span class="log-warning">' +
+                  Number(data.malformed).toLocaleString() + ' unreadable</span>';
+        }
+        counts.innerHTML = text;
+
+        if (matched > entries.length) {
+          if (logState.window >= logState.maxpage) {
+            more.classList.add('hidden');
+            counts.innerHTML = text +
+              ' · <span class="log-warning">narrow the filter to reach the rest</span>';
+          } else {
+            more.classList.remove('hidden');
+          }
+        } else {
+          more.classList.add('hidden');
+        }
+        footer.classList.remove('hidden');
+
+        if (scroller) {
+          scroller.scrollTop = settings.toTop ? 0 : keepScroll;
+        }
 
         document.getElementById('log-updated').textContent =
           'Updated ' + new Date().toLocaleTimeString();
       } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="6" class="log-empty">No log data available.</td></tr>';
+        if (seq === logRequestSeq) {
+          tbody.innerHTML = '<tr><td colspan="6" class="log-empty">No log data available.</td></tr>';
+          footer.classList.add('hidden');
+        }
       }
+    }
+
+    // A past day cannot gain events, so polling it is pure load on the box; the
+    // timer only refreshes while the view is on the current UTC day. The day
+    // list is still refreshed, and if the day being viewed has rotated out of
+    // retention since the page was opened the view follows it rather than
+    // leaving stale rows under a picker that has already moved on.
+    async function pollLogSection() {
+      if (!logState.today || logState.date === logState.today) {
+        await updateLogSection();
+        return;
+      }
+
+      const viewing = logState.date;
+      await loadLogDays();
+      if (logState.date !== viewing) {
+        await updateLogSection({ toTop: true });
+      }
+    }
+
+    function resetLogWindow() {
+      logState.window = LOG_WINDOW_START;
+    }
+
+    function wireLogFilters() {
+      document.getElementById('log-day').addEventListener('change', (e) => {
+        logState.date = e.target.value;
+        resetLogWindow();
+        updateLogSection({ toTop: true });
+      });
+
+      ['log-severity', 'log-type', 'log-service'].forEach(id => {
+        document.getElementById(id).addEventListener('change', (e) => {
+          logState[id.replace('log-', '')] = e.target.value;
+          resetLogWindow();
+          updateLogSection({ toTop: true });
+        });
+      });
+
+      document.getElementById('log-search').addEventListener('input', (e) => {
+        const value = e.target.value;
+        if (logSearchTimer) {
+          clearTimeout(logSearchTimer);
+        }
+        // Debounced: a day of events is scanned per request, so a keystroke
+        // should not start one.
+        logSearchTimer = setTimeout(() => {
+          logState.search = value;
+          resetLogWindow();
+          updateLogSection({ toTop: true });
+        }, 300);
+      });
+
+      document.getElementById('log-more').addEventListener('click', () => {
+        logState.window = Math.min(logState.window + LOG_WINDOW_STEP, logState.maxpage);
+        updateLogSection();
+      });
+
+      document.getElementById('log-reset').addEventListener('click', () => {
+        logState.severity = 'all';
+        logState.type = 'all';
+        logState.service = 'all';
+        logState.search = '';
+        logState.date = logState.today || logState.date;
+        document.getElementById('log-severity').value = 'all';
+        document.getElementById('log-type').value = 'all';
+        document.getElementById('log-service').value = 'all';
+        document.getElementById('log-search').value = '';
+        if (logState.date) {
+          document.getElementById('log-day').value = logState.date;
+        }
+        resetLogWindow();
+        updateLogSection({ toTop: true });
+      });
     }
 
     // ---- Edit Service ----
@@ -2451,13 +2891,14 @@
     loadServices();
     loadInterfaces();
     updateSystemInfo();
-    updateLogSection();
+    wireLogFilters();
+    updateLogSection({ reloadDays: true, toTop: true });
 
     // Periodic updates
     setInterval(loadServices, 2000);
     setInterval(triggerImageUpdate, 3000);
     setInterval(updateSystemInfo, 5000);
-    setInterval(updateLogSection, 10000);
+    setInterval(pollLogSection, 10000);
   </script>
 
 </body>

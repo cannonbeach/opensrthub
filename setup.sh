@@ -703,6 +703,69 @@ popd >/dev/null
 ok "web app dependencies installed"
 
 #-----------------------------------------------------------------------------
+# event log rotation
+#-----------------------------------------------------------------------------
+phase "Configuring event log rotation"
+
+# /var/log/srthub.log is the event log the web GUI reads, one JSON object per
+# line. Nothing rotated it before this, so it grew without limit: a busy
+# appliance can put tens of megabytes a day into it, and installs have been
+# found with it well past a hundred megabytes.
+#
+# Daily with "rotate 30" is what the GUI's day picker expects to find: thirty
+# days of history and a file boundary near midnight.
+#
+# dateext names the rotations for a day instead of numbering them, and
+# dateyesterday names each one for the day its events came from rather than the
+# day logrotate happened to run. The GUI does not trust those names - it picks
+# files by when they were written and filters entries on their own timestamps -
+# but a name that matches the contents matters to whoever reads the directory.
+#
+# delaycompress leaves the most recent rotation uncompressed, which is the one
+# the GUI reaches for most; the server reads .gz through zlib either way.
+#
+# The one cost of dateext: if the box was off across a rotation and logrotate
+# catches up twice in one day, the second run finds its target name taken and
+# skips, so that day keeps appending to the live log. It corrects itself at the
+# next rotation and the GUI is unaffected either way, since it reads files by
+# when they were written rather than by what they are called.
+#
+# No copytruncate: server.js appends with appendFileSync, which opens and closes
+# the file for every event, so a rename strands no descriptor and loses no
+# writes. If that ever changes to a held-open stream, this needs copytruncate or
+# events will vanish into the unlinked inode after the first rotation.
+log "installing /etc/logrotate.d/srthub (daily, 30 days)"
+$SUDO tee /etc/logrotate.d/srthub >/dev/null <<'LOGROTATE'
+# Managed by opensrthub setup.sh
+/var/log/srthub.log {
+    daily
+    rotate 30
+    dateext
+    dateyesterday
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root adm
+}
+LOGROTATE
+
+# The file has to exist for the GUI to append to it, and logrotate's "create"
+# only applies from the first rotation onwards.
+if [ ! -f /var/log/srthub.log ]; then
+    log "creating /var/log/srthub.log"
+    $SUDO touch /var/log/srthub.log
+    $SUDO chown root:adm /var/log/srthub.log
+    $SUDO chmod 0640 /var/log/srthub.log
+fi
+
+if $SUDO logrotate --debug /etc/logrotate.d/srthub >/dev/null 2>&1; then
+    ok "event log rotates daily and keeps 30 days"
+else
+    warn "logrotate did not accept /etc/logrotate.d/srthub; the event log will not rotate"
+fi
+
+#-----------------------------------------------------------------------------
 # credentials and TLS certificate
 #-----------------------------------------------------------------------------
 phase "Configuring credentials and TLS"
