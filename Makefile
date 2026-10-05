@@ -1,6 +1,10 @@
 CC=gcc
 CXX=g++
 CFLAGS=-g -c -O2 -m64 -Wall -Wfatal-errors -funroll-loops -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-format-truncation -Wno-attributes -Wno-stringop-truncation
+# -MMD -MP: write a .d file of header dependencies next to each object, so
+# changing a header (a struct layout, say) rebuilds every object that uses it
+# instead of linking objects built against two different layouts.
+CFLAGS += -MMD -MP
 SRC=./source
 INC=-I./include
 OBJS=crc.o tsdecode.o mempool.o dataqueue.o esignal.o udpsource.o cJSON.o cJSON_Utils.o
@@ -23,6 +27,8 @@ INC += -I./cbsrt
 INC += -I./cblibcurl/include/curl
 
 BASELIBS += -lz -ldl -lssl -llzma
+
+.PHONY: all clean
 
 all: $(LIB) srthub
 
@@ -61,4 +67,6 @@ cJSON_Utils.o: $(SRC)/cJSON_Utils.c
 	$(CC) $(CFLAGS) $(INC) $(SRC)/cJSON_Utils.c
 
 clean:
-	rm -rf *o srthub
+	rm -f *.o *.d $(LIB) srthub
+
+-include $(OBJS:.o=.d) srthub.d
