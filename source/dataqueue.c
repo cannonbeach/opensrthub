@@ -26,6 +26,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <malloc.h>
+#include <time.h>
 
 #include "dataqueue.h"
 #include "mempool.h"
@@ -82,8 +83,25 @@ void *dataqueue_create(void)
     message_queue->count = 0;
     message_queue->reflock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
     message_queue->cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
+    if (!message_queue->reflock || !message_queue->cond) {
+        free(message_queue->reflock);
+        free(message_queue->cond);
+        free(message_queue);
+        return NULL;
+    }
     pthread_mutex_init(message_queue->reflock, NULL);
-    pthread_cond_init(message_queue->cond, NULL);
+
+    /* The timed wait below measures a relative 100ms, so it runs on the
+     * monotonic clock: on the default realtime clock, a wall clock stepped
+     * back by NTP would stretch that wait by the size of the step and leave
+     * the waiting thread deaf to its stop flag until the clock caught up. */
+    {
+        pthread_condattr_t attr;
+        pthread_condattr_init(&attr);
+        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+        pthread_cond_init(message_queue->cond, &attr);
+        pthread_condattr_destroy(&attr);
+    }
 
     return message_queue;
 }
@@ -91,9 +109,22 @@ void *dataqueue_create(void)
 int dataqueue_destroy(void *queue)
 {
     queue_struct *message_queue = (queue_struct *)queue;
+    dataqueue_node_struct *node;
+
     if (!message_queue) {
         return -1;
     }
+
+    /* The messages belong to their pools; only the queue's own nodes are
+     * freed here. Callers drain anything they need back first. */
+    node = message_queue->head;
+    while (node) {
+        dataqueue_node_struct *next = node->next;
+        free(node);
+        node = next;
+    }
+    message_queue->head = NULL;
+    message_queue->tail = NULL;
 
     pthread_cond_destroy(message_queue->cond);
     free(message_queue->cond);
@@ -268,7 +299,7 @@ dataqueue_message_struct *dataqueue_take_back_wait(void *queue, volatile int *ru
 
     pthread_mutex_lock(message_queue->reflock);
     while (message_queue->tail == NULL && *running) {
-        clock_gettime(CLOCK_REALTIME, &ts);
+        clock_gettime(CLOCK_MONOTONIC, &ts);
         ts.tv_nsec += 100000000;
         if (ts.tv_nsec >= 1000000000) {
             ts.tv_sec += 1;

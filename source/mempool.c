@@ -81,25 +81,30 @@ int memory_reset(void *pool)
 
 void *memory_create(int count, int size)
 {
-    uint32_t chunk_size;
+    size_t chunk_size;
     uint8_t *magicptr8;
     uint32_t *magicptr32;
     int i;
 
-    memory_pool_struct *memory_pool = (memory_pool_struct *)malloc(sizeof(memory_pool_struct));
+    memory_pool_struct *memory_pool;
+
+    if (count <= 0 || size < 0) {
+        return NULL;
+    }
+
+    memory_pool = (memory_pool_struct *)malloc(sizeof(memory_pool_struct));
     if (!memory_pool) {
         return NULL;
     }
 
-    chunk_size = count * (size+MEMORY_RESERVED);
+    chunk_size = (size_t)count * ((size_t)size + MEMORY_RESERVED);
     memset(memory_pool, 0, sizeof(memory_pool_struct));
 
-    memory_pool->refs = (memory_struct*)malloc(sizeof(memory_struct)*count);
+    memory_pool->refs = (memory_struct*)calloc((size_t)count, sizeof(memory_struct));
     if (!memory_pool->refs) {
         free(memory_pool);
         return NULL;
     }
-    memset(memory_pool->refs, 0, sizeof(memory_struct)*count);
 
     memory_pool->count = count;
     memory_pool->pos = 0;
@@ -150,18 +155,22 @@ int memory_destroy(void *pool)
         return -1;
     }
 
-    free(memory_pool->data);
     pthread_mutex_destroy(memory_pool->reflock);
     free(memory_pool->reflock);
     memory_pool->reflock = NULL;
 
+    /* Fixed-size buffers are slices of the one data block, so only that block
+     * is freed. A size-0 pool hands out its own allocations instead, and any
+     * still taken are freed here. */
     for (i = 0; i < memory_pool->count; i++)
     {
-        if (memory_pool->size > 0) {
+        if (memory_pool->size == 0) {
             free(memory_pool->refs[i].memory);
         }
         memory_pool->refs[i].memory = NULL;
     }
+    free(memory_pool->data);
+    memory_pool->data = NULL;
 
     free(memory_pool->refs);
     free(memory_pool);
@@ -195,6 +204,11 @@ void *memory_take(void *pool, int owner)
                 taken = memory_pool->refs[pos].memory + MEMORY_RESERVED;
             } else {
                 taken = (uint8_t*)malloc(owner);
+                if (!taken) {
+                    memory_pool->refs[pos].disponible = 1;
+                    pthread_mutex_unlock(memory_pool->reflock);
+                    return NULL;
+                }
                 memory_pool->refs[pos].memory = taken;
             }
             pthread_mutex_unlock(memory_pool->reflock);
@@ -229,7 +243,8 @@ int memory_return(void *pool, void *memory)
         idx = *magicptr32;
 
         pthread_mutex_lock(memory_pool->reflock);
-        if (idx > memory_pool->count) {
+        if (idx >= (uint32_t)memory_pool->count ||
+            memory_pool->refs[idx].memory != returned) {
             pthread_mutex_unlock(memory_pool->reflock);
             return -1;
         }
@@ -257,7 +272,7 @@ int memory_return(void *pool, void *memory)
         pthread_mutex_unlock(memory_pool->reflock);
         if (!found_buffer) {
             fprintf(stderr,"FATAL ERROR: returning invalid buffer to pool!\n");
-            exit(0);
+            abort();
         }
     }
 
