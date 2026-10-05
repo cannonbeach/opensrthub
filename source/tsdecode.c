@@ -742,6 +742,38 @@ static void scte35_decode_section(transport_data_struct *tsdata, const uint8_t *
     }
 }
 
+transport_data_struct *create_transport_data(void)
+{
+    /* calloc rather than malloc: the decoder relies on its counters and
+     * tables starting at zero. (At this size glibc happens to hand back fresh
+     * zeroed pages either way, but that is an allocator detail.) */
+    transport_data_struct *tsdata = (transport_data_struct*)calloc(1, sizeof(transport_data_struct));
+    if (tsdata) {
+        tsdata->pat_version_number = -1;
+    }
+    return tsdata;
+}
+
+void destroy_transport_data(transport_data_struct *tsdata)
+{
+    int pmt_index;
+    int stream_index;
+
+    if (!tsdata) {
+        return;
+    }
+    /* decode_packets() allocates a MAX_BUFFER_SIZE frame buffer the first
+     * time each elementary stream carries a PES; only the first
+     * TSHARDEN_MAX_STREAMS entries of a program can ever be used. */
+    for (pmt_index = 0; pmt_index < MAX_PMT_PIDS; pmt_index++) {
+        for (stream_index = 0; stream_index < TSHARDEN_MAX_STREAMS; stream_index++) {
+            free(tsdata->master_pmt_table[pmt_index].data_engine[stream_index].buffer);
+            tsdata->master_pmt_table[pmt_index].data_engine[stream_index].buffer = NULL;
+        }
+    }
+    free(tsdata);
+}
+
 int64_t get_time_difference(struct timeval *stoptime, struct timeval *starttime)
 {
      int64_t delta_sec;
@@ -1114,6 +1146,8 @@ _redo_decode:
                    }
                    //backup_caller(2000, 718, local_tag, 0, 0, 0, backup_context);
                    tag_index += local_tag_size;
+               } else if (local_tag == STREAM_DESCRIPTOR_LANGUAGE && local_tag_size < 3) {
+                   tag_index += local_tag_size;   /* too short to hold a language code */
                } else if (local_tag == STREAM_DESCRIPTOR_LANGUAGE) {
                    uint8_t l1 = *(pdata+tag_index+0);
                    uint8_t l2 = *(pdata+tag_index+1);
@@ -1232,6 +1266,11 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                          adaptation_size = 183;
                     } else {
                          adaptation_size = *(pdata+0);
+                         /* 0..182 with a payload, 183 without; anything
+                          * larger would run pdata past the packet */
+                         if (adaptation_size > 183) {
+                             goto continue_packet_processing;
+                         }
                     }
                     if (adaptation_size > 0) {
                          discontinuity_flag = !!(*(pdata+1) & 0x80);
@@ -1320,6 +1359,11 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                     }
                }
 
+               /* a packet whose adaptation field fills it has no payload left */
+               if ((afc & 1) && (int)(pdata - pdata_initial) >= TS_PAYLOAD_SIZE) {
+                   goto continue_packet_processing;
+               }
+
                if (afc & 1) {
                    if (pusi) {
                        int pid_count = 0;
@@ -1393,7 +1437,12 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                    tsdata->pmt_decoded[pid_count] == 0 ||
                                    tsdata->pmt_version[pid_count] == -1) {
                                    tsdata->pmt_table_acquired = 184 - acquired_data_so_far;
-                                   tsdata->pmt_table_expected = section_size;
+                                   /* pmt_data holds the byte before table_id, the
+                                    * 3-byte section header and section_length bytes
+                                    * ending in the CRC: section_size + 4 in all.
+                                    * Completing at section_size left the CRC unread,
+                                    * so a PMT spanning packets never passed it. */
+                                   tsdata->pmt_table_expected = section_size + 4;
                                    /* The copy below reads from pdata (already
                                     * advanced past the pointer field), so the copy
                                     * length must not exceed the bytes remaining
@@ -1433,7 +1482,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                            uint32_t calculated_crc;
 
                                            memcpy(tsdata->pmt_data, pdata, tsdata->pmt_table_acquired);
-                                           tsdata->pmt_data_size = tsdata->pmt_table_expected;
+                                           tsdata->pmt_data_size = tsdata->pmt_table_expected - 4;
                                            crc_position = ((int)(tsdata->pmt_data[2] << 8) + (int)tsdata->pmt_data[3]) & 0x0fff;
                                            crc32_length = crc_position - 1;
                                            if (crc_position > 4 && (int)crc_position + 4 <= MAX_TABLE_SIZE) {
@@ -1469,8 +1518,8 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                    if (tsdata->master_pmt_table[each_pmt].stream_pid[pid_count] == current_pid) {
                                        int last_cc;
                                        int pes_length;
-                                       int check0 = *(pdata+6);
-                                       int check1 = *(pdata+7);
+                                       int check0;
+                                       int check1;
 
                                        if (tsdata->master_pmt_table[each_pmt].data_engine[pid_count].data_index > 0) {
                                            unsigned char *video_frame;
@@ -1567,7 +1616,11 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                                                tsdata->master_pmt_table[each_pmt].data_engine[pid_count].corruption_count,
                                                                tsdata->master_pat_table.pmt_table_entries,
                                                                send_frame_context);
-                                           } else if (stream_type == 0x06) {
+                                           } else if (stream_type == 0x06 &&
+                                                      tsdata->master_pmt_table[each_pmt].audio_stream_index[pid_count] >= 0) {
+                                               /* 0x06 is audio only when its descriptors made
+                                                * it so; subtitles and teletext keep audio index
+                                                * -1 and must not reach the audio path */
                                                uint8_t *audio_frame = (unsigned char*)tsdata->master_pmt_table[each_pmt].data_engine[pid_count].buffer;
                                                if (send_frame_func)
                                                send_frame_func(audio_frame, video_frame_size, STREAM_TYPE_UNKNOWN_AUDIO, 1,
@@ -1685,6 +1738,13 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                            }
                                            tsdata->master_pmt_table[each_pmt].data_engine[pid_count].last_cc = cc;
                                        }
+                                       /* PES header bytes are read only once they
+                                        * are known to be inside the payload */
+                                       if (TS_PAYLOAD_SIZE - (int)(pdata - pdata_initial) < 9) {
+                                           goto continue_packet_processing;
+                                       }
+                                       check0 = *(pdata+6);
+                                       check1 = *(pdata+7);
                                        pes_length = (*(pdata+4) << 8) + *(pdata+5);
                                        if (pes_length) {
                                            tsdata->master_pmt_table[each_pmt].data_engine[pid_count].wanted_data_size = pes_length;
@@ -2042,7 +2102,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                            unsigned long crc32_length;
                                            uint32_t calculated_crc;
 
-                                           tsdata->pmt_data_size = tsdata->pmt_table_expected;
+                                           tsdata->pmt_data_size = tsdata->pmt_table_expected - 4;
                                            crc_position = ((tsdata->pmt_data[2] << 8) + tsdata->pmt_data[3]) & 0x0fff;
                                            crc32_length = crc_position - 1;
                                            if (crc_position > 4 && (int)crc_position + 4 <= MAX_TABLE_SIZE) {
@@ -2056,8 +2116,12 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
 
                                                if (pmt_crc2 == calculated_crc) {
                                                    int pmt_version = ((tsdata->pmt_data[6]) & 0x1e) >> 1;
+                                                   /* not yet decoded counts too, as on the first-packet
+                                                    * path: the stored version starts at 0, which is
+                                                    * also the most common real version */
                                                    if (pmt_version != tsdata->pmt_version[pid_count] ||
-                                                       tsdata->pmt_version[pid_count] == -1) {
+                                                       tsdata->pmt_version[pid_count] == -1 ||
+                                                       tsdata->pmt_decoded[pid_count] == 0) {
                                                        tsdata->pmt_version[pid_count] = pmt_version;
                                                        decode_pmt_table(&tsdata->master_pat_table, tsdata->master_pmt_table, tsdata->pmt_data, tsdata->pmt_data_size, current_pid);
                                                    }
