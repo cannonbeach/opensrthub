@@ -310,6 +310,69 @@ manages other apps - if opensrthub was the only one, `sudo pm2 unstartup systemd
 removes it. Switching back with `--service=pm2` stands the systemd unit down the
 same way.
 
+#### Event log and rotation
+
+Every event the streams raise - signal lock and loss, SRT connections, SCTE-35
+cues, source format changes, decode errors - is appended to
+`/var/log/srthub.log`, one JSON object per line. The **Event Log** panel in the
+web UI reads it a day at a time, with filters for severity, event type, service
+and free text, and **Export JSON** / **Export CSV** buttons that download every
+matching event for the day you're viewing. Days are UTC days, because that is
+how the events are timestamped.
+
+The installer adds `/etc/logrotate.d/srthub` so the file no longer grows without
+limit:
+
+```
+/var/log/srthub.log {
+    daily
+    rotate 30
+    dateext
+    dateyesterday
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root adm
+}
+```
+
+- **30 days are kept.** That is what the day picker in the UI offers; older
+  rotations are deleted by logrotate.
+- **Rotations are named for the day their events came from**
+  (`srthub.log-20261004`), not the day logrotate ran. The newest rotation stays
+  uncompressed for a day, the rest are gzipped; the web app reads both.
+- **Rotation runs from Ubuntu's daily logrotate timer**, some time after
+  midnight, so each rotated file actually spans from one morning to the next.
+  The UI does not depend on the filenames to find a day's events - it picks
+  files by when they were written and keeps entries by their own timestamps -
+  so a missed or late rotation never hides anything.
+- **No `copytruncate`.** The web app opens, appends and closes the file for
+  every event, so renaming it out from under the app loses nothing. If that
+  ever changes to a file held open, the config needs `copytruncate` or events
+  will be written into the rotated file.
+- **If the machine was off across a rotation** and logrotate catches up twice in
+  one day, the second run finds its target name taken and skips. That day's
+  events stay in the live file until the next rotation; nothing is lost.
+
+This is installed on every run, including `--skip-tuning`, since it is part of
+the web app rather than host tuning. On an existing install the first rotation
+moves the whole accumulated log aside as a single rotated file, which ages out
+after 30 days like any other.
+
+The `/api/v1/backup_services` zip (see [API](#api)) includes every rotation still
+on disk, not just the live file.
+
+To rotate immediately, or to check the config is accepted:
+
+```
+sudo logrotate --force /etc/logrotate.d/srthub
+sudo logrotate --debug /etc/logrotate.d/srthub     # dry run, changes nothing
+```
+
+`pm2-logrotate`, installed only with `--service=pm2`, is unrelated: it rotates
+pm2's capture of the web app's own console output, not the event log.
+
 #### Installing on a different Ubuntu release
 
 No edits required. The installer detects the host release and builds the
