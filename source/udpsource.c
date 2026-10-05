@@ -127,6 +127,8 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
     struct in_addr addrcheck;
 
     memset(host, 0, sizeof(host));
+    memset(&local_addr, 0, sizeof(local_addr));
+    interface_address.s_addr = htonl(INADDR_ANY);
 
     if (inet_aton(addr, &addrcheck) == 0) {
         fprintf(stderr,"ERROR: INVALID IP ADDRESS: %s\n",
@@ -156,7 +158,7 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
 
     retcode = setsockopt(new_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     if (retcode < 0) {
-        socket_udp_close(new_socket);
+        close(new_socket);
         return -1;
     }
 
@@ -165,13 +167,13 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
     retcode = setsockopt(new_socket, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr));
     if (retcode < 0) {
         fprintf(stderr,"error: unable to bind to device: %s (are you running as root?  does the device exist?)\n", interface_name);
-        socket_udp_close(new_socket);
+        close(new_socket);
         return -1;
     }
 
     if (getifaddrs(&ifaddr) == -1) {
         fprintf(stderr,"getifaddrs fail\n");
-        socket_udp_close(new_socket);
+        close(new_socket);
         return -1;
     }
 
@@ -190,14 +192,16 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
         }
     }
     freeifaddrs(ifaddr);
-    inet_aton(host, &interface_address);
+    if (host[0] == 0 || inet_aton(host, &interface_address) == 0) {
+        interface_address.s_addr = htonl(INADDR_ANY);
+    }
 
     local_addr.sin_family = AF_INET;
     if (flags == UDP_FLAG_INPUT) {
         fprintf(stderr,"status: setting receiver socket size to: %d\n", size);
         retcode = setsockopt(new_socket, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
         if (retcode < 0) {
-            socket_udp_close(new_socket);
+            close(new_socket);
             return -1;
         }
         local_addr.sin_port = htons(port);
@@ -208,7 +212,7 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
         fprintf(stderr,"status: setting output socket size to: %d\n", size);
         retcode = setsockopt(new_socket, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
         if (retcode < 0) {
-            socket_udp_close(new_socket);
+            close(new_socket);
             return -1;
         }
         local_addr.sin_addr.s_addr = interface_address.s_addr;
@@ -218,8 +222,7 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
     fprintf(stderr,"status: binding to local address\n");
     retcode = bind(new_socket, (struct sockaddr *)&local_addr, sizeof(local_addr));
     if (retcode < 0) {
-        socket_udp_close(new_socket);
-
+        close(new_socket);
         return -1;
     }
 
@@ -278,6 +281,13 @@ int socket_udp_open(const char *iface, const char *addr, int port, int mcast, in
         }
     }
 
+    if (s >= UDP_MAX_SOCKETS) {
+        /* no table slot: socket_udp_close() could never find it again */
+        fprintf(stderr,"error: no free udp socket slot\n");
+        close(new_socket);
+        return -1;
+    }
+
     fprintf(stderr,"status: newly created socket: %d\n", new_socket);
     return new_socket;
 }
@@ -298,6 +308,11 @@ int socket_udp_ready(int udp_socket, int timeout, fd_set *sockset)
     struct timeval tdata;
 
     FD_ZERO(sockset);
+    /* FD_SET on a negative or too large descriptor writes outside the set
+     * (and aborts in a fortified build) */
+    if (udp_socket < 0 || udp_socket >= FD_SETSIZE) {
+        return -1;
+    }
     FD_SET(udp_socket, sockset);
 
     largest_socket = udp_socket;
