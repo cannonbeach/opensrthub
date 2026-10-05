@@ -52,10 +52,21 @@ static void *signal_thread(void *context);
 
 int start_signal_thread(srthub_core_struct *core)
 {
-    signal_thread_running = 1;
+    /* curl_easy_init() initialises libcurl lazily, which is not thread-safe;
+     * doing it here, before any thread exists, is what libcurl asks for. */
+    curl_global_init(CURL_GLOBAL_ALL);
+
     response_buffer = (char*)malloc(MAX_SIGNAL_RESPONSE_SIZE);
     error_buffer = (char*)malloc(MAX_SIGNAL_RESPONSE_SIZE);
-    pthread_create(&signal_thread_id, NULL, signal_thread, (void*)core);
+    if (!response_buffer || !error_buffer) {
+        fprintf(stderr,"start_signal_thread: unable to allocate signal buffers\n");
+        exit(-1);
+    }
+    signal_thread_running = 1;
+    if (pthread_create(&signal_thread_id, NULL, signal_thread, (void*)core) != 0) {
+        fprintf(stderr,"start_signal_thread: unable to start the signal thread\n");
+        exit(-1);
+    }
     return 0;
 }
 
@@ -147,6 +158,10 @@ void signal_management_interface(srthub_core_struct *core, char *signal_buffer, 
     fprintf(stderr,"signal_management_inteface: sending signal\n");
     for (i = 0; i < signal_count; i++) {
         curl = curl_easy_init();
+        if (!curl) {
+            fprintf(stderr,"signal_management_interface: curl_easy_init failed\n");
+            return;
+        }
         optional_data = curl_slist_append(optional_data, "Content-Type: application/json");
         optional_data = curl_slist_append(optional_data, "Expect:");
 

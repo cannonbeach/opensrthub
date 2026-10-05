@@ -30,6 +30,8 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
+#include <string.h>
 #include "srt.h"
 #include "mempool.h"
 #include "srthub.h"
@@ -90,6 +92,22 @@
 #endif
 
 static void *srthub_thumbnail_thread(void *context);
+
+/* gettid() has no declaration in older glibc headers; the syscall is the
+ * portable spelling. The value only tags pool buffers with their taker. */
+static int srthub_gettid(void)
+{
+    return (int)syscall(SYS_gettid);
+}
+
+/* Monotonic milliseconds, for intervals that must not jump with the wall
+ * clock (an NTP step back would otherwise stall them until it caught up). */
+static int64_t monotonic_ms(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
 typedef struct _srt_server_worker_output_thread_struct_ {
     int          thread;
@@ -245,7 +263,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
 {
     srthub_core_struct *srtcore = (srthub_core_struct*)context;
     dataqueue_message_struct *msg;
-    int threadid = gettid();
+    int threadid = srthub_gettid();
 
     fprintf(stderr,"received frame (%d/%d): source=%d, sub_source=%d, type=0x%x, corruption_count=%ld, size=%d\n",
             source+1, muxstreams, source, sub_source, sample_type, corruption_count, sample_size);
@@ -253,6 +271,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     if (sample_type == STREAM_TYPE_SCTE35) {
         scte35_data_struct cue;
         time_t cue_time;
+        int64_t cue_seen;
         int report_cue;
 
         if (!sample || sample_size != (int)sizeof(scte35_data_struct)) {
@@ -271,6 +290,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
         }
 
         cue_time = time(NULL);
+        cue_seen = monotonic_ms() / 1000;
 
         /* splice_info sections repeat several times a second for the same
          * event, so only the first of each distinct cue is reported. Several
@@ -296,7 +316,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
             }
 
             if (slot >= 0) {
-                if ((cue_time - srtcore->scte35_recent[slot].last_seen) <
+                if ((cue_seen - srtcore->scte35_recent[slot].last_seen) <
                     SCTE35_CUE_REPEAT_WINDOW_SECONDS) {
                     report_cue = 0;
                 }
@@ -322,7 +342,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
 
             /* refreshed on every repeat, so a pre-roll that runs longer than
              * the window does not age out and get reported a second time */
-            srtcore->scte35_recent[slot].last_seen = cue_time;
+            srtcore->scte35_recent[slot].last_seen = cue_seen;
         }
 
         if (report_cue) {
@@ -350,11 +370,26 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     }
 
     if (sample_type == STREAM_TYPE_MPEG || sample_type == STREAM_TYPE_AC3 || sample_type == STREAM_TYPE_AAC || sample_type == STREAM_TYPE_UNKNOWN_AUDIO) {
+        /* There is one decode queue per audio index. An index from the PMT
+         * outside that range - a program with more audio tracks than decode
+         * threads, or a stream the PMT did not make audio - would index past
+         * audiodecodequeue[] into the neighbouring queues and pools. */
+        if (sub_source < 0 || sub_source >= MAX_WORKER_THREADS) {
+            return 0;
+        }
+        /* the decoders read up to AV_INPUT_BUFFER_PADDING_SIZE past the data */
+        if (!sample || sample_size <= 0 ||
+            sample_size > MAX_AUDIO_BUFFER_SIZE - AV_INPUT_BUFFER_PADDING_SIZE) {
+            fprintf(stderr,"received frame: dropping audio sample of %d bytes (limit %d)\n",
+                    sample_size, MAX_AUDIO_BUFFER_SIZE - AV_INPUT_BUFFER_PADDING_SIZE);
+            return 0;
+        }
         msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
         if (msg) {
             uint8_t *buffer = (uint8_t*)memory_take(srtcore->audiopool, threadid);
             if (buffer) {
                 memcpy(buffer, sample, sample_size);
+                memset(buffer + sample_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
                 msg->buffer = (void*)buffer;
                 msg->buffer_size = sample_size;
                 msg->buffer_type = sample_type;
@@ -375,6 +410,12 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
     }
 
     if (sample_type == STREAM_TYPE_H264 || sample_type == STREAM_TYPE_HEVC || sample_type == STREAM_TYPE_MPEG2) {
+        if (!sample || sample_size <= 0 ||
+            sample_size > MAX_THUMBNAIL_BUFFER_SIZE - AV_INPUT_BUFFER_PADDING_SIZE) {
+            fprintf(stderr,"received frame: dropping video sample of %d bytes (limit %d)\n",
+                    sample_size, MAX_THUMBNAIL_BUFFER_SIZE - AV_INPUT_BUFFER_PADDING_SIZE);
+            return 0;
+        }
         if (!srtcore->video_initialized) {
             pthread_mutex_lock(srtcore->video_init_lock);
             if (!srtcore->video_initialized) {
@@ -399,6 +440,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
             uint8_t *buffer = (uint8_t*)memory_take(srtcore->videopool, threadid);
             if (buffer) {
                 memcpy(buffer, sample, sample_size);
+                memset(buffer + sample_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
                 msg->buffer = (void*)buffer;
                 msg->buffer_size = sample_size;
                 msg->buffer_type = sample_type;
@@ -413,7 +455,7 @@ static int receive_frame(uint8_t *sample, int sample_size, int sample_type, uint
                 msg = NULL;
             }
         } else {
-            fprintf(stderr,"received frame: msg buffers exhausted, thumbnailqueue=%d\n", dataqueue_get_size(srtcore->msgpool));
+            fprintf(stderr,"received frame: msg buffers exhausted, thumbnailqueue=%d\n", dataqueue_get_size(srtcore->thumbnailqueue));
         }
     }
 
@@ -478,7 +520,7 @@ static void clear_pid_summary(srthub_core_struct *srtcore)
 static int send_restart_message(srthub_core_struct *srtcore)
 {
     dataqueue_message_struct *msg;
-    int threadid = gettid();
+    int threadid = srthub_gettid();
 
     msg = (dataqueue_message_struct*)memory_take(srtcore->msgpool, threadid);
     if (msg) {
@@ -496,7 +538,7 @@ static void *srt_receiver_thread_listener(void *context)
 {
     srt_receive_thread_listener_struct *srtdata;
     srthub_core_struct *srtcore;
-    transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
+    transport_data_struct *decode = create_transport_data();
     SRTSOCKET listener = SRT_INVALID_SOCK;
     SRTSOCKET client_sock = SRT_INVALID_SOCK;
     struct sockaddr_in server_addr;
@@ -506,16 +548,19 @@ static void *srt_receiver_thread_listener(void *context)
     int srterr;
     int no = 0;
     int recvbytes;
-    int update_stats = 0;
+    uint32_t update_stats = 0;
     char *buffer = NULL;
-    struct timeval connect_start;
-    struct timeval connect_stop;
+    int64_t connect_start;
     SRT_TRACEBSTATS stats;
-    int threadid = gettid();
+    int threadid = srthub_gettid();
     int32_t latencyms;
     int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
-    decode->pat_version_number = -1;
+    if (!decode) {
+        fprintf(stderr,"unable to allocate the transport stream decoder\n");
+        free(context);
+        return NULL;
+    }
 
     fprintf(stderr,"srt_receiver_thread_listener: srt_startup() running, thread_id=%d\n", threadid);
     srt_startup();
@@ -532,6 +577,7 @@ static void *srt_receiver_thread_listener(void *context)
     if (listener == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_listener: srt_create_socket() failed\n");
         free(srtdata);
+        destroy_transport_data(decode);
         srt_cleanup();
         return NULL;
     }
@@ -583,17 +629,20 @@ static void *srt_receiver_thread_listener(void *context)
         srt_close(listener);
         srt_cleanup();
         free(srtdata);
-        free(decode);
+        destroy_transport_data(decode);
         srtdata = NULL;
         decode = NULL;
         return NULL;
     }
 
     buffer = (char*)malloc(MAX_UDP_BUFFER_READ);
+    if (!buffer) {
+        goto cleanup_srt_receiver_thread_listener;
+    }
 
     fprintf(stderr,"srt_receiver_thread_listener: starting main thread loop\n");
 
-    gettimeofday(&connect_start, NULL);
+    connect_start = monotonic_ms();
     while (srtcore->srt_receiver_thread_running) {
         srterr = srt_listen(listener, 1);  // only one
         if (srterr == SRT_ERROR) {
@@ -665,8 +714,7 @@ static void *srt_receiver_thread_listener(void *context)
                     srt_connected = 0;
                     update_stats++;
 
-                    gettimeofday(&connect_stop, NULL);
-                    delta_time_no_connection = (int64_t)get_time_difference(&connect_stop, &connect_start) / 1000;
+                    delta_time_no_connection = monotonic_ms() - connect_start;
                     if (delta_time_no_connection >= 5000) {
                         char signal_message[MAX_STRING_SIZE];
                         snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Unable to Connect to %s:%d (Timeout, Trying Again)",
@@ -712,7 +760,7 @@ static void *srt_receiver_thread_listener(void *context)
                     send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
                 }
                 srt_connected = 1;
-                gettimeofday(&connect_start, NULL);
+                connect_start = monotonic_ms();
                 if ((update_stats % 100)==0) {
                     srterr = srt_bstats(client_sock, &stats, clear_it);
                     if (srterr != SRT_ERROR) {
@@ -751,7 +799,7 @@ static void *srt_receiver_thread_listener(void *context)
                             fprintf(statsfile,"    \"packets-lost\":%d,\n", stats.pktRcvLossTotal);
                             fprintf(statsfile,"    \"packets-retransmitted\":%d,\n", stats.pktRetransTotal);
                             fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
-                            fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0);
+                            fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", stats.pktRecvTotal > 0 ? (double)stats.pktRcvLossTotal / (double)stats.pktRecvTotal * (double)100.0 : 0.0);
                             fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                             fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                             fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);
@@ -817,7 +865,7 @@ cleanup_srt_receiver_thread_listener:
         srt_close(client_sock);
         client_sock = SRT_INVALID_SOCK;
     }
-    free(decode);
+    destroy_transport_data(decode);
     free(srtdata);
     free(buffer);
     srt_cleanup();
@@ -837,19 +885,22 @@ static void *srt_receiver_thread_caller(void *context)
     SRTSOCKET serversock = SRT_INVALID_SOCK;
     int recvbytes;
     SRT_TRACEBSTATS stats;
-    transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
-    struct timeval connect_start;
-    struct timeval connect_stop;
+    transport_data_struct *decode = create_transport_data();
+    int64_t connect_start;
     int stats_size;
     uint32_t update_stats;
     char buffer[MAX_PACKET_BUFFER_SIZE];
     char statsfilename[MAX_STRING_SIZE];
     int srt_connected = 0;
-    int threadid = gettid();
+    int threadid = srthub_gettid();
     int32_t latencyms;
     int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
-    decode->pat_version_number = -1;
+    if (!decode) {
+        fprintf(stderr,"unable to allocate the transport stream decoder\n");
+        free(context);
+        return NULL;
+    }
 
     srt_startup();
 
@@ -863,7 +914,7 @@ static void *srt_receiver_thread_caller(void *context)
     serversock = srt_create_socket();
     if (serversock == SRT_ERROR) {
         fprintf(stderr,"srt_receiver_thread_caller: unable to srt_create_socket() successfully\n");
-        free(decode);
+        destroy_transport_data(decode);
         decode = NULL;
         free(srtdata);
         srtdata = NULL;
@@ -956,7 +1007,7 @@ static void *srt_receiver_thread_caller(void *context)
     }
 
     fprintf(stderr,"srt_receiver_thread_caller: finished with srt_connect(), serversock=%d\n", serversock);
-    gettimeofday(&connect_start, NULL);
+    connect_start = monotonic_ms();
 
     /*
     // Set the local bind address and port
@@ -1004,8 +1055,7 @@ static void *srt_receiver_thread_caller(void *context)
                 srt_connected = 0;
                 update_stats++;
 
-                gettimeofday(&connect_stop, NULL);
-                delta_time_no_connection = (int64_t)get_time_difference(&connect_stop, &connect_start) / 1000;
+                delta_time_no_connection = monotonic_ms() - connect_start;
                 if (delta_time_no_connection >= 5000) {
                     char signal_message[MAX_STRING_SIZE];
                     snprintf(signal_message,MAX_STRING_SIZE-1,"SRT Unable to Connect to %s:%d (Timeout, Trying Again)",
@@ -1047,7 +1097,7 @@ static void *srt_receiver_thread_caller(void *context)
                 send_signal(srtcore, SIGNAL_SRT_CONNECTED, signal_message);
             }
             srt_connected = 1;
-            gettimeofday(&connect_start, NULL);
+            connect_start = monotonic_ms();
             if ((update_stats % 100)==0) {
                 srterr = srt_bstats(serversock, &stats, clear_it);
                 if (srterr != SRT_ERROR) {
@@ -1086,7 +1136,7 @@ static void *srt_receiver_thread_caller(void *context)
                         fprintf(statsfile,"    \"packets-lost\":%d,\n", stats.pktRcvLossTotal);
                         fprintf(statsfile,"    \"packets-retransmitted\":%d,\n", stats.pktRetransTotal);
                         fprintf(statsfile,"    \"packets-dropped\":%d,\n", stats.pktRcvDropTotal);
-                        fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", (double)stats.pktRcvDropTotal / (double)stats.pktRecvTotal * (double)100.0);
+                        fprintf(statsfile,"    \"loss-percentage\":%.2f,\n", stats.pktRecvTotal > 0 ? (double)stats.pktRcvDropTotal / (double)stats.pktRecvTotal * (double)100.0 : 0.0);
                         fprintf(statsfile,"    \"bitrate-kbps\":%.2f,\n", (double)stats.mbpsRecvRate * (double)1000.0);
                         fprintf(statsfile,"    \"latencyms\":%d,\n", latencyms);
                         fprintf(statsfile,"    \"transport-stream-id\":%d,\n", decode->pat_transport_stream_id);
@@ -1143,7 +1193,7 @@ static void *srt_receiver_thread_caller(void *context)
     }
 
 cleanup_srt_receiver_thread_caller:
-    free(decode);
+    destroy_transport_data(decode);
     decode = NULL;
     free(srtdata);
     srtdata = NULL;
@@ -1288,6 +1338,7 @@ cleanup_srt_server_worker_output_thread:
     pthread_mutex_unlock(srtcore->srtserverlock);
     srt_close(clientsock);
     unlink(statsfilename);
+    free(srtdata);
     return NULL;
 }
 
@@ -1740,21 +1791,30 @@ static void *udp_receiver_thread(void *context)
     char signal_msg[MAX_STRING_SIZE];
     int input_signal = 0;
     char statsfilename[MAX_STRING_SIZE];
-    transport_data_struct *decode = (transport_data_struct*)malloc(sizeof(transport_data_struct));
+    transport_data_struct *decode = create_transport_data();
     int64_t total_bytes_received = 0;
     int64_t total_packets_received = 0;
     struct timespec receive_time_stop;
     struct timespec receive_time_start;
     struct timespec signal_check_stop;
     struct timespec signal_check_start;
-    int threadid = gettid();
+    int threadid = srthub_gettid();
 
-    decode->pat_version_number = -1;
+    if (!decode) {
+        fprintf(stderr,"unable to allocate the transport stream decoder\n");
+        free(context);
+        return NULL;
+    }
 
     udpdata = (udp_receiver_thread_struct*)context;
     srtcore = udpdata->core;
 
     udp_buffer = (uint8_t*)malloc(MAX_UDP_BUFFER_READ);
+    if (!udp_buffer) {
+        destroy_transport_data(decode);
+        free(udpdata);
+        return NULL;
+    }
     multicast_input = is_multicast_address(udpdata->source_address);
 
     udp_socket = socket_udp_open(udpdata->interface_name,
@@ -1768,7 +1828,7 @@ static void *udp_receiver_thread(void *context)
     clock_gettime(CLOCK_MONOTONIC, &signal_check_start);
     while (srtcore->udp_receiver_thread_running) {
         if (no_signal_count >= 5) {
-            if (udp_socket > 0) {
+            if (udp_socket >= 0) {
                 socket_udp_close(udp_socket);
             }
             udp_socket = socket_udp_open(udpdata->interface_name,
@@ -1786,7 +1846,19 @@ static void *udp_receiver_thread(void *context)
             continue;
         }
 
-        anysignal = socket_udp_ready(udp_socket, timeout_ms, &sockset);
+        if (udp_socket < 0) {
+            /* the open failed (missing interface, no socket slot, ...):
+             * count it as a second without signal so the reopen below
+             * retries, rather than selecting on an invalid descriptor */
+            usleep(timeout_ms * 1000);
+            anysignal = 0;
+        } else {
+            anysignal = socket_udp_ready(udp_socket, timeout_ms, &sockset);
+            if (anysignal < 0) {
+                usleep(10000);
+                continue;
+            }
+        }
         if (anysignal == 0) {
             no_signal_count++;
             source_interruptions++;
@@ -1916,11 +1988,11 @@ static void *udp_receiver_thread(void *context)
         }
     }
 // cleanup_udp_receiver_thread:
-    if (udp_socket > 0) {
+    if (udp_socket >= 0) {
         socket_udp_close(udp_socket);
     }
     free(udp_buffer);
-    free(decode);
+    destroy_transport_data(decode);
     free(udpdata);
 
     return NULL;
@@ -2027,7 +2099,7 @@ static void *udp_server_thread(void *context)
     struct in_addr interface_address;
     struct sockaddr_in bind_address;
     struct sockaddr_in destination;
-    struct ifaddrs *ifaddr;
+    struct ifaddrs *ifaddr = NULL;
     struct ifaddrs *ifa;
     int output_socket = 0;
     int yes = 1;
@@ -2049,6 +2121,9 @@ static void *udp_server_thread(void *context)
     srtcore = udpdata->core;
 
     output_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (output_socket < 0) {
+        fprintf(stderr,"udp_server_thread: unable to create the output socket\n");
+    }
     setsockopt(output_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
     inet_aton(udpdata->destination_address, &output_address);
@@ -2056,7 +2131,9 @@ static void *udp_server_thread(void *context)
     destination.sin_addr.s_addr = output_address.s_addr;
     destination.sin_port = htons(udpdata->destination_port);
 
-    getifaddrs(&ifaddr);
+    if (getifaddrs(&ifaddr) != 0) {
+        ifaddr = NULL;
+    }
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if (ifa->ifa_addr && ifa->ifa_addr->sa_family) {
             sin_family = ifa->ifa_addr->sa_family;
@@ -2068,8 +2145,11 @@ static void *udp_server_thread(void *context)
             break;
         }
     }
-    freeifaddrs(ifaddr);
+    if (ifaddr) {
+        freeifaddrs(ifaddr);
+    }
     inet_aton(host, &interface_address);
+    memset(&bind_address, 0, sizeof(bind_address));
     bind_address.sin_port = htons(INADDR_ANY);
     bind_address.sin_addr.s_addr = interface_address.s_addr;
     bind_address.sin_family = AF_INET;
@@ -2287,7 +2367,17 @@ static void *srthub_audio_thread(void *context)
                 buffer = NULL;
                 msg = NULL;
 
-                FILE *statsfile = fopen(statsfilename,"wb");
+                /* Undecodable audio is dropped as fast as it arrives: the
+                 * buffers come from a pool shared by every audio track, so
+                 * pacing this loop would starve the decodable ones. Only the
+                 * status write is paced. */
+                clock_gettime(CLOCK_MONOTONIC, &audio_stop);
+                diff = realtime_clock_difference(&audio_stop, &audio_start) / 1000;
+                FILE *statsfile = NULL;
+                if (diff >= 1000) {
+                    statsfile = fopen(statsfilename,"wb");
+                    clock_gettime(CLOCK_MONOTONIC, &audio_start);
+                }
                 if (statsfile) {
                     fprintf(statsfile,"{\n");
                     if (buffer_type == STREAM_TYPE_MPEG) {
@@ -2304,7 +2394,6 @@ static void *srthub_audio_thread(void *context)
                     fprintf(statsfile,"}\n");
                     fclose(statsfile);
                 }
-                usleep(100000);
                 continue;
             }
 
@@ -2427,6 +2516,7 @@ typedef struct { const uint8_t *d; int nbits, pos; } br_t;
 static int br_u1(br_t *b){ if(b->pos>=b->nbits) return 0;
     int v=(b->d[b->pos>>3]>>(7-(b->pos&7)))&1; b->pos++; return v; }
 static unsigned br_ue(br_t *b){ int z=0; while(b->pos<b->nbits && !br_u1(b)) z++;
+    if(z>31) return 0;   /* not a valid code in 32 bits; 1u<<z would be undefined */
     unsigned v=0; for(int i=0;i<z;i++) v=(v<<1)|br_u1(b); return (1u<<z)-1u+v; }
 
 // slice_type for a slice NAL (0..9); I-slice iff (slice_type % 5) == 2
@@ -2709,15 +2799,14 @@ void *srthub_thumbnail_thread(void *context)
     uint32_t decode_errors = 0;
     int rp = 0;
     int nt = 0;
-    struct timeval thumbnail_timer_stop;
-    struct timeval thumbnail_timer_start;
+    int64_t thumbnail_timer_start;
     int64_t thumbnail_timer_delta = 0;
 
     srtcore = (srthub_core_struct*)context;
 
     sprintf(statsfilename,"/opt/srthub/status/thumbnail_%d.json", srtcore->session_identifier);
 
-    gettimeofday(&thumbnail_timer_start, NULL);
+    thumbnail_timer_start = monotonic_ms();
     memset(corruptiontimedate, 0, sizeof(corruptiontimedate));
     memset(&aspect_tracker, 0, sizeof(aspect_tracker));
     memset(&resolution_tracker, 0, sizeof(resolution_tracker));
@@ -2755,14 +2844,12 @@ void *srthub_thumbnail_thread(void *context)
             }
 
             if (corruption_count > 0 && corruption_count != srtcore->last_corruption_count) {
-                int l;
+                struct tm local_time;
                 srtcore->last_corruption_time = time(NULL);
-                srtcore->last_corruption_time = timegm(localtime(&srtcore->last_corruption_time));
-                struct tm* local_time = localtime(&srtcore->last_corruption_time);
-                sprintf(corruptiontimedate, "%s", asctime(local_time));
-                l = strlen(corruptiontimedate);
-                if (l > 0) {
-                    corruptiontimedate[l-1] = '\0'; // remove the \n
+                if (localtime_r(&srtcore->last_corruption_time, &local_time)) {
+                    /* the asctime() layout, without its trailing newline */
+                    strftime(corruptiontimedate, sizeof(corruptiontimedate),
+                             "%a %b %e %H:%M:%S %Y", &local_time);
                 }
                 srtcore->last_corruption_count = corruption_count;
             }
@@ -2901,11 +2988,11 @@ void *srthub_thumbnail_thread(void *context)
                             break;
                         }
                     }
+                    rp++;
                 }
             }
 
-            gettimeofday(&thumbnail_timer_stop, NULL);
-            thumbnail_timer_delta = (int64_t)get_time_difference(&thumbnail_timer_stop, &thumbnail_timer_start) / 1000;
+            thumbnail_timer_delta = monotonic_ms() - thumbnail_timer_start;
             //if (sync_frame) {
             //    fprintf(stderr,"thumbnail_timer_delta=%ld, data_size=%d\n", thumbnail_timer_delta, data_size);
             //} else {
@@ -3141,7 +3228,7 @@ void *srthub_thumbnail_thread(void *context)
                                     sprintf(codec,"mpeg2");
                                 } else if (buffer_type == STREAM_TYPE_HEVC) {
                                     sprintf(codec,"hevc");
-                                } else if (buffer_type == STREAM_TYPE_HEVC) {
+                                } else if (buffer_type == STREAM_TYPE_AV1) {
                                     sprintf(codec,"av1");
                                 } else {
                                     sprintf(codec,"unknown");
@@ -3177,7 +3264,7 @@ void *srthub_thumbnail_thread(void *context)
 
                                 jpeg_frame = av_frame_alloc();
                                 if (jpeg_frame) {
-                                    gettimeofday(&thumbnail_timer_start, NULL);
+                                    thumbnail_timer_start = monotonic_ms();
 
                                     jpeg_frame->data[0] = output_data[0];
                                     jpeg_frame->data[1] = output_data[1];
@@ -3267,11 +3354,39 @@ cleanup_thumbnail_thread:
     return NULL;
 }
 
+/* Appends the push/pull role to a mode ("srt" + "push"), bounded by the
+ * mode buffer. strncat's limit counts appended bytes, not the buffer, so the
+ * old call overflowed a long mode into the fields after it. */
+static void append_mode(char *mode, const char *role)
+{
+    size_t used = strlen(mode);
+    if (used < MAX_STRING_SIZE - 1) {
+        snprintf(mode + used, MAX_STRING_SIZE - used, "%s", role);
+    }
+}
+
+/* A config value as text. The web app writes every value as a JSON string,
+ * but a hand-written or older config can carry a number, and anything else
+ * (null, an object, ...) has no valuestring at all: dereferencing that is
+ * what crashed srthub on a config with "sourceport": 9000. */
+static const char *config_string(const cJSON *item, char *scratch, int scratch_size)
+{
+    if (cJSON_IsString(item) && item->valuestring) {
+        return item->valuestring;
+    }
+    if (cJSON_IsNumber(item)) {
+        snprintf(scratch, scratch_size, "%.0f", item->valuedouble);
+        return scratch;
+    }
+    return "";
+}
+
 int srthub_read_config(char *filename, srthub_configuration_struct *config)
 {
     FILE *configfile;
     int br;
     char configbuffer[MAX_CONFIG_SIZE];
+    char field_scratch[64];
 
     memset(config, 0, sizeof(srthub_configuration_struct));
 
@@ -3279,6 +3394,7 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
     if (configfile) {
         br = fread(configbuffer, 1, MAX_CONFIG_SIZE-1, configfile);
         if (br > 0) {
+            configbuffer[br] = 0;   /* cJSON_Parse needs the terminator fread does not write */
             cJSON *top = cJSON_Parse(configbuffer);
             if (top) {
                 cJSON *sourcename_field;
@@ -3326,93 +3442,93 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
 
                 fprintf(stderr,"-------------------- configuration options -----------------------\n");
                 if (sourcename_field) {
-                    snprintf(config->sourcename,MAX_STRING_SIZE-1,"%s",sourcename_field->valuestring);
+                    snprintf(config->sourcename,MAX_STRING_SIZE-1,"%s",config_string(sourcename_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"sourcename:%s\n", config->sourcename);
                 }
                 if (streamid_field) {
-                    snprintf(config->streamid,MAX_STRING_SIZE-1,"%s",streamid_field->valuestring);
+                    snprintf(config->streamid,MAX_STRING_SIZE-1,"%s",config_string(streamid_field, field_scratch, sizeof(field_scratch)));
                     if (strlen(config->streamid) > 0) {
                         fprintf(stderr,"streamid:%s\n", config->streamid);
                     }
                 }
                 if (sourcemode_field) {
-                    snprintf(config->sourcemode,MAX_STRING_SIZE-1,"%s",sourcemode_field->valuestring);
+                    snprintf(config->sourcemode,MAX_STRING_SIZE-1,"%s",config_string(sourcemode_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"sourcemode:%s\n", config->sourcemode);
                 }
                 if (sourceaddress_field) {
-                    snprintf(config->sourceaddress,MAX_STRING_SIZE-1,"%s",sourceaddress_field->valuestring);
+                    snprintf(config->sourceaddress,MAX_STRING_SIZE-1,"%s",config_string(sourceaddress_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"sourceaddress:%s\n", config->sourceaddress);
                 }
                 if (sourceinterface_field) {
-                    snprintf(config->sourceinterface,MAX_STRING_SIZE-1,"%s",sourceinterface_field->valuestring);
+                    snprintf(config->sourceinterface,MAX_STRING_SIZE-1,"%s",config_string(sourceinterface_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"sourceinterface:%s\n", config->sourceinterface);
                 }
                 if (sourceport_field) {
-                    config->sourceport = atoi(sourceport_field->valuestring);
+                    config->sourceport = atoi(config_string(sourceport_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"sourceport:%d\n", config->sourceport);
                 }
                 if (outputmode_field) {
-                    snprintf(config->outputmode,MAX_STRING_SIZE-1,"%s",outputmode_field->valuestring);
+                    snprintf(config->outputmode,MAX_STRING_SIZE-1,"%s",config_string(outputmode_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"outputmode:%s\n", config->outputmode);
                 }
                 if (outputaddress_field) {
-                    snprintf(config->outputaddress,MAX_STRING_SIZE-1,"%s",outputaddress_field->valuestring);
+                    snprintf(config->outputaddress,MAX_STRING_SIZE-1,"%s",config_string(outputaddress_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"outputaddress:%s\n", config->outputaddress);
                 }
                 if (outputinterface_field) {
-                    snprintf(config->outputinterface,MAX_STRING_SIZE-1,"%s",outputinterface_field->valuestring);
+                    snprintf(config->outputinterface,MAX_STRING_SIZE-1,"%s",config_string(outputinterface_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"outputinterface:%s\n", config->outputinterface);
                 }
                 if (outputport_field) {
-                    config->outputport = atoi(outputport_field->valuestring);
+                    config->outputport = atoi(config_string(outputport_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"outputport:%d\n", config->outputport);
                 }
                 if (outputttl_field) {
-                    config->outputttl = atoi(outputttl_field->valuestring);
+                    config->outputttl = atoi(config_string(outputttl_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"outputttl:%d\n", config->outputttl);
                 } else {
                     config->outputttl = 16;
                 }
                 if (keysize_field) {
-                    config->keysize = atoi(keysize_field->valuestring);
+                    config->keysize = atoi(config_string(keysize_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"keysize:%d\n", config->keysize);
                 } else {
                     config->keysize = 0;
                 }
                 if (passphrase_field) {
-                    snprintf(config->passphrase,MAX_STRING_SIZE-1,"%s",passphrase_field->valuestring);
+                    snprintf(config->passphrase,MAX_STRING_SIZE-1,"%s",config_string(passphrase_field, field_scratch, sizeof(field_scratch)));
                     if (strlen(config->passphrase) > 0) {
-                        fprintf(stderr,"passphrase:%s\n", config->passphrase);
+                        fprintf(stderr,"passphrase:(set, %d characters)\n", (int)strlen(config->passphrase));
                     }
                 }
                 if (servermode_field) {
-                    snprintf(config->servermode,MAX_STRING_SIZE-1,"%s",servermode_field->valuestring);
+                    snprintf(config->servermode,MAX_STRING_SIZE-1,"%s",config_string(servermode_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"servermode:%s\n", config->servermode);
                 }
                 if (clientmode_field) {
-                    snprintf(config->clientmode,MAX_STRING_SIZE-1,"%s",clientmode_field->valuestring);
+                    snprintf(config->clientmode,MAX_STRING_SIZE-1,"%s",config_string(clientmode_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"clientmode:%s\n", config->clientmode);
                 }
                 if (managementserverip_field) {
-                    snprintf(config->managementip,MAX_STRING_SIZE-1,"%s",managementserverip_field->valuestring);
+                    snprintf(config->managementip,MAX_STRING_SIZE-1,"%s",config_string(managementserverip_field, field_scratch, sizeof(field_scratch)));
                     if (strlen(config->managementip) > 0) {
                         fprintf(stderr,"managementip:%s\n", config->managementip);
                     }
                 }
                 if (latencyms_field) {
-                    config->latencyms = atoi(latencyms_field->valuestring);
+                    config->latencyms = atoi(config_string(latencyms_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"latency:%d\n", config->latencyms);
                 } else {
                     config->latencyms = 120;
                 }
                 if (overheadbw_field) {
-                    config->overheadbw = atoi(overheadbw_field->valuestring);
+                    config->overheadbw = atoi(config_string(overheadbw_field, field_scratch, sizeof(field_scratch)));
                     fprintf(stderr,"overheadbw:%d%%\n", config->overheadbw);
                 } else {
                     config->overheadbw = 25;
                 }
                 if (whitelist_field) {
-                    snprintf(config->whitelist,MAX_STRING_SIZE-1,"%s",whitelist_field->valuestring);
+                    snprintf(config->whitelist,MAX_STRING_SIZE-1,"%s",config_string(whitelist_field, field_scratch, sizeof(field_scratch)));
                     if (strlen(config->whitelist) > 0) {
                         fprintf(stderr,"whitelist:%s\n", config->whitelist);
                     }
@@ -3420,19 +3536,19 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
 
                 if (strncmp(config->sourcemode,"srt",3)==0) {
                     if (strncmp(config->clientmode,"push",4)==0) {
-                        strncat(config->sourcemode, config->clientmode, MAX_STRING_SIZE-1);
+                        append_mode(config->sourcemode, config->clientmode);
                     }
                     if (strncmp(config->clientmode,"pull",4)==0) {
-                        strncat(config->sourcemode, config->clientmode, MAX_STRING_SIZE-1);
+                        append_mode(config->sourcemode, config->clientmode);
                     }
                     fprintf(stderr,"updated sourcemode:%s\n", config->sourcemode);
                 }
                 if (strncmp(config->outputmode,"srt",3)==0) {
                     if (strncmp(config->servermode,"push",4)==0) {
-                        strncat(config->outputmode, config->servermode, MAX_STRING_SIZE-1);
+                        append_mode(config->outputmode, config->servermode);
                     }
                     if (strncmp(config->servermode,"pull",4)==0) {
-                        strncat(config->outputmode, config->servermode, MAX_STRING_SIZE-1);
+                        append_mode(config->outputmode, config->servermode);
                     }
                     fprintf(stderr,"updated outputmode:%s\n", config->outputmode);
                 }

@@ -58,7 +58,7 @@ typedef struct _scte35_recent_cue_struct_ {
     int      cue_direction;
     int      cancel;
     int      segmentation_type;
-    time_t   last_seen;
+    int64_t  last_seen;          /* monotonic seconds, so a wall clock step cannot hold a cue back */
 } scte35_recent_cue_struct;
 
 typedef struct _srthub_configuration_struct_ {
