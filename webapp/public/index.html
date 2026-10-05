@@ -1872,11 +1872,11 @@
         detailsHtml = `
           <div class="detail-item">
             <span class="detail-label">SRT Source</span>
-            <span class="detail-value">${service.sourceaddress}:${service.sourceport}</span>
+            <span class="detail-value">${escapeHtml(service.sourceaddress)}:${escapeHtml(service.sourceport)}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">UDP Output</span>
-            <span class="detail-value">${service.outputaddress}:${service.outputport}</span>
+            <span class="detail-value">${escapeHtml(service.outputaddress)}:${escapeHtml(service.outputport)}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Mode</span>
@@ -1904,11 +1904,11 @@
         detailsHtml = `
           <div class="detail-item">
             <span class="detail-label">UDP Source</span>
-            <span class="detail-value">${service.sourceaddress}:${service.sourceport}</span>
+            <span class="detail-value">${escapeHtml(service.sourceaddress)}:${escapeHtml(service.sourceport)}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">SRT Server</span>
-            <span class="detail-value">${service.outputaddress}:${service.outputport}</span>
+            <span class="detail-value">${escapeHtml(service.outputaddress)}:${escapeHtml(service.outputport)}</span>
           </div>
           <div class="detail-item">
             <span class="detail-label">Mode</span>
@@ -1921,7 +1921,7 @@
           detailsHtml += `
             <div class="detail-item">
               <span class="detail-label">Connections</span>
-              <span class="detail-value">${connCount} / ${maxConn}</span>
+              <span class="detail-value">${connCount} / ${escapeHtml(maxConn)}</span>
             </div>
           `;
         }
@@ -2079,7 +2079,7 @@
       // Thumbnail section
       const thumbnailHtml = isRunning ? `
         <span class="thumbnail-live-badge">Live</span>
-        <img id="thumbnail${service.id}" src="${service.thumbnailUrl}?=${Date.now()}" alt="Stream preview" 
+        <img id="thumbnail${service.id}" src="${escapeHtml(service.thumbnailUrl)}?=${Date.now()}" alt="Stream preview" 
              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
         <div class="thumbnail-placeholder" style="display: none;">
           <div class="thumbnail-placeholder-icon">⚠</div>
@@ -2108,11 +2108,11 @@
       `;
 
       return `
-        <div class="service-card" data-service-id="${service.id}" data-fileprefix="${service.fileprefix}">
+        <div class="service-card" data-service-id="${escapeHtml(service.id)}" data-fileprefix="${escapeHtml(service.fileprefix)}">
           <div class="service-header">
             <div class="service-info">
               <span class="service-type-badge ${badgeClass}">${badgeText}</span>
-              <span class="service-name">${service.sourcename}</span>
+              <span class="service-name">${escapeHtml(service.sourcename)}</span>
             </div>
             <div class="service-status ${statusClass}">
               ${isRunning ? '<span class="status-dot"></span>' : '○'}
