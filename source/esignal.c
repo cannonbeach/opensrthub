@@ -270,7 +270,25 @@ void *signal_thread(void *context)
 
             int buffer_type = msg->buffer_type;
 
-            if (buffer_type == SIGNAL_SRT_CONNECTED) {
+            if (buffer_type == SIGNAL_SRT_LISTEN_FAILED ||
+                buffer_type == SIGNAL_SRT_LISTENING) {
+                snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
+                         "{\n"
+                         "    \"accesstime\": \"%s\",\n"
+                         "    \"host\": \"%s\",\n"
+                         "    \"sourcename\": \"%s\",\n"
+                         "    \"id\": %ld,\n"
+                         "    \"status\": \"%s\",\n"
+                         "    \"message\": \"%s\"\n"
+                         "}\n",
+                         formattedtime,
+                         node_hostname,
+                         sourcename,
+                         id,
+                         buffer_type == SIGNAL_SRT_LISTEN_FAILED ? "error" : "success",
+                         msg->smallbuf);
+                signal_management_interface(core, response_buffer, strlen(response_buffer));
+            } else if (buffer_type == SIGNAL_SRT_CONNECTED) {
                 snprintf(response_buffer, MAX_SIGNAL_RESPONSE_SIZE-1,
                          "{\n"
                          "    \"accesstime\": \"%s\",\n"

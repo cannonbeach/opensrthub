@@ -60,6 +60,8 @@
 #define SIGNAL_VIDEO_RESOLUTION_CHANGE 0x1d  // source coded resolution changed
 #define SIGNAL_VIDEO_AFD_CHANGE      0x1e  // source active format description changed
 #define SIGNAL_VIDEO_FRAMERATE_CHANGE 0x1f  // source coded frame rate changed
+#define SIGNAL_SRT_LISTEN_FAILED     0x20  // an SRT listener cannot bind its address
+#define SIGNAL_SRT_LISTENING         0x21  // an SRT listener bound after failing to
 
 #define SIGNAL_DIRECT_ERROR_AVSYNC   0xe0
 #define SIGNAL_DIRECT_ERROR_MSGPOOL  0xe1

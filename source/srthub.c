@@ -32,6 +32,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <string.h>
+#include <errno.h>
 #include "srt.h"
 #include "mempool.h"
 #include "srthub.h"
@@ -534,6 +535,174 @@ static int send_restart_message(srthub_core_struct *srtcore)
     return 0;
 }
 
+/* How often a listener retries a bind that failed, and how often an unchanged
+ * failure is reported again, so a misconfigured service stays visible in the
+ * event log without flooding it. */
+#define SRT_LISTEN_RETRY_SECONDS   5
+#define SRT_LISTEN_REPORT_SECONDS  3600
+
+/* Records a listener that cannot bind, for the dashboard: the service card
+ * shows this instead of looking like a healthy service with no input. */
+static void write_listen_error(srthub_core_struct *srtcore, const char *address, int port, const char *reason)
+{
+    char filename[MAX_STRING_SIZE];
+    char tempname[MAX_STRING_SIZE];
+    FILE *statusfile;
+
+    snprintf(filename, sizeof(filename), "/opt/srthub/status/srt_listen_error_%d.json", srtcore->session_identifier);
+    snprintf(tempname, sizeof(tempname), "%s.temp", filename);
+    statusfile = fopen(tempname, "wb");
+    if (statusfile) {
+        fprintf(statusfile, "{\n");
+        fprintf(statusfile, "    \"address\":\"%s\",\n", address);
+        fprintf(statusfile, "    \"port\":%d,\n", port);
+        fprintf(statusfile, "    \"error\":\"%s\"\n", reason);
+        fprintf(statusfile, "}\n");
+        fclose(statusfile);
+        rename(tempname, filename);
+    }
+}
+
+static void clear_listen_error(srthub_core_struct *srtcore)
+{
+    char filename[MAX_STRING_SIZE];
+
+    snprintf(filename, sizeof(filename), "/opt/srthub/status/srt_listen_error_%d.json", srtcore->session_identifier);
+    unlink(filename);
+}
+
+/* Creates an SRT socket with the listener options and binds it to
+ * address:port. Returns the socket, or SRT_INVALID_SOCK with the reason in
+ * plain words. The reason never repeats the configured address unless it
+ * parsed as one, so it is safe to put in the JSON event and status file. */
+static SRTSOCKET srt_create_bound_listener(const char *address, int port, const int32_t *latencyms,
+                                           const char *passphrase, const char *streamid,
+                                           char *reason, int reason_size)
+{
+    SRTSOCKET sock;
+    struct sockaddr_in bind_addr;
+    int no = 0;
+    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
+    int length;
+
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, address, &bind_addr.sin_addr) != 1) {
+        snprintf(reason, reason_size, "the configured address is not an IPv4 address");
+        return SRT_INVALID_SOCK;
+    }
+
+    sock = srt_create_socket();
+    if (sock == SRT_INVALID_SOCK) {
+        snprintf(reason, reason_size, "unable to create an SRT socket");
+        return SRT_INVALID_SOCK;
+    }
+
+    if (srt_setsockflag(sock, SRTO_SNDSYN, &no, sizeof(no)) == SRT_ERROR ||
+        (latencyms && srt_setsockflag(sock, SRTO_LATENCY, latencyms, sizeof(*latencyms)) == SRT_ERROR) ||
+        srt_setsockflag(sock, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size)) == SRT_ERROR) {
+        goto option_failed;
+    }
+    length = strlen(passphrase);
+    if (length >= 10 && length <= 79 &&
+        srt_setsockflag(sock, SRTO_PASSPHRASE, passphrase, length) == SRT_ERROR) {
+        goto option_failed;
+    }
+    length = strlen(streamid);
+    if (length > 0 && srt_setsockflag(sock, SRTO_STREAMID, streamid, length) == SRT_ERROR) {
+        goto option_failed;
+    }
+
+    if (srt_bind(sock, (struct sockaddr*)&bind_addr, sizeof(bind_addr)) == SRT_ERROR) {
+        int sys_errno = 0;
+
+        /* SRT's own message is a generic "unable to create/configure SRT
+         * socket"; the system errno says what actually went wrong. */
+        srt_getlasterror(&sys_errno);
+        if (sys_errno == EADDRNOTAVAIL) {
+            snprintf(reason, reason_size, "%s is not an address of this machine - use Caller mode to connect to a remote sender",
+                     address);
+        } else if (sys_errno == EADDRINUSE) {
+            snprintf(reason, reason_size, "port %d is already in use on this machine", port);
+        } else if (sys_errno == EACCES) {
+            snprintf(reason, reason_size, "permission denied for port %d", port);
+        } else {
+            snprintf(reason, reason_size, "bind failed (system error %d)", sys_errno);
+        }
+        srt_close(sock);
+        return SRT_INVALID_SOCK;
+    }
+    return sock;
+
+option_failed:
+    snprintf(reason, reason_size, "unable to configure the SRT socket");
+    srt_close(sock);
+    return SRT_INVALID_SOCK;
+}
+
+/* Binds an SRT listener, retrying every SRT_LISTEN_RETRY_SECONDS while
+ * *running is set. A bind can fail for good (an address of another machine)
+ * or for a while (a port another process still holds, an interface not up
+ * yet); either way the service used to stop listening without a word while
+ * still looking like it was running. The failure is now reported as an event
+ * when it first happens, when its reason changes and hourly while it lasts,
+ * and the recovery is reported too. Returns SRT_INVALID_SOCK only once
+ * *running is cleared. */
+static SRTSOCKET srt_bind_listener_retrying(srthub_core_struct *srtcore, int *running,
+                                            const char *address, int port, const int32_t *latencyms,
+                                            const char *passphrase, const char *streamid)
+{
+    char reason[MAX_SMALLBUF_SIZE];
+    char last_reason[MAX_SMALLBUF_SIZE];
+    char message[MAX_SMALLBUF_SIZE];
+    const char *shown_address = address;
+    struct in_addr parsed;
+    int64_t last_report = 0;
+    int failed = 0;
+    int wait;
+
+    /* only an address that parsed is echoed into JSON */
+    if (inet_pton(AF_INET, address, &parsed) != 1) {
+        shown_address = "(invalid address)";
+    }
+    last_reason[0] = 0;
+
+    while (*running) {
+        SRTSOCKET sock;
+
+        reason[0] = 0;
+        sock = srt_create_bound_listener(address, port, latencyms, passphrase, streamid,
+                                         reason, sizeof(reason));
+        if (sock != SRT_INVALID_SOCK) {
+            if (failed) {
+                snprintf(message, sizeof(message), "SRT Listening on %s:%d", shown_address, port);
+                fprintf(stderr,"%s\n", message);
+                send_signal(srtcore, SIGNAL_SRT_LISTENING, message);
+            }
+            clear_listen_error(srtcore);
+            return sock;
+        }
+
+        if (!failed || strcmp(reason, last_reason) != 0 ||
+            monotonic_ms() - last_report >= (int64_t)SRT_LISTEN_REPORT_SECONDS * 1000) {
+            snprintf(message, sizeof(message), "SRT Unable to Listen on %s:%d (%s), retrying every %d seconds",
+                     shown_address, port, reason, SRT_LISTEN_RETRY_SECONDS);
+            fprintf(stderr,"%s\n", message);
+            send_signal(srtcore, SIGNAL_SRT_LISTEN_FAILED, message);
+            write_listen_error(srtcore, shown_address, port, reason);
+            snprintf(last_reason, sizeof(last_reason), "%s", reason);
+            last_report = monotonic_ms();
+        }
+        failed = 1;
+
+        for (wait = 0; wait < SRT_LISTEN_RETRY_SECONDS * 10 && *running; wait++) {
+            usleep(100000);
+        }
+    }
+    return SRT_INVALID_SOCK;
+}
+
 static void *srt_receiver_thread_listener(void *context)
 {
     srt_receive_thread_listener_struct *srtdata;
@@ -541,12 +710,9 @@ static void *srt_receiver_thread_listener(void *context)
     transport_data_struct *decode = create_transport_data();
     SRTSOCKET listener = SRT_INVALID_SOCK;
     SRTSOCKET client_sock = SRT_INVALID_SOCK;
-    struct sockaddr_in server_addr;
-    struct in_addr local_address;
     char statsfilename[MAX_STRING_SIZE];
     int srt_connected = 0;
     int srterr;
-    int no = 0;
     int recvbytes;
     uint32_t update_stats = 0;
     char *buffer = NULL;
@@ -554,7 +720,6 @@ static void *srt_receiver_thread_listener(void *context)
     SRT_TRACEBSTATS stats;
     int threadid = srthub_gettid();
     int32_t latencyms;
-    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     if (!decode) {
         fprintf(stderr,"unable to allocate the transport stream decoder\n");
@@ -573,66 +738,12 @@ static void *srt_receiver_thread_listener(void *context)
 
     sprintf(statsfilename,"/opt/srthub/status/srt_receiver_%d.json", srtcore->session_identifier);
 
-    listener = srt_create_socket();
-    if (listener == SRT_ERROR) {
-        fprintf(stderr,"srt_receiver_thread_listener: srt_create_socket() failed\n");
-        free(srtdata);
-        destroy_transport_data(decode);
-        srt_cleanup();
-        return NULL;
-    }
-
-    inet_aton(srtdata->server_address, &local_address);
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(srtdata->server_port);
-    server_addr.sin_addr.s_addr = local_address.s_addr;
-
-    srterr = srt_setsockflag(listener, SRTO_SNDSYN, &no, sizeof(no));
-    if (srterr == SRT_ERROR) {
-        fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
+    listener = srt_bind_listener_retrying(srtcore, &srtcore->srt_receiver_thread_running,
+                                          srtdata->server_address, srtdata->server_port, &latencyms,
+                                          srtdata->passphrase, srtdata->streamid);
+    if (listener == SRT_INVALID_SOCK) {
+        /* stopped while the bind was still failing */
         goto cleanup_srt_receiver_thread_listener;
-    }
-
-    srterr = srt_setsockflag(listener, SRTO_LATENCY, &latencyms, sizeof(latencyms));
-    if (srterr == SRT_ERROR) {
-        fprintf(stderr,"srt_receiver_thread_caller: unable to proceed with srt_setsockflag()\n");
-        goto cleanup_srt_receiver_thread_listener;
-    }
-
-    srterr = srt_setsockflag(listener, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
-    if (srterr == SRT_ERROR) {
-        fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
-        goto cleanup_srt_receiver_thread_listener;
-    }
-
-    int passphrase_length = strlen(srtdata->passphrase);
-    if (passphrase_length >= 10 && passphrase_length <= 79) {
-        srterr = srt_setsockflag(listener, SRTO_PASSPHRASE, srtdata->passphrase, passphrase_length);
-        if (srterr == SRT_ERROR) {
-            fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
-            goto cleanup_srt_receiver_thread_listener;
-        }
-    }
-
-    int streamid_length = strlen(srtdata->streamid);
-    if (streamid_length > 0) {
-        srterr = srt_setsockflag(listener, SRTO_STREAMID, srtdata->streamid, streamid_length);
-        if (srterr == SRT_ERROR) {
-            fprintf(stderr,"srt_receiver_thread_listener: unable to proceed with srt_setsockflag()\n");
-            goto cleanup_srt_receiver_thread_listener;
-        }
-    }
-
-    srterr = srt_bind(listener, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (srterr == SRT_ERROR) {
-        srt_close(listener);
-        srt_cleanup();
-        free(srtdata);
-        destroy_transport_data(decode);
-        srtdata = NULL;
-        decode = NULL;
-        return NULL;
     }
 
     buffer = (char*)malloc(MAX_UDP_BUFFER_READ);
@@ -646,7 +757,13 @@ static void *srt_receiver_thread_listener(void *context)
     while (srtcore->srt_receiver_thread_running) {
         srterr = srt_listen(listener, 1);  // only one
         if (srterr == SRT_ERROR) {
-            // flag the error
+            char signal_message[MAX_STRING_SIZE];
+            snprintf(signal_message, MAX_STRING_SIZE-1, "SRT Unable to Listen on %s:%d (%s), restarting",
+                     srtdata->server_address, srtdata->server_port, srt_getlasterror_str());
+            fprintf(stderr,"srt_receiver_thread_listener: %s\n", signal_message);
+            send_signal(srtcore, SIGNAL_SRT_LISTEN_FAILED, signal_message);
+            usleep(SRT_LISTEN_RETRY_SECONDS * 1000000);
+            send_restart_message(srtcore);
             goto cleanup_srt_receiver_thread_listener;
         }
 
@@ -1348,80 +1465,35 @@ static void *srt_server_thread_pull(void *context)
     srthub_core_struct *srtcore;
     dataqueue_message_struct *msg;
     SRTSOCKET listener = SRT_INVALID_SOCK;
-    struct sockaddr_in server_addr;
-    struct in_addr local_address;
-    int no = 0;
     int srterr;
     int thread = 0;
     int slots_available = 0;
     int64_t total_bytes_sent = 0;
     int64_t total_packets_sent = 0;
-    int max_srt_packet_size = MAX_SRT_PACKET_SIZE;
 
     srt_startup();
 
     srtdata = (srt_server_thread_struct*)context;
     srtcore = srtdata->core;
 
-    listener = srt_create_socket();
-    if (listener == SRT_ERROR) {
-        // flag the error
-        srt_cleanup();
-        return NULL;
-    }
-
-    inet_aton(srtdata->server_address, &local_address);
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(srtdata->server_port);
-    server_addr.sin_addr.s_addr = local_address.s_addr;
-
-    srterr = srt_setsockflag(listener, SRTO_SNDSYN, &no, sizeof(no));
-    if (srterr == SRT_ERROR) {
-        // srt_getlasterror_str();
-        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
+    listener = srt_bind_listener_retrying(srtcore, &srtcore->srt_server_thread_running,
+                                          srtdata->server_address, srtdata->server_port, NULL,
+                                          srtdata->passphrase, srtdata->streamid);
+    if (listener == SRT_INVALID_SOCK) {
+        /* stopped while the bind was still failing */
         goto cleanup_srt_server_thread_pull;
-    }
-
-    int passphrase_length = strlen(srtdata->passphrase);
-    if (passphrase_length >= 10 && passphrase_length <= 79) {
-        srterr = srt_setsockflag(listener, SRTO_PASSPHRASE, srtdata->passphrase, passphrase_length);
-        if (srterr == SRT_ERROR) {
-            // srt_getlasterror_str();
-            fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
-            goto cleanup_srt_server_thread_pull;
-        }
-    }
-
-    int streamid_length = strlen(srtdata->streamid);
-    if (streamid_length > 0) {
-        srterr = srt_setsockflag(listener, SRTO_STREAMID, srtdata->streamid, streamid_length);
-        if (srterr == SRT_ERROR) {
-            // srt_getlasterror_str();
-            fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
-            goto cleanup_srt_server_thread_pull;
-        }
-    }
-
-    srterr = srt_setsockflag(listener, SRTO_PAYLOADSIZE, &max_srt_packet_size, sizeof(max_srt_packet_size));
-    if (srterr == SRT_ERROR) {
-        fprintf(stderr,"srt_server_thread: unable to proceed with srt_setsockflag()\n");
-        goto cleanup_srt_server_thread_pull;
-    }
-
-    srterr = srt_bind(listener, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (srterr == SRT_ERROR) {
-        // flag the error
-        free(srtdata);
-        srt_close(listener);
-        srt_cleanup();
-        return NULL;
     }
 
     while (srtcore->srt_server_thread_running) {
         srterr = srt_listen(listener, MAX_WORKER_THREADS);
         if (srterr == SRT_ERROR) {
-            // flag the error
+            char signal_message[MAX_STRING_SIZE];
+            snprintf(signal_message, MAX_STRING_SIZE-1, "SRT Unable to Listen on %s:%d (%s), restarting",
+                     srtdata->server_address, srtdata->server_port, srt_getlasterror_str());
+            fprintf(stderr,"srt_server_thread: %s\n", signal_message);
+            send_signal(srtcore, SIGNAL_SRT_LISTEN_FAILED, signal_message);
+            usleep(SRT_LISTEN_RETRY_SECONDS * 1000000);
+            send_restart_message(srtcore);
             goto cleanup_srt_server_thread_pull;
         }
 
