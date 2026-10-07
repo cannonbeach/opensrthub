@@ -144,21 +144,62 @@ void register_message_callback(int (*cbfn)(int p1,int64_t p2,int64_t p3,int64_t 
     backup_context = context;
 }
 
-/* Returns the PID carrying SCTE-35 for the first decoded program, or 0 when
+void select_transport_program(transport_data_struct *tsdata, int program_number)
+{
+    if (tsdata) {
+        tsdata->selected_program = (program_number > 0 && program_number <= 0xffff) ? program_number : 0;
+    }
+}
+
+/* Index into master_pmt_table of the monitored program. Automatic selection
+ * keeps the long-standing behaviour of monitoring the first PMT decoded. A
+ * requested program that is not (or not yet) in the stream gives -1 rather
+ * than quietly monitoring a different one. */
+static int find_monitored_index(transport_data_struct *tsdata)
+{
+    int entries = tsdata->master_pat_table.pmt_table_entries;
+    int index;
+
+    if (tsdata->selected_program <= 0) {
+        return 0;
+    }
+    if (entries > MAX_PMT_PIDS) {
+        entries = MAX_PMT_PIDS;
+    }
+    for (index = 0; index < entries; index++) {
+        if (tsdata->master_pmt_table[index].pmt_pid != 0 &&
+            tsdata->master_pmt_table[index].pmt_program_number == tsdata->selected_program) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+int monitored_program_index(transport_data_struct *tsdata)
+{
+    if (!tsdata) {
+        return -1;
+    }
+    return find_monitored_index(tsdata);
+}
+
+/* Returns the PID carrying SCTE-35 for the monitored program, or 0 when
  * the PMT has no SCTE-35 stream (or has not been decoded yet). Takes pmt_lock,
  * so it must not be called from code already holding it. */
 int get_scte35_pid(transport_data_struct *tsdata)
 {
     int scte35_pid = 0;
     int pid_loop;
+    int monitored;
 
     if (!tsdata) {
         return 0;
     }
 
     pthread_mutex_lock(&pmt_lock);
-    if (tsdata->pmt_pid_count > 0) {
-        pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[0];
+    monitored = find_monitored_index(tsdata);
+    if (tsdata->pmt_pid_count > 0 && monitored >= 0) {
+        pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[monitored];
         int stream_count = current_pmt_table->stream_count;
         if (stream_count > MAX_STREAMS) {
             stream_count = MAX_STREAMS;
@@ -216,6 +257,7 @@ int get_pid_summary(transport_data_struct *tsdata, pid_summary_struct *summary)
 {
     int stream_loop;
     int stream_count;
+    int monitored;
 
     if (!summary) {
         return -1;
@@ -228,13 +270,19 @@ int get_pid_summary(transport_data_struct *tsdata, pid_summary_struct *summary)
     pthread_mutex_lock(&pmt_lock);
     /* pmt_pid_count holds one entry per PAT program other than the NIT */
     summary->program_count = tsdata->pmt_pid_count;
-    if (tsdata->pmt_pid_count > 0) {
-        pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[0];
+    summary->requested_program = tsdata->selected_program;
+    for (stream_loop = 0; stream_loop < tsdata->pmt_pid_count && stream_loop < MAX_SUMMARY_PROGRAMS; stream_loop++) {
+        summary->program_list[stream_loop] = tsdata->pat_program_number[stream_loop];
+        summary->program_list_count++;
+    }
+    monitored = find_monitored_index(tsdata);
+    if (tsdata->pmt_pid_count > 0 && monitored >= 0 &&
+        tsdata->master_pmt_table[monitored].pmt_pid != 0) {
+        pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[monitored];
 
         summary->pcr_pid = current_pmt_table->pcr_pid;
-        if (current_pmt_table->pmt_pid != 0) {
-            summary->program_number = current_pmt_table->pmt_program_number;
-        }
+        summary->program_number = current_pmt_table->pmt_program_number;
+        summary->program_found = 1;
 
         stream_count = current_pmt_table->stream_count;
         if (stream_count > MAX_STREAMS) {
@@ -2047,6 +2095,7 @@ int decode_packets(uint8_t *transport_packet_data, int packet_count, transport_d
                                        //backup_caller(2000, 200, pmt_pid, 0, 0, 0, backup_context);
                                        if (tsdata->pmt_pid_count < TSHARDEN_MAX_PMT_PID_IDX) {
                                            tsdata->pmt_pid_index[tsdata->pmt_pid_count] = pmt_pid;
+                                           tsdata->pat_program_number[tsdata->pmt_pid_count] = pat_program_number;
                                            tsdata->pmt_pid_count++;
                                        }
 

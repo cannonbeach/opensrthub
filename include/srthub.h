@@ -36,6 +36,8 @@
 /* Must match MAX_SUMMARY_AUDIO_PIDS in tsdecode.h, for the same reason. */
 #define MAX_SRTHUB_AUDIO_PIDS 8
 #define MAX_SRTHUB_LANG_SIZE  4
+/* Must match MAX_SUMMARY_PROGRAMS in tsdecode.h. */
+#define MAX_SRTHUB_PROGRAMS   32
 
 /* A splice_info section is retransmitted several times a second for the same
  * event, so an identical cue is only reported once. This window re-arms the
@@ -81,6 +83,7 @@ typedef struct _srthub_configuration_struct_ {
     int latencyms;
     char whitelist[MAX_STRING_SIZE];
     int overheadbw;
+    int program;                /* MPTS program number to monitor, 0 = the first */
 } srthub_configuration_struct;
 
 typedef struct _srthub_core_struct_ {
@@ -126,6 +129,10 @@ typedef struct _srthub_core_struct_ {
      * so entry i lines up with the audio_<i> status file. */
     int      program_count;                  /* PAT programs: 1 = SPTS, >1 = MPTS, 0 = no PAT yet */
     int      program_number;                 /* program being decoded, 0 until its PMT */
+    int      program_requested;              /* configured program, 0 = automatic */
+    int      program_found;                  /* 1 once the monitored program's PMT is decoded */
+    int      program_list_count;
+    int      program_list[MAX_SRTHUB_PROGRAMS];  /* PAT program numbers, in PAT order */
     int      pcr_pid;
     int      video_pid;                      /* 0 when the PMT has no video */
     int      video_stream_type;              /* STREAM_TYPE_* from tsdecode.h */

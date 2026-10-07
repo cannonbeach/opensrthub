@@ -662,7 +662,9 @@ const CONFIG_FIELDS = {
     overheadbw:         { kind: 'int', min: 5, max: 100 },
     passphrase:         { kind: 'passphrase' },
     streamid:           { kind: 'streamid' },
-    whitelist:          { kind: 'whitelist' }
+    whitelist:          { kind: 'whitelist' },
+    // MPTS program number to monitor; empty = the first program
+    program:            { kind: 'int', min: 1, max: 65535 }
 };
 const CONFIG_UI_FIELDS = ['fileprefix', 'configindex'];
 const NUMERIC_KINDS = ['port', 'int', 'keysize'];
@@ -1585,7 +1587,12 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                             type: (sfd["transport-type"] === 'SPTS' || sfd["transport-type"] === 'MPTS') ?
                                   sfd["transport-type"] : '',
                             programCount: Number(sfd["program-count"]) || 0,
-                            programNumber: Number(sfd["program-number"]) || 0
+                            programNumber: Number(sfd["program-number"]) || 0,
+                            // every program in the PAT, for choosing one to monitor
+                            programs: Array.isArray(sfd["programs"]) ?
+                                      sfd["programs"].map(Number).filter(n => Number.isInteger(n) && n > 0 && n <= 65535) : [],
+                            programRequested: Number(sfd["program-requested"]) || 0,
+                            programFound: sfd["program-found"] === 1
                         };
 
                         service.pids = {
@@ -2684,6 +2691,20 @@ app.post('/api/v1/update_config/:uid', auth, (req, res) => {
                     // mode string, so recompute it here - otherwise changing the
                     // direction in the UI would leave srthub starting the old one.
                     normalizeConfigModes(newconfig);
+
+                    // srthub reads the program with atoi(), so only a program
+                    // number or empty (automatic) is stored
+                    if (Object.prototype.hasOwnProperty.call(updates, 'program')) {
+                        var programCheck = validateConfigField('program', CONFIG_FIELDS.program,
+                                                               String(updates.program == null ? '' : updates.program), []);
+                        if (programCheck.error) {
+                            res.status(400).json({ status: 'failed', error: programCheck.error });
+                            found = true;
+                            listedfiles++;
+                            return;
+                        }
+                        newconfig.program = programCheck.value;
+                    }
 
                     var listenProblem = listenerAddressProblem(newconfig);
                     if (listenProblem) {

@@ -476,6 +476,15 @@ static void publish_pid_summary(srthub_core_struct *srtcore, transport_data_stru
 
     srtcore->program_count = summary.program_count;
     srtcore->program_number = summary.program_number;
+    srtcore->program_requested = summary.requested_program;
+    srtcore->program_found = summary.program_found;
+    srtcore->program_list_count = summary.program_list_count;
+    if (srtcore->program_list_count > MAX_SRTHUB_PROGRAMS) {
+        srtcore->program_list_count = MAX_SRTHUB_PROGRAMS;
+    }
+    for (i = 0; i < srtcore->program_list_count; i++) {
+        srtcore->program_list[i] = summary.program_list[i];
+    }
     srtcore->pcr_pid = summary.pcr_pid;
     srtcore->video_pid = summary.video_pid;
     srtcore->video_stream_type = summary.video_stream_type;
@@ -512,6 +521,8 @@ static void clear_pid_summary(srthub_core_struct *srtcore)
 {
     srtcore->program_count = 0;
     srtcore->program_number = 0;
+    srtcore->program_found = 0;
+    srtcore->program_list_count = 0;
     srtcore->pcr_pid = 0;
     srtcore->video_pid = 0;
     srtcore->video_stream_type = 0;
@@ -739,6 +750,7 @@ static void *srt_receiver_thread_listener(void *context)
     srtcore = srtdata->core;
 
     latencyms = srtcore->config->latencyms;
+    select_transport_program(decode, srtcore->config->program);
 
     sprintf(statsfilename,"/opt/srthub/status/srt_receiver_%d.json", srtcore->session_identifier);
 
@@ -934,9 +946,9 @@ static void *srt_receiver_thread_listener(void *context)
                 tp = recvbytes / 188;
                 if (check_for_rtp(recvbytes)) {
                     uint8_t *updated_buffer = (uint8_t*)buffer+12;
-                    decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                    decode_packets((uint8_t*)updated_buffer, tp, decode, monitored_program_index(decode));
                 } else {
-                    decode_packets((uint8_t*)buffer, tp, decode, 0);
+                    decode_packets((uint8_t*)buffer, tp, decode, monitored_program_index(decode));
                 }
 
                 {
@@ -1029,6 +1041,7 @@ static void *srt_receiver_thread_caller(void *context)
     srtcore = srtdata->core;
 
     latencyms = srtcore->config->latencyms;
+    select_transport_program(decode, srtcore->config->program);
 
     fprintf(stderr,"srt_receiver_thread_caller: starting srt receiver thread, %d\n", srtcore->session_identifier);
 
@@ -1272,9 +1285,9 @@ static void *srt_receiver_thread_caller(void *context)
 
             if (check_for_rtp(recvbytes)) {
                 uint8_t *updated_buffer = (uint8_t*)buffer+12;
-                decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                decode_packets((uint8_t*)updated_buffer, tp, decode, monitored_program_index(decode));
             } else {
-                decode_packets((uint8_t*)buffer, tp, decode, 0);
+                decode_packets((uint8_t*)buffer, tp, decode, monitored_program_index(decode));
             }
 
             {
@@ -1884,6 +1897,7 @@ static void *udp_receiver_thread(void *context)
 
     udpdata = (udp_receiver_thread_struct*)context;
     srtcore = udpdata->core;
+    select_transport_program(decode, srtcore->config->program);
 
     udp_buffer = (uint8_t*)malloc(MAX_UDP_BUFFER_READ);
     if (!udp_buffer) {
@@ -1990,9 +2004,9 @@ static void *udp_receiver_thread(void *context)
                 tp = bytes_read / 188;
                 if (check_for_rtp(bytes_read)) {
                     uint8_t *updated_buffer = (uint8_t*)udp_buffer+12;
-                    decode_packets((uint8_t*)updated_buffer, tp, decode, 0);
+                    decode_packets((uint8_t*)updated_buffer, tp, decode, monitored_program_index(decode));
                 } else {
-                    decode_packets((uint8_t*)udp_buffer, tp, decode, 0);
+                    decode_packets((uint8_t*)udp_buffer, tp, decode, monitored_program_index(decode));
                 }
 
                 clock_gettime(CLOCK_MONOTONIC, &receive_time_stop);
@@ -3492,6 +3506,7 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
                 cJSON *latencyms_field;
                 cJSON *whitelist_field;
                 cJSON *overheadbw_field;
+                cJSON *program_field;
 
                 sourcename_field = cJSON_GetObjectItem(top,"sourcename");
                 sourcemode_field = cJSON_GetObjectItem(top,"sourcemode");
@@ -3515,6 +3530,7 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
                 managementserverip_field = cJSON_GetObjectItem(top,"managementserverip");
                 overheadbw_field = cJSON_GetObjectItem(top,"overheadbw");
                 latencyms_field = cJSON_GetObjectItem(top,"latency");
+                program_field = cJSON_GetObjectItem(top,"program");
 
                 fprintf(stderr,"-------------------- configuration options -----------------------\n");
                 if (sourcename_field) {
@@ -3602,6 +3618,16 @@ int srthub_read_config(char *filename, srthub_configuration_struct *config)
                     fprintf(stderr,"overheadbw:%d%%\n", config->overheadbw);
                 } else {
                     config->overheadbw = 25;
+                }
+                if (program_field) {
+                    /* empty or 0 means automatic: the first program decoded */
+                    config->program = atoi(config_string(program_field, field_scratch, sizeof(field_scratch)));
+                    if (config->program < 0 || config->program > 0xffff) {
+                        config->program = 0;
+                    }
+                    if (config->program > 0) {
+                        fprintf(stderr,"program:%d\n", config->program);
+                    }
                 }
                 if (whitelist_field) {
                     snprintf(config->whitelist,MAX_STRING_SIZE-1,"%s",config_string(whitelist_field, field_scratch, sizeof(field_scratch)));
@@ -3723,6 +3749,9 @@ int main(int argc, char **argv)
     srtcore.scte35_pid = 0;
     srtcore.program_count = 0;
     srtcore.program_number = 0;
+    srtcore.program_requested = config.program;
+    srtcore.program_found = 0;
+    srtcore.program_list_count = 0;
     srtcore.pcr_pid = 0;
     srtcore.video_pid = 0;
     srtcore.video_stream_type = 0;
@@ -3917,6 +3946,17 @@ restart_srt:
                         srtcore.program_count > 1 ? "MPTS" : (srtcore.program_count == 1 ? "SPTS" : ""));
                 fprintf(statsfile,"    \"program-count\":%d,\n", srtcore.program_count);
                 fprintf(statsfile,"    \"program-number\":%d,\n", srtcore.program_number);
+                /* the configured program (0 = automatic), and whether it is in the stream */
+                fprintf(statsfile,"    \"program-requested\":%d,\n", srtcore.program_requested);
+                fprintf(statsfile,"    \"program-found\":%d,\n", srtcore.program_found);
+                fprintf(statsfile,"    \"programs\":[");
+                {
+                    int program_entry;
+                    for (program_entry = 0; program_entry < srtcore.program_list_count; program_entry++) {
+                        fprintf(statsfile,"%s%d", program_entry ? "," : "", srtcore.program_list[program_entry]);
+                    }
+                }
+                fprintf(statsfile,"],\n");
                 fprintf(statsfile,"    \"pcr-pid\":%d,\n", srtcore.pcr_pid);
                 fprintf(statsfile,"    \"video-pid\":%d,\n", srtcore.video_pid);
                 fprintf(statsfile,"    \"video-type\":\"%s\",\n", stream_type_name(srtcore.video_stream_type));

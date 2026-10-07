@@ -945,6 +945,12 @@
       color: var(--text-secondary);
     }
 
+    .form-hint {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
     .form-input,
     .form-select {
       background: var(--bg-secondary);
@@ -1476,6 +1482,11 @@
                 <label class="form-label">Encryption Passphrase (Optional)</label>
                 <input type="text" class="form-input" id="edit_passphrase_receiver" placeholder="Leave blank for none">
               </div>
+              <div class="form-group">
+                <label class="form-label">Program (MPTS)</label>
+                <select class="form-select" id="edit_program_receiver"></select>
+                <span class="form-hint">Which program of a multi-program stream to monitor. Takes effect when the service is restarted.</span>
+              </div>
             </div>
           </div>
           <div class="form-section">
@@ -1517,6 +1528,11 @@
               <div class="form-group">
                 <label class="form-label">Source Interface</label>
                 <select class="form-select" id="edit_sourceinterface_server"></select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Program (MPTS)</label>
+                <select class="form-select" id="edit_program_server"></select>
+                <span class="form-hint">Which program of a multi-program stream to monitor. Takes effect when the service is restarted.</span>
               </div>
             </div>
           </div>
@@ -2069,13 +2085,19 @@
       // srthub monitors one of them, so the card says which.
       const transport = service.transport || {};
       if (isRunning && (transport.type === 'SPTS' || transport.type === 'MPTS')) {
+        const programs = (Array.isArray(transport.programs) ? transport.programs : [])
+          .map(Number).filter(n => Number.isInteger(n) && n > 0);
+        const requested = Number(transport.programRequested) || 0;
+        const program = Number(transport.programNumber) || 0;
         let transportText = transport.type;
         if (transport.type === 'MPTS') {
           const count = Number(transport.programCount) || 0;
-          const program = Number(transport.programNumber) || 0;
           transportText += ` &middot; ${count} programs`;
+          if (programs.length) {
+            transportText += ` (${programs.join(', ')})`;
+          }
           if (program > 0) {
-            transportText += ` &middot; monitoring program ${program}`;
+            transportText += ` &middot; monitoring program ${program}` + (requested > 0 ? ' (selected)' : ' (first)');
           }
         }
         detailsHtml += `
@@ -2084,6 +2106,15 @@
             <span class="detail-value">${transportText}</span>
           </div>
         `;
+        // a selected program the stream does not carry: nothing is monitored
+        if (requested > 0 && !transport.programFound && programs.length) {
+          detailsHtml += `
+            <div class="detail-item detail-error">
+              <span class="detail-label">Program ${requested} not found</span>
+              <span class="detail-value">This stream carries program${programs.length > 1 ? 's' : ''} ${programs.join(', ')}. Edit the service to choose one.</span>
+            </div>
+          `;
+        }
       }
 
       // Elementary stream pids from the PMT. These are reported independently
@@ -3103,6 +3134,7 @@
         const response = await fetch(`/api/v1/get_config/${fileprefix}`);
         if (!response.ok) throw new Error('Config not found');
         const config = await response.json();
+        const transport = await fetchServiceTransport(fileprefix);
 
         currentEditUid = fileprefix;
         currentEditType = (config.sourcemode || '').startsWith('srt') ? 'receiver' : 'server';
@@ -3130,6 +3162,7 @@
           setEnumSelect('edit_clienttype', config.clienttype);
           setSelectValue('edit_sourceinterface', config.sourceinterface);
           setSelectValue('edit_outputinterface_receiver', config.outputinterface);
+          fillProgramSelect('edit_program_receiver', config.program, transport);
         } else {
           document.getElementById('edit_sourcename_server').value       = config.sourcename      || '';
           document.getElementById('edit_sourceaddress_server').value    = config.sourceaddress   || '';
@@ -3143,6 +3176,7 @@
           setEnumSelect('edit_connectionqueue', config.connectionqueue);
           setSelectValue('edit_sourceinterface_server', config.sourceinterface);
           setSelectValue('edit_outputinterface_server', config.outputinterface);
+          fillProgramSelect('edit_program_server', config.program, transport);
         }
 
         // Close create forms, open edit form
@@ -3153,6 +3187,43 @@
       } catch (error) {
         console.error('Failed to load config for editing:', error);
         alert('Could not load service config for editing.');
+      }
+    }
+
+    // Fills a Program (MPTS) select: automatic, then the programs the running
+    // service reports from its PAT, then the configured program if the stream
+    // no longer carries it (so saving does not silently change it).
+    function fillProgramSelect(selectId, configured, transport) {
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      const programs = (transport && Array.isArray(transport.programs)) ? transport.programs : [];
+      const current = String(configured == null ? '' : configured).trim();
+      select.innerHTML = '';
+      const add = (value, text) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = text;
+        select.appendChild(opt);
+      };
+      add('', programs.length ? `Automatic (first program, ${programs[0]})` : 'Automatic (first program)');
+      programs.forEach(p => add(String(p), `Program ${p}`));
+      if (current && !programs.map(String).includes(current)) {
+        add(current, programs.length ? `Program ${current} (not in the stream now)` : `Program ${current}`);
+      }
+      select.value = current;
+    }
+
+    // The live PAT program list of one service, if it is running.
+    async function fetchServiceTransport(fileprefix) {
+      try {
+        const response = await fetch('/api/v1/get_services');
+        if (!response.ok) return null;
+        const data = await response.json();
+        const list = Array.isArray(data) ? data : (data.services || []);
+        const service = list.find(s => String(s.fileprefix) === String(fileprefix));
+        return service && service.transport ? service.transport : null;
+      } catch (e) {
+        return null;
       }
     }
 
@@ -3221,6 +3292,7 @@
           outputaddress:   document.getElementById('edit_outputaddress_receiver').value,
           outputport:      document.getElementById('edit_outputport_receiver').value,
           outputinterface: document.getElementById('edit_outputinterface_receiver').value,
+          program:         document.getElementById('edit_program_receiver').value,
         };
       } else {
         data = {
@@ -3236,6 +3308,7 @@
           streamid:            document.getElementById('edit_streamid_server').value,
           passphrase:          document.getElementById('edit_passphrase_server').value,
           managementserverip:  document.getElementById('edit_managementserverip').value,
+          program:             document.getElementById('edit_program_server').value,
         };
       }
 

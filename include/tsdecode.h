@@ -229,6 +229,7 @@ typedef struct _pmt_table_struct_ {
  * Audio entries are indexed by the decoder's audio stream index, so entry i
  * corresponds to the audio_<i> status file. */
 #define MAX_SUMMARY_AUDIO_PIDS 8
+#define MAX_SUMMARY_PROGRAMS   32
 
 typedef struct _pid_summary_struct_ {
      int pcr_pid;
@@ -243,6 +244,10 @@ typedef struct _pid_summary_struct_ {
                                         excluded: 1 is an SPTS, more an MPTS; 0 before
                                         a PAT has been seen */
      int program_number;             /* the program being decoded, 0 until its PMT is */
+     int requested_program;          /* program asked for, 0 = automatic (the first) */
+     int program_found;              /* 1 once the monitored program's PMT is decoded */
+     int program_list_count;         /* entries in program_list (capped) */
+     int program_list[MAX_SUMMARY_PROGRAMS];  /* program numbers in the PAT, in PAT order */
 } pid_summary_struct;
 
 typedef struct _pat_table_struct_ {
@@ -290,6 +295,8 @@ typedef struct _transport_data_struct_ {
      int pmt_table_expected;
      int pmt_pid_count;
      int pmt_pid_index[MAX_PMT_PIDS];
+     int pat_program_number[MAX_PMT_PIDS];   /* program number of each pmt_pid_index entry */
+     int selected_program;                   /* program to monitor; 0 = the first one decoded */
      int pmt_decoded[MAX_PMT_PIDS];
      int pmt_version[MAX_PMT_PIDS];
      unsigned long last_pmt_crc[MAX_PMT_PIDS];
@@ -312,6 +319,12 @@ extern "C" {
 
     void register_frame_callback(int (*cbfn)(uint8_t *sample, int sample_size, int sample_type, uint32_t sample_flags, int64_t pts, int64_t dts, int64_t last_pcr, int source, int sub_source, char *lang_tag, int64_t corruption_count, int muxstreams, void *context), void *context);
     void register_message_callback(int (*cbfn)(int p1,int64_t p2,int64_t p3,int64_t p4, int64_t p5, int source, void* context), void*context);
+    /* Chooses the program of a multi-program stream to monitor, by its PAT
+     * program number; 0 (the default) monitors the first program decoded. */
+    void select_transport_program(transport_data_struct *tsdata, int program_number);
+    /* The stream_select to pass to decode_packets() for the chosen program:
+     * its index among the decoded PMTs, or -1 while it has not been found. */
+    int monitored_program_index(transport_data_struct *tsdata);
     /* Allocates zeroed decoder state ready for decode_packets(), or NULL. */
     transport_data_struct *create_transport_data(void);
     /* Frees decoder state together with the frame buffers decode_packets()

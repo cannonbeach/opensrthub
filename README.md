@@ -362,6 +362,23 @@ What restore refuses, and why:
   read. Uploads are limited to 2 MB, and to 16 MB once decompressed, so a
   compression bomb is refused quickly.
 
+#### Multi-program streams (MPTS)
+
+srthub monitors one program of a transport stream: the preview, video and
+audio details, PIDs and SCTE-35 all come from that program. Each running
+service's card has a **Transport** row that says whether the input is a
+single-program (SPTS) or multi-program (MPTS) stream, lists the programs of an
+MPTS, and names the one being monitored.
+
+By default that is the first program srthub decodes. To monitor another, edit
+the service and pick it under **Program (MPTS)**; the list comes from the
+running service, so start it once first. The choice takes effect when the
+service is restarted. It is stored as the program number (the `program`
+setting in the service config, empty for automatic), so it stays correct if
+the programs are reordered. If the stream stops carrying the chosen program,
+srthub monitors nothing rather than switching to another one, and the card
+says the program was not found.
+
 #### Event log and rotation
 
 Every event the streams raise - signal lock and loss, SRT connections, SCTE-35
