@@ -871,7 +871,69 @@ function validateConfigText(buffer) {
         }
     });
 
+    // Same for a listener address: right on the machine the backup came from,
+    // possibly not here.
+    var listenProblem = listenerAddressProblem(config);
+    if (listenProblem) {
+        warnings.push(listenProblem);
+    }
+
     return { config: config, errors: errors, warnings: warnings };
+}
+
+// The config field holding the address a service's SRT listener binds, or
+// null when it has none: a receiver in listener mode (srtpush) waits on its
+// source address, a server in listener mode (srtpull) on its output address.
+function srtListenerAddressField(config) {
+    if (!config) {
+        return null;
+    }
+    if (config.sourcemode === 'srtpush') {
+        return 'sourceaddress';
+    }
+    if (config.outputmode === 'srtpull') {
+        return 'outputaddress';
+    }
+    return null;
+}
+
+// The IPv4 addresses an SRT listener can bind here. srthub runs with
+// --net=host, so the container sees this machine's addresses; 0.0.0.0 means
+// all of them.
+function localListenAddresses() {
+    var found = ['0.0.0.0'];
+    var interfaces = os.networkInterfaces();
+    Object.keys(interfaces).forEach(name => {
+        (interfaces[name] || []).forEach(entry => {
+            if (entry && (entry.family === 'IPv4' || entry.family === 4) && found.indexOf(entry.address) < 0) {
+                found.push(entry.address);
+            }
+        });
+    });
+    return found;
+}
+
+// Why a service's SRT listener could not bind its address, or null when it
+// can (or the service has no listener). A listener given a remote address -
+// usually a sender that should have been called instead - fails to bind, and
+// srthub can only report that once it is running.
+function listenerAddressProblem(config) {
+    var field = srtListenerAddressField(config);
+    if (!field) {
+        return null;
+    }
+    var address = String(config[field] || '').trim();
+    var addresses = localListenAddresses();
+    if (address === '') {
+        return 'Listener mode needs an address on this machine to wait on - ' +
+               'use 0.0.0.0 for all of them, or one of: ' + addresses.slice(1).join(', ') + '.';
+    }
+    if (addresses.indexOf(address) < 0) {
+        return 'Listener mode waits for a connection on an address of this machine, and ' + address +
+               ' is not one of them. Use 0.0.0.0 or one of: ' + addresses.slice(1).join(', ') + '. ' +
+               'To connect out to a sender at ' + address + ', choose Caller mode instead.';
+    }
+    return null;
 }
 
 // The ports a service binds: a UDP input, an SRT listener input, an SRT
@@ -1611,6 +1673,22 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                     }
                 }
 
+                // An SRT listener that cannot bind its address. srthub keeps
+                // retrying and removes the file once it binds.
+                var listenErrorFile = statusFolder + '/srt_listen_error_' + fileprefix + '.json';
+                if (fs.existsSync(listenErrorFile)) {
+                    try {
+                        var listenError = JSON.parse(fs.readFileSync(listenErrorFile, 'utf8'));
+                        service.listenError = {
+                            address: String(listenError.address || ''),
+                            port: listenError.port || '',
+                            error: String(listenError.error || '')
+                        };
+                    } catch (e) {
+                        console.log('Error reading SRT listen error file:', e);
+                    }
+                }
+
                 // Get thumbnail/video info if available
                 var thumbnailStatusFile = statusFolder + '/thumbnail_' + fileprefix + '.json';
                 if (fs.existsSync(thumbnailStatusFile)) {
@@ -1989,6 +2067,11 @@ app.post('/api/v1/new_srt_receiver', auth, (req, res) => {
     config.latency = words.srtreceiver_latency;
     //config.keysize = words.srtreceiver_keysize;
 
+    var listenProblem = listenerAddressProblem(config);
+    if (listenProblem) {
+        return res.status(400).json({ status: 'failed', error: listenProblem });
+    }
+
     // this could cause a collision if multiple services are created at the exact same time
     // so we should look at adding another modifier
     // if the file already exists, we should wait and try again
@@ -2040,6 +2123,11 @@ app.post('/api/v1/new_srt_server', auth, (req, res) => {
     config.connectionqueue = words.srtserver_connectionqueue;
     config.whitelist = words.srtserver_whitelist;
     config.managementserverip = words.srtserver_managementserverip;
+
+    var listenProblem = listenerAddressProblem(config);
+    if (listenProblem) {
+        return res.status(400).json({ status: 'failed', error: listenProblem });
+    }
 
     // this could cause a collision if multiple services are created at the exact same time
     // so we should look at adding another modifier
@@ -2118,6 +2206,7 @@ app.post('/api/v1/stop_service/:uid', auth, (req, res) => {
                 var srt_receiver_statusfile = statusFolder+'/srt_receiver_'+file;
                 var udp_server_statusfile = statusFolder+'/udp_server_'+file;
                 var thumbnail_statusfile = statusFolder+'/thumbnail_'+file;
+                var listen_error_statusfile = statusFolder+'/srt_listen_error_'+file;
                 var configdata = fs.readFileSync(fullfile, 'utf8');
                 var words = JSON.parse(configdata);
                 console.log('this service maps to current file: ', fullfile);
@@ -2140,6 +2229,9 @@ app.post('/api/v1/stop_service/:uid', auth, (req, res) => {
                 }
                 if (fs.existsSync(thumbnail_statusfile)) {
                     fs.unlinkSync(thumbnail_statusfile)
+                }
+                if (fs.existsSync(listen_error_statusfile)) {
+                    fs.unlinkSync(listen_error_statusfile)
                 }
 
                 console.log('stop command: ', stop_cmd);
@@ -2583,6 +2675,14 @@ app.post('/api/v1/update_config/:uid', auth, (req, res) => {
                     // mode string, so recompute it here - otherwise changing the
                     // direction in the UI would leave srthub starting the old one.
                     normalizeConfigModes(newconfig);
+
+                    var listenProblem = listenerAddressProblem(newconfig);
+                    if (listenProblem) {
+                        res.status(400).json({ status: 'failed', error: listenProblem });
+                        found = true;
+                        listedfiles++;
+                        return;
+                    }
 
                     fs.writeFileSync(fullfile, JSON.stringify(newconfig));
                     console.log('Config updated: ', fullfile);

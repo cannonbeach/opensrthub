@@ -390,6 +390,21 @@
       color: var(--text-primary);
     }
 
+    /* A fault that leaves a running service doing nothing, such as an SRT
+       listener that cannot bind its address. Spans the whole detail grid. */
+    .detail-item.detail-error {
+      grid-column: 1 / -1;
+      border-left: 3px solid var(--accent-red);
+      padding-left: 0.6rem;
+    }
+
+    .detail-item.detail-error .detail-value {
+      color: var(--accent-red);
+      font-family: var(--font-sans);
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
     .service-actions {
       display: flex;
       gap: 0.75rem;
@@ -1269,8 +1284,8 @@
             <div class="form-group">
               <label class="form-label">SRT Mode</label>
               <select class="form-select" id="srtreceiver_mode">
+                <option value="pull" selected>Caller (Connect to server)</option>
                 <option value="push">Listener (Wait for connection)</option>
-                <option value="pull">Caller (Connect to server)</option>
               </select>
             </div>
             <div class="form-group">
@@ -2038,6 +2053,16 @@
             </div>
           `;
         }
+      }
+
+      // srthub is running but its SRT listener cannot bind (it keeps retrying)
+      if (service.listenError && isRunning) {
+        detailsHtml += `
+          <div class="detail-item detail-error">
+            <span class="detail-label">Not listening on ${escapeHtml(service.listenError.address)}:${escapeHtml(service.listenError.port)}</span>
+            <span class="detail-value">${escapeHtml(service.listenError.error)}</span>
+          </div>
+        `;
       }
 
       // Elementary stream pids from the PMT. These are reported independently
@@ -3229,11 +3254,20 @@
       };
 
       try {
-        await fetch('/api/v1/new_srt_receiver', {
+        const response = await fetch('/api/v1/new_srt_receiver', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data)
         });
+        if (!response.ok) {
+          // the form stays open so the field can be corrected
+          let message = 'unknown error';
+          try {
+            message = (await response.json()).error || message;
+          } catch (e) { /* not a JSON reply */ }
+          alert('Unable to create the receiver: ' + message);
+          return;
+        }
         document.getElementById('newsrtreceiverpage').classList.remove('active');
         setTimeout(loadServices, 500);
       } catch (error) {
@@ -3258,11 +3292,20 @@
       };
 
       try {
-        await fetch('/api/v1/new_srt_server', {
+        const response = await fetch('/api/v1/new_srt_server', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data)
         });
+        if (!response.ok) {
+          // the form stays open so the field can be corrected
+          let message = 'unknown error';
+          try {
+            message = (await response.json()).error || message;
+          } catch (e) { /* not a JSON reply */ }
+          alert('Unable to create the server: ' + message);
+          return;
+        }
         document.getElementById('newsrtserverpage').classList.remove('active');
         setTimeout(loadServices, 500);
       } catch (error) {
