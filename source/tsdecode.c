@@ -226,10 +226,15 @@ int get_pid_summary(transport_data_struct *tsdata, pid_summary_struct *summary)
     }
 
     pthread_mutex_lock(&pmt_lock);
+    /* pmt_pid_count holds one entry per PAT program other than the NIT */
+    summary->program_count = tsdata->pmt_pid_count;
     if (tsdata->pmt_pid_count > 0) {
         pmt_table_struct *current_pmt_table = (pmt_table_struct *)&tsdata->master_pmt_table[0];
 
         summary->pcr_pid = current_pmt_table->pcr_pid;
+        if (current_pmt_table->pmt_pid != 0) {
+            summary->program_number = current_pmt_table->pmt_program_number;
+        }
 
         stream_count = current_pmt_table->stream_count;
         if (stream_count > MAX_STREAMS) {

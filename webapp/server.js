@@ -1579,6 +1579,15 @@ app.get('/api/v1/get_services', auth, (req, res) => {
                         // Elementary stream pids straight from the PMT. The
                         // audio entries carry the decoder's audio index, which
                         // is what lines them up with the audio status files.
+                        // Single- or multi-program transport stream, from
+                        // the PAT; srthub monitors one program of an MPTS.
+                        service.transport = {
+                            type: (sfd["transport-type"] === 'SPTS' || sfd["transport-type"] === 'MPTS') ?
+                                  sfd["transport-type"] : '',
+                            programCount: Number(sfd["program-count"]) || 0,
+                            programNumber: Number(sfd["program-number"]) || 0
+                        };
+
                         service.pids = {
                             pcr: sfd["pcr-pid"] || 0,
                             video: sfd["video-pid"] || 0,

@@ -124,6 +124,8 @@ typedef struct _srthub_core_struct_ {
      * each status tick and read once a second by the main loop's status
      * writer. Audio entries are indexed by the decoder's audio stream index,
      * so entry i lines up with the audio_<i> status file. */
+    int      program_count;                  /* PAT programs: 1 = SPTS, >1 = MPTS, 0 = no PAT yet */
+    int      program_number;                 /* program being decoded, 0 until its PMT */
     int      pcr_pid;
     int      video_pid;                      /* 0 when the PMT has no video */
     int      video_stream_type;              /* STREAM_TYPE_* from tsdecode.h */

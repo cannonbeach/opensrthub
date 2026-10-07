@@ -474,6 +474,8 @@ static void publish_pid_summary(srthub_core_struct *srtcore, transport_data_stru
         return;
     }
 
+    srtcore->program_count = summary.program_count;
+    srtcore->program_number = summary.program_number;
     srtcore->pcr_pid = summary.pcr_pid;
     srtcore->video_pid = summary.video_pid;
     srtcore->video_stream_type = summary.video_stream_type;
@@ -508,6 +510,8 @@ static void publish_pid_summary(srthub_core_struct *srtcore, transport_data_stru
 /* The PMT goes away with the input, so stop reporting PIDs from it. */
 static void clear_pid_summary(srthub_core_struct *srtcore)
 {
+    srtcore->program_count = 0;
+    srtcore->program_number = 0;
     srtcore->pcr_pid = 0;
     srtcore->video_pid = 0;
     srtcore->video_stream_type = 0;
@@ -3717,6 +3721,8 @@ int main(int argc, char **argv)
     srtcore.videopool = NULL;
     srtcore.video_initialized = 0;
     srtcore.scte35_pid = 0;
+    srtcore.program_count = 0;
+    srtcore.program_number = 0;
     srtcore.pcr_pid = 0;
     srtcore.video_pid = 0;
     srtcore.video_stream_type = 0;
@@ -3906,6 +3912,11 @@ restart_srt:
                 fprintf(statsfile,"    \"session-identifier\":%d,\n", srtcore.session_identifier);
                 fprintf(statsfile,"    \"thumbnail-queue\":%d,\n", dataqueue_get_size(srtcore.thumbnailqueue));
                 fprintf(statsfile,"    \"udpserver-queue\":%d,\n", dataqueue_get_size(srtcore.udpserverqueue));
+                /* single- or multi-program transport stream, from the PAT */
+                fprintf(statsfile,"    \"transport-type\":\"%s\",\n",
+                        srtcore.program_count > 1 ? "MPTS" : (srtcore.program_count == 1 ? "SPTS" : ""));
+                fprintf(statsfile,"    \"program-count\":%d,\n", srtcore.program_count);
+                fprintf(statsfile,"    \"program-number\":%d,\n", srtcore.program_number);
                 fprintf(statsfile,"    \"pcr-pid\":%d,\n", srtcore.pcr_pid);
                 fprintf(statsfile,"    \"video-pid\":%d,\n", srtcore.video_pid);
                 fprintf(statsfile,"    \"video-type\":\"%s\",\n", stream_type_name(srtcore.video_stream_type));

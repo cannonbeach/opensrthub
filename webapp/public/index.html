@@ -2065,6 +2065,27 @@
         `;
       }
 
+      // SPTS or MPTS, from the PAT. An MPTS carries several programs and
+      // srthub monitors one of them, so the card says which.
+      const transport = service.transport || {};
+      if (isRunning && (transport.type === 'SPTS' || transport.type === 'MPTS')) {
+        let transportText = transport.type;
+        if (transport.type === 'MPTS') {
+          const count = Number(transport.programCount) || 0;
+          const program = Number(transport.programNumber) || 0;
+          transportText += ` &middot; ${count} programs`;
+          if (program > 0) {
+            transportText += ` &middot; monitoring program ${program}`;
+          }
+        }
+        detailsHtml += `
+          <div class="detail-item">
+            <span class="detail-label">Transport</span>
+            <span class="detail-value">${transportText}</span>
+          </div>
+        `;
+      }
+
       // Elementary stream pids from the PMT. These are reported independently
       // of the decoders, so a pid can be known before (or without) a codec.
       const pids = service.pids || { video: 0, videoType: '', audio: [] };

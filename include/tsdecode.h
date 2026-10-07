@@ -239,6 +239,10 @@ typedef struct _pid_summary_struct_ {
      int audio_stream_type[MAX_SUMMARY_AUDIO_PIDS];
      lang_struct audio_language[MAX_SUMMARY_AUDIO_PIDS];
      int scte35_pid;                 /* 0 when the PMT declares no SCTE-35 */
+     int program_count;              /* programs in the PAT, the NIT entry (program 0)
+                                        excluded: 1 is an SPTS, more an MPTS; 0 before
+                                        a PAT has been seen */
+     int program_number;             /* the program being decoded, 0 until its PMT is */
 } pid_summary_struct;
 
 typedef struct _pat_table_struct_ {
