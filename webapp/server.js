@@ -37,7 +37,6 @@ var path = require('path');
 var https = require('https');
 var http = require('http');
 var net = require('net');
-const urlExists = require('url-exists');
 const { param, validationResult } = require('express-validator');
 const validator = require('validator');
 const helmet = require('helmet');
