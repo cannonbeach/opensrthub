@@ -2,7 +2,7 @@
 
 ### A web based SRT hub/gateway signal router
 
-This project (opensrthub) is a SRT hub/gateway for routing streaming transport stream signals around a network (and the Internet) with SRT and UDP.  
+This project (opensrthub) is a SRT hub/gateway for routing streaming transport stream signals around a network (and the Internet) with SRT and UDP.
 
 My goal for this project was to have a straightforward and user friendly web based platform for managing the routing of audio/video streaming signals transported
 over SRT and UDP around public/private networks (while also providing the ability to peek at the signals along the way).  The signal peeking adds some extra value since you
@@ -50,199 +50,6 @@ configuration with Ansible, cloud-init or similar.
 
 This phase runs *after* everything is built and installed, so nothing it changes
 can affect the compile or the container image build.
-
-- **Kernel parameters** - `apparmor=0`,
-  `cpufreq.default_governor=performance` and `mitigations=off` are added to
-  `GRUB_CMDLINE_LINUX_DEFAULT` in `/etc/default/grub` (backed up once to
-  `/etc/default/grub.opensrthub.bak`), followed by `update-grub`. Each is added
-  only if it is not already on the command line - if both are already there,
-  nothing is written and `update-grub` is not run. Your existing parameters are
-  preserved, and a parameter already present with a different value (say
-  `cpufreq.default_governor=powersave`) is corrected rather than duplicated.
-  **These need a reboot to take effect.**
-
-  To manage another parameter, add it to the `GRUB_PARAMS` list at the top of
-  `setup.sh`; everything else follows automatically.
-
-  `grub-mkconfig` sources `/etc/default/grub` *before* `/etc/default/grub.d/*.cfg`,
-  so a drop-in there overrides it - Ubuntu cloud images ship
-  `50-cloudimg-settings.cfg`, which reassigns `GRUB_CMDLINE_LINUX_DEFAULT` and
-  would otherwise silently discard the parameters. The installer detects this and
-  adds `/etc/default/grub.d/99-opensrthub.cfg` to win the ordering, carrying over
-  whatever that drop-in set. It then confirms each parameter is actually present
-  in the generated `/boot/grub/grub.cfg` rather than assuming the edit worked.
-
-  `cpufreq.default_governor=performance` only sets the governor each cpufreq policy
-  *starts* with - it is not sufficient on its own, because two things in userspace
-  overwrite it late in boot and the last writer wins. `ondemand.service`, shipped by
-  systemd itself, runs `/lib/systemd/set-cpufreq` which forces `ondemand` on every
-  CPU; and the `cpufrequtils` init script carries `GOVERNOR="ondemand"` as a
-  built-in default, only reading `/etc/default/cpufrequtils` if that file exists. So
-  the tuning phase masks `ondemand.service`, writes
-  `/etc/default/cpufrequtils` with `GOVERNOR="performance"`, and applies the
-  governor immediately rather than waiting for the reboot. `--verify` reads
-  `scaling_governor` from every CPU, not the config, since the configured value is
-  exactly what used to be overridden.
-
-  `mitigations=off` disables the CPU speculative-execution mitigations (Spectre,
-  Meltdown/PTI, MDS, L1TF, Retbleed, SRSO, Downfall). It is here because those
-  mitigations cost most on syscall- and context-switch-heavy code, and a UDP/SRT
-  packet mover doing a `recvmsg`/`sendmsg` per packet is close to a worst case for
-  that overhead. **This is a deliberate security tradeoff**: you give up
-  cross-privilege and cross-process speculative isolation, so it is appropriate
-  for a dedicated appliance on a network you control and *not* for a shared or
-  multi-tenant host. Note that running streams in containers does not offset this
-  - containers share the kernel and are not a speculative-execution boundary.
-  It also re-enables SMT if a mitigation had disabled it. Remove it from
-  `GRUB_PARAMS` if your threat model does not allow it.
-
-- **AppArmor** - the service is also disabled and masked so it does not come back
-  at the next boot. The loaded profiles are deliberately left in place until you
-  reboot: Ubuntu's `apparmor.service` sets `ExecStop=/bin/true` precisely so that
-  stopping it does not unload the profile set, because unloading it on a running
-  system leaves the AppArmor LSM active with no `docker-default` profile to apply,
-  and every `docker run` and `docker build` then fails with
-  `apparmor failed to apply profile: ... no such file or directory`. The kernel
-  parameter is what actually turns AppArmor off, at the next boot.
-
-  Disabling AppArmor is docker-safe: runc calls `apparmor.HostSupports()`, which
-  reads `/sys/module/apparmor/parameters/enabled`, and skips profile application
-  entirely when AppArmor is unavailable. After rebooting, confirm with
-  `cat /sys/module/apparmor/parameters/enabled` (expect `N`), check
-  `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor` (expect
-  `performance`), check `grep . /sys/devices/system/cpu/vulnerabilities/*` (expect
-  `Vulnerable`), and check that streams still start.
-
-- **Unattended upgrades** - service masked and the apt periodic counters in
-  `/etc/apt/apt.conf.d/20auto-upgrades` set to 0. An automatic upgrade that
-  restarts docker or node would interrupt live streams.
-- **apt-daily** - `apt-daily.timer`, `apt-daily.service`,
-  `apt-daily-upgrade.timer` and `apt-daily-upgrade.service` disabled and masked.
-  Both timers are included: masking only the services leaves the timers firing.
-- **Crash reporting** - apport, whoopsie and kerneloops are disabled and masked,
-  and `enabled=0` is set in `/etc/default/apport`. A core dump from this box can
-  contain whatever was in memory at the time, which for opensrthub includes SRT
-  stream passphrases, so nothing should be shipping crash data off the machine on
-  its own. whoopsie is the piece that actually uploads to Canonical's error
-  tracker; kerneloops does the same for kernel oopses.
-
-  The `apport-autoreport.path` and `apport-forward.socket` units are included, not
-  just the services - they are activators, so masking only the services would
-  leave something able to start them again.
-
-  `kernel.core_pattern` is repointed at `/opt/srthub/cores/core.%e.%p.%t` in the
-  sysctl block, because apport replaces it with a pipe to its own handler.
-  Disabling apport without resetting it would hand every core to a program that is
-  no longer running, silently producing no core at all and quietly defeating
-  `fs.suid_dumpable = 1`.
-
-  That path matters for containers: `core_pattern` is resolved in the crashing
-  process's own mount namespace, and `server.js` bind-mounts `/opt/srthub` into
-  every stream container at the same path - so a core from srthub inside a
-  container lands on the host and survives the container being removed. The
-  directory is `1777` because the kernel writes each core as the crashing
-  process's own uid; the cores themselves are `0600` and the sticky bit stops one
-  user clearing another's, the same arrangement Ubuntu uses for `/var/crash`.
-
-  Cores from a video application are large, so
-  `/etc/tmpfiles.d/opensrthub-cores.conf` expires them after 14 days - otherwise an
-  appliance that crashloops fills its own disk and takes the service down.
-  `systemd-tmpfiles-clean.timer` is active by default and runs daily, so no cron
-  job is needed. Adjust the `14d` there to keep them longer.
-
-  Pass `--purge-telemetry` to apt-purge the packages rather than only disabling
-  them. That is meant for server installs - on a desktop install, purging apport can
-  drag the desktop metapackage out with it. (`--purge-apport` is still accepted as
-  an older name for the same flag.)
-
-- **Outbound telemetry** - `popularity-contest` submits the installed package list
-  to Canonical weekly and `ubuntu-report` submits a hardware and install survey.
-  Both are described as anonymous, but an appliance should not be originating
-  traffic to third parties at all, and a package list is itself a disclosure about
-  what the machine is and how it is configured.
-
-  `PARTICIPATE="no"` is set in `/etc/popularity-contest.conf`, any
-  `popularity-contest` service or timer is masked, and the execute bit is removed
-  from `/etc/cron.daily/popularity-contest` - which is what actually does the
-  submitting, and which `run-parts` skips when it is not executable.
-
-  `ubuntu-report` ships no service and no config file; it is a CLI invoked by the
-  installer and by initial-setup. There is nothing to mask, so the execute bit is
-  removed from `/usr/bin/ubuntu-report` instead. **A package upgrade restores it** -
-  use `--purge-telemetry` if you want it gone for good.
-
-  Not covered: `ubuntu-advantage-tools` / `ubuntu-pro-client` also contacts
-  Canonical (`ua-timer.timer`, `esm-cache.service`, and the apt ESM hooks that
-  produce "apt news"). Say so and it can be added; it is left alone for now because
-  disabling it also silences genuine security-update notices.
-
-- **MOTD** - the execute bit is removed from `/etc/update-motd.d/*`, motd-news is
-  disabled, and `/etc/motd` is cleared. `/etc/pam.d` is deliberately left alone,
-  since a bad edit there locks you out over SSH.
-- **sshd** - `/etc/ssh/sshd_config.d/10-opensrthub-hardening.conf` restricts the
-  crypto and tightens the login policy:
-
-```
-Ciphers       chacha20-poly1305@openssh.com, aes256-gcm@openssh.com,
-              aes128-gcm@openssh.com, aes256-ctr, aes192-ctr, aes128-ctr
-KexAlgorithms curve25519-sha256, curve25519-sha256@libssh.org,
-              ecdh-sha2-nistp521/384/256, diffie-hellman-group-exchange-sha256
-MACs          hmac-sha2-512-etm@openssh.com, hmac-sha2-256-etm@openssh.com,
-              hmac-sha2-512, hmac-sha2-256
-PermitRootLogin no        IgnoreRhosts yes            ClientAliveInterval 300
-PermitEmptyPasswords no   HostbasedAuthentication no  ClientAliveCountMax 3
-LoginGraceTime 60         MaxAuthTries 4
-```
-
-  No CBC ciphers, no MD5 or SHA1 MACs, no SHA1 or GSS key exchange, no
-  `diffie-hellman-group1`/`group14-sha1`. Note the MACs apply only to the CTR
-  ciphers - the AEAD ciphers carry their own integrity and ignore the MAC list.
-
-  `sshd_config` uses the **first** value it finds for each keyword, and the main
-  file Includes that directory near its top, so these win over anything below the
-  Include. (That is the opposite of `/etc/default/grub`, which is sourced as shell
-  and takes the *last* assignment.) The `10-` prefix also puts it ahead of other
-  drop-ins such as a cloud image's `50-cloud-init.conf`. If the main config has no
-  `Include` line at all, one is added at the top - otherwise the drop-in would be
-  written and silently never read.
-
-  **The config is validated with `sshd -t` before anything reloads.** If sshd
-  rejects it, the previous drop-in is put back (or the new one deleted), sshd's own
-  error is printed, and the install stops - so a bad config can never leave the
-  machine without a working sshd. The reload applies to new connections only;
-  existing sessions are unaffected.
-
-  **Before you disconnect**, open a second session and confirm you can still log
-  in. Two things to be aware of: `PermitRootLogin no` locks out anyone whose only
-  access is as root (the installer warns if you are running it as root over SSH),
-  and a very old SSH client may not support the restricted algorithm lists.
-
-- **sysctl** - written as a delimited block in `/etc/sysctl.conf` (backed up once
-  to `/etc/sysctl.conf.opensrthub.bak`), so re-running replaces the block instead
-  of appending duplicates and your own settings are preserved:
-
-```
-net.ipv4.tcp_syncookies = 1
-net.ipv4.conf.{all,default}.accept_redirects = 0
-net.ipv6.conf.{all,default}.accept_redirects = 0
-net.ipv6.conf.{all,default,lo}.disable_ipv6 = 1
-kernel.randomize_va_space = 2
-kernel.core_uses_pid = 1
-kernel.core_pattern = /opt/srthub/cores/core.%e.%p.%t
-fs.suid_dumpable = 1
-```
-
-`fs.suid_dumpable = 1` is a deliberate loosening of a hardening default: without
-it a crash in a privileged process produces no core file at all, which makes
-stream faults very hard to diagnose. A core from a privileged process can
-contain secrets held in memory, which for opensrthub means SRT stream
-passphrases. Cores are owner-read-only; set it to 0 if you don't need crash
-diagnostics.
-
-Reboot afterwards so all of it takes effect cleanly - `apparmor=0` in particular
-does nothing until then. `--verify` reads the live kernel values rather than the
-config files, so it distinguishes "configured" from "actually in force" and marks
-the kernel parameter as `[pend]` until you have rebooted.
 
 #### Why the script is called setup.sh
 
@@ -532,7 +339,7 @@ The configuration file format is as follows (and is stored in /opt/srthub/config
    "keysize":"0",
    "streamid":"",
    "managementserverip":"",
-   "whitelist":"",   
+   "whitelist":"",
    "clienttype":"pull",
    "overheadbw":"25",
    "latencyms":"100"
@@ -572,5 +379,3 @@ tapeworm@tapeworm-parasite1-cloud6:~$
 /api/v1/get_extended_log_data
 /api/v1/get_service_status/[service]
 ```
-
-
