@@ -360,6 +360,38 @@
       color: var(--accent-red);
     }
 
+    .service-status.pending {
+      color: var(--accent-orange);
+    }
+
+    /* Start/Stop clicked: shown at once and held until the service reaches
+       the new state, so a slow docker start cannot look like a missed click. */
+    .btn.btn-pending,
+    .btn.btn-pending:disabled {
+      background: var(--accent-orange);
+      color: var(--bg-primary);
+      opacity: 1;
+      cursor: progress;
+      box-shadow: none;
+    }
+
+    .btn-spinner {
+      width: 0.8em;
+      height: 0.8em;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: btn-spin 0.8s linear infinite;
+    }
+
+    @keyframes btn-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .btn-spinner { animation: none; border-right-color: currentColor; opacity: 0.6; }
+    }
+
     .service-body {
       padding: 1.5rem;
     }
@@ -1992,8 +2024,11 @@
     // Generate service card HTML
     function createServiceCard(service) {
       const isRunning = service.status === 'running';
-      const statusClass = isRunning ? 'running' : 'stopped';
-      const statusText = isRunning ? `Running · ${formatUptime(service.uptime)}` : 'Stopped';
+      const pending = pendingActions.get(String(service.id));
+      const pendingText = pending ? (pending.action === 'start' ? 'Starting…' : 'Stopping…') : '';
+      const statusClass = pending ? 'pending' : (isRunning ? 'running' : 'stopped');
+      const statusText = pending ? pendingText :
+                         (isRunning ? `Running · ${formatUptime(service.uptime)}` : 'Stopped');
       
       // Determine service type for badge
       const isReceiver = (service.sourcemode || '').startsWith('srt');
@@ -2276,8 +2311,25 @@
         <img id="thumbnail${service.id}" src="" alt="" style="display: none;">
       `;
 
-      // Action buttons
-      const actionsHtml = isRunning ? `
+      // A start or stop that failed, or never took effect
+      const actionError = actionErrors.get(String(service.id));
+      if (actionError) {
+        detailsHtml += `
+          <div class="detail-item detail-error">
+            <span class="detail-label">${escapeHtml(actionError.title)}</span>
+            <span class="detail-value">${escapeHtml(actionError.message)}</span>
+          </div>
+        `;
+      }
+
+      // Action buttons. While a start or stop is in progress the card offers
+      // nothing else to click: a second Start, an Edit or a Remove would race it.
+      const actionsHtml = pending ? `
+        <button class="btn btn-pending" disabled aria-busy="true"><span class="btn-spinner" aria-hidden="true"></span>${pendingText}</button>
+        <button class="btn btn-warning" disabled style="opacity:0.4;cursor:not-allowed;">✏ Edit</button>
+        <button class="btn btn-ghost" id="graph_service${service.id}">📈 Graph</button>
+        <button class="btn btn-ghost" disabled style="opacity:0.4;cursor:not-allowed;">Remove</button>
+      ` : isRunning ? `
         <button class="btn btn-danger" id="stop_service${service.id}">Stop</button>
         <button class="btn btn-warning" id="edit_service${service.id}" disabled title="Stop service before editing" style="opacity:0.4;cursor:not-allowed;">✏ Edit</button>
         <button class="btn btn-ghost" id="graph_service${service.id}">📈 Graph</button>
@@ -2297,7 +2349,7 @@
               <span class="service-name">${escapeHtml(service.sourcename)}</span>
             </div>
             <div class="service-status ${statusClass}">
-              ${isRunning ? '<span class="status-dot"></span>' : '○'}
+              ${pending ? '' : (isRunning ? '<span class="status-dot"></span>' : '○')}
               ${statusText}
             </div>
           </div>
@@ -2321,10 +2373,72 @@
     }
 
     // Fetch and render services
+    // Start/Stop actions in progress, by service id: { action, since, settled }.
+    // Kept outside the cards because every refresh rebuilds them; an action
+    // ends when the service reports the state it asked for.
+    const pendingActions = new Map();
+    // Start/Stop failures shown on the card for a while: { title, message, until }
+    const actionErrors = new Map();
+    const PENDING_TIMEOUT_MS = 30000;
+    const ACTION_ERROR_MS = 15000;
+    let servicesRequestSeq = 0;
+    let servicesRenderedSeq = 0;
+    let pendingRefreshTimer = null;
+    let lastServices = new Map();
+
+    function actionReached(action, service) {
+      const running = service && service.status === 'running';
+      return action === 'start' ? running : !running;
+    }
+
+    // Retires pending actions the services list shows as done, or as overdue.
+    function settlePendingActions(services) {
+      const now = Date.now();
+      const byId = new Map(services.map(svc => [String(svc.id), svc]));
+      for (const [id, pending] of pendingActions) {
+        const service = byId.get(id);
+        if (!service) {
+          pendingActions.delete(id);          // removed meanwhile
+        } else if (pending.settled && actionReached(pending.action, service)) {
+          pendingActions.delete(id);
+        } else if (now - pending.since > PENDING_TIMEOUT_MS) {
+          pendingActions.delete(id);
+          actionErrors.set(id, {
+            title: pending.action === 'start' ? 'Did not start' : 'Did not stop',
+            message: pending.action === 'start'
+              ? `The service has not reported running after ${PENDING_TIMEOUT_MS / 1000} seconds. Check the event log.`
+              : `The service is still reporting as running after ${PENDING_TIMEOUT_MS / 1000} seconds.`,
+            until: now + ACTION_ERROR_MS
+          });
+        }
+      }
+      for (const [id, error] of actionErrors) {
+        if (now > error.until) actionErrors.delete(id);
+      }
+    }
+
+    // Refreshes quickly while an action is in progress, so the card turns
+    // Running or Stopped as soon as that is true, not at the next 2 s tick.
+    function schedulePendingRefresh() {
+      if (pendingRefreshTimer || pendingActions.size === 0) return;
+      pendingRefreshTimer = setTimeout(async () => {
+        pendingRefreshTimer = null;
+        await loadServices();
+        schedulePendingRefresh();
+      }, 700);
+    }
+
     async function loadServices() {
+      const seq = ++servicesRequestSeq;
       try {
         const response = await fetch('/api/v1/get_services');
         const data = await response.json();
+        // several refreshes can be in flight; an older reply must not
+        // overwrite the cards a newer one has already drawn
+        if (seq < servicesRenderedSeq) return;
+        servicesRenderedSeq = seq;
+        lastServices = new Map((data.services || []).map(svc => [String(svc.id), svc]));
+        settlePendingActions(data.services || []);
         const container = document.getElementById('services-container');
         const emptyState = document.getElementById('empty-state');
         const countBadge = document.getElementById('service-count');
@@ -2405,16 +2519,15 @@
       const serviceId = card.dataset.serviceId;
       const fileprefix = card.dataset.fileprefix;
 
+      if (btn.id.startsWith('start_service') || btn.id.startsWith('stop_service')) {
+        runServiceAction(card, serviceId, btn.id.startsWith('start_service') ? 'start' : 'stop');
+        return;
+      }
+
       btn.disabled = true;
 
       try {
-        if (btn.id.startsWith('start_service')) {
-          await fetch(`/api/v1/start_service/${serviceId}`, { method: 'POST' });
-          setTimeout(loadServices, 500);
-        } else if (btn.id.startsWith('stop_service')) {
-          await fetch(`/api/v1/stop_service/${serviceId}`, { method: 'POST' });
-          setTimeout(loadServices, 500);
-        } else if (btn.id.startsWith('remove')) {
+        if (btn.id.startsWith('remove')) {
           if (confirm('Are you sure you want to remove this service?')) {
             await fetch(`/api/v1/remove_service/${serviceId}`, { method: 'POST' });
             setTimeout(loadServices, 500);
@@ -2434,6 +2547,47 @@
         btn.disabled = false;
       }
     });
+
+    // Start or stop one service. The card switches to Starting…/Stopping… before
+    // the request is sent and keeps it until the service reports the new
+    // state, the request fails, or PENDING_TIMEOUT_MS passes.
+    async function runServiceAction(card, serviceId, action) {
+      const id = String(serviceId);
+      if (pendingActions.has(id)) return;
+      actionErrors.delete(id);
+      pendingActions.set(id, { action, since: Date.now(), settled: false });
+
+      const service = lastServices.get(id);
+      if (service) {
+        card.outerHTML = createServiceCard(service);
+      }
+
+      let failure = '';
+      try {
+        const response = await fetch(`/api/v1/${action}_service/${encodeURIComponent(id)}`, { method: 'POST' });
+        let result = {};
+        try { result = await response.json(); } catch (e) { /* not JSON */ }
+        if (!response.ok || result.status !== 'success') {
+          failure = result.error || (response.ok ? 'the server reported a failure' : `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        failure = 'the server could not be reached';
+      }
+
+      const pending = pendingActions.get(id);
+      if (failure) {
+        pendingActions.delete(id);
+        actionErrors.set(id, {
+          title: action === 'start' ? 'Start failed' : 'Stop failed',
+          message: failure.charAt(0).toUpperCase() + failure.slice(1) + '.',
+          until: Date.now() + ACTION_ERROR_MS
+        });
+      } else if (pending) {
+        pending.settled = true;
+      }
+      await loadServices();
+      schedulePendingRefresh();
+    }
 
     // ---- Log Section ----
     // Log rows are built as HTML strings and carry values that come from the
