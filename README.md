@@ -265,6 +265,12 @@ This rebuilds `srthub`, the container image and the web app, and restarts the
 service. Existing stream containers must be restarted from the UI to pick up the
 new binary.
 
+The bundled libraries (libsrt, libcurl, FFmpeg) are only built when missing,
+with one exception: libsrt is rebuilt whenever the version pinned by `SRT_TAG`
+in `setup.sh` differs from the one in `cbsrt/` (currently 1.5.7), and srthub is
+relinked against it. The SRT version srthub is running is printed at the top of
+each container's log (`srt version is: ...`).
+
 There are four modes of SRT supported in the current version, which essentialy consists of a combination of Listener and Caller bundled with UDP input/output.  The Rendezvous mode has not yet been added.
 
 ```

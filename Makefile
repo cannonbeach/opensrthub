@@ -32,7 +32,9 @@ BASELIBS += -lz -ldl -lssl -llzma
 
 all: $(LIB) srthub
 
-srthub: srthub.o $(OBJS)
+# The bundled static libraries are prerequisites too, so rebuilding one (a
+# libsrt upgrade, say) relinks srthub instead of leaving the old copy in it.
+srthub: srthub.o $(OBJS) $(filter ./%.a,$(BASELIBS))
 	$(CXX) srthub.o $(OBJS) -L./ $(BASELIBS) -lm -lpthread -o srthub
 
 $(LIB): $(OBJS)

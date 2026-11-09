@@ -15,7 +15,7 @@ set -Eeuo pipefail
 # Configuration
 #-----------------------------------------------------------------------------
 NODE_MAJOR=22
-SRT_TAG="v1.5.4"
+SRT_TAG="v1.5.7"
 FFMPEG_BRANCH="release/6.1"
 CURL_REPO="https://github.com/cannonbeach/curl.git"
 SRT_REPO="https://github.com/Haivision/srt.git"
@@ -520,9 +520,22 @@ if [ "$SKIP_BUILD" -eq 1 ]; then
     bypass "the third-party library build (--skip-build)"
 else
     # --- libsrt -------------------------------------------------------------
-    if [ -f "${REPO_DIR}/cbsrt/libsrt.a" ]; then
-        skip "libsrt (cbsrt/libsrt.a exists)"
+    # The version the existing build was made from, from the header its
+    # configure step generated; empty when there is no build.
+    built_srt=""
+    if [ -f "${REPO_DIR}/cbsrt/libsrt.a" ] && [ -f "${REPO_DIR}/cbsrt/version.h" ]; then
+        built_srt=$(sed -n 's/^#define SRT_VERSION_STRING "\(.*\)"$/\1/p' "${REPO_DIR}/cbsrt/version.h")
+    fi
+    if [ -n "$built_srt" ] && [ "$built_srt" = "${SRT_TAG#v}" ]; then
+        skip "libsrt ${built_srt} (already built)"
     else
+        if [ -d "${REPO_DIR}/cbsrt/.git" ]; then
+            # An existing clone predates SRT_TAG: fetch the new tag, and clear
+            # the in-tree build so configure does not reuse the old cache.
+            log "updating libsrt from ${built_srt:-an unknown version} to ${SRT_TAG}"
+            git -C "${REPO_DIR}/cbsrt" fetch --tags --quiet origin
+            git -C "${REPO_DIR}/cbsrt" clean -fdxq
+        fi
         log "building libsrt ${SRT_TAG}"
         clone_at "$SRT_REPO" "${REPO_DIR}/cbsrt" "tags/${SRT_TAG}" "${SRT_TAG}"
         pushd "${REPO_DIR}/cbsrt" >/dev/null || die "cannot enter cbsrt"

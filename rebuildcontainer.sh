@@ -4,8 +4,10 @@
 # app after a code change, without redoing the system package phase.
 #
 # All of the real work lives in setup.sh. Third-party libraries (libsrt,
-# libcurl, FFmpeg) are left alone unless their build output is missing; delete
-# the cbsrt/ cblibcurl/ cbffmpeg/ directories to force a full rebuild.
+# libcurl, FFmpeg) are left alone unless their build output is missing - or,
+# for libsrt, built from a different version than SRT_TAG in setup.sh, which
+# is how an SRT upgrade reaches an existing install. Delete the cbsrt/
+# cblibcurl/ cbffmpeg/ directories to force a full rebuild.
 #
 set -Eeuo pipefail
 
