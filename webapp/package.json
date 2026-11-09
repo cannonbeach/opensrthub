@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "archiver": "^7.0.1",
-    "body-parser": "^2.2.0",
+    "body-parser": "^2.4.0",
     "express": "^5.1.0",
     "express-session": "^1.19.0",
     "express-validator": "^7.3.2",
