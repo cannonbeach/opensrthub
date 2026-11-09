@@ -576,45 +576,61 @@ function loadArchiver() {
     return archiverModule;
 }
 
+// Older releases left the last support bundle - every config, passphrases
+// included - at public/systemlogs.zip, where any logged-in browser could fetch
+// it later. Nothing writes it any more; remove a leftover one.
+try {
+    fs.unlinkSync(path.join(__dirname, 'public', 'systemlogs.zip'));
+    console.log('removed a leftover support bundle from public/');
+} catch (e) {
+    if (e.code !== 'ENOENT') {
+        console.log('unable to remove the leftover support bundle: ', e.message);
+    }
+}
+
+// Support bundle: the service configs and the logs, as a zip streamed straight
+// into the response. It used to be written to public/systemlogs.zip and sent
+// from there on the archive's 'end' event, which fires before the file stream
+// has flushed, so the download came out truncated; and the file, configs and
+// passphrases included, stayed on disk afterwards.
 app.get('/api/v1/backup_services', auth, async (req, res) => {
-    var files = fs.readdirSync(configFolder);
+    var files;
     var zip;
+
     try {
+        files = fs.readdirSync(configFolder);
         var { ZipArchive } = await loadArchiver();
         zip = new ZipArchive();
     } catch (e) {
-        console.log('support bundle: unable to load archiver: ', e.message);
+        console.log('support bundle: unable to start: ', e.message);
         res.status(500).json({ error: 'unable to create the archive' });
         return;
     }
 
-    zip.on('error', function(err) {
-        res.status(500).send({error: err.message});
+    var host = os.hostname().replace(/[^A-Za-z0-9._-]/g, '') || 'srthub';
+    var stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').substring(0, 15);
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', 'attachment; filename="opensrthub-support-' + host + '-' + stamp + '.zip"');
+    res.set('Cache-Control', 'no-store');
+
+    // a file that is missing (no kern.log.1 yet, say) is skipped, not fatal
+    zip.on('warning', (err) => console.log('support bundle: ', err.message));
+    zip.on('error', (err) => {
+        console.log('support bundle failed: ', err.message);
+        res.destroy(err);
     });
-
-    res.setHeader('Content-Type','application/octet-stream');
-
-    zip.on('end', function() {
-        console.log('zip file done - wrote %d bytes', zip.pointer());
-        res.sendFile(path.join(__dirname + '/public/systemlogs.zip'));
-    });
-
-    const writeStream = fs.createWriteStream('/var/app/public/systemlogs.zip');
-    zip.pipe(writeStream);
+    zip.on('end', () => console.log('support bundle done - wrote %d bytes', zip.pointer()));
+    zip.pipe(res);
 
     files.forEach(file => {
-        console.log(getExtension(file));
         if (getExtension(file) == '.json') {
-            var fullfile = configFolder+'/'+file;
-            console.log('zipping ', fullfile);
-            zip.file(fullfile);
+            zip.file(configFolder + '/' + file);
         }
     });
     // Every rotation that is still on disk, however it happens to be named, so a
     // support bundle carries the whole retention window rather than the two
     // files the old numbered naming happened to produce.
     logFileCandidates().forEach(file => {
-        console.log('zipping ', file.path);
         zip.file(file.path);
     });
     zip.file('/var/log/kern.log');
