@@ -561,10 +561,32 @@ app.get('/api/v1/system_information', auth, (req, res) => {
     res.send(retdata);
 });
 
-app.get('/api/v1/backup_services', auth, (req, res) => {
+// archiver 8 is an ES module only. import() loads it from this CommonJS file
+// on every supported Node release (require() of an ES module needs Node 20.19
+// or 22.12 and later). It is loaded once, the first time an archive is made;
+// a failed load is not cached, so the next request tries again.
+var archiverModule = null;
+function loadArchiver() {
+    if (!archiverModule) {
+        archiverModule = import('archiver').catch(err => {
+            archiverModule = null;
+            throw err;
+        });
+    }
+    return archiverModule;
+}
+
+app.get('/api/v1/backup_services', auth, async (req, res) => {
     var files = fs.readdirSync(configFolder);
-    var archiver = require('archiver');
-    var zip = archiver('zip');
+    var zip;
+    try {
+        var { ZipArchive } = await loadArchiver();
+        zip = new ZipArchive();
+    } catch (e) {
+        console.log('support bundle: unable to load archiver: ', e.message);
+        res.status(500).json({ error: 'unable to create the archive' });
+        return;
+    }
 
     zip.on('error', function(err) {
         res.status(500).send({error: err.message});
@@ -1400,7 +1422,7 @@ function publicRestoreItem(item) {
     };
 }
 
-app.get('/api/v1/backup_configs', auth, (req, res) => {
+app.get('/api/v1/backup_configs', auth, async (req, res) => {
     var names;
 
     try {
@@ -1412,8 +1434,15 @@ app.get('/api/v1/backup_configs', auth, (req, res) => {
 
     var host = os.hostname().replace(/[^A-Za-z0-9._-]/g, '') || 'srthub';
     var stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').substring(0, 15);
-    var archiver = require('archiver');
-    var tar = archiver('tar', { gzip: true, gzipOptions: { level: 9 } });
+    var tar;
+    try {
+        var { TarArchive } = await loadArchiver();
+        tar = new TarArchive({ gzip: true, gzipOptions: { level: 9 } });
+    } catch (e) {
+        console.log('config backup: unable to load archiver: ', e.message);
+        res.status(500).json({ error: 'unable to create the archive' });
+        return;
+    }
 
     res.set('Content-Type', 'application/gzip');
     res.set('Content-Disposition', 'attachment; filename="opensrthub-configs-' + host + '-' + stamp + '.tar.gz"');
